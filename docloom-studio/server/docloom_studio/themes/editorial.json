@@ -1,0 +1,18 @@
+{
+  "label": "Editorial",
+  "description": "Warm paper, serif display, hairline rules, generous margins.",
+  "primary": "#7C2D12",
+  "accent": "#B45309",
+  "accent_2": "#365314",
+  "background": "#FAF6EF",
+  "surface": "#F1EAD9",
+  "text": "#1C1917",
+  "muted": "#78716C",
+  "font_heading": "Fraunces",
+  "font_body": "Source Serif 4",
+  "heading_weight": 600,
+  "heading_tracking": "0",
+  "radius": 2,
+  "bg_style": "solid",
+  "divider_style": "hairline"
+}

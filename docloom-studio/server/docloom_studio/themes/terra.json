@@ -1,0 +1,18 @@
+{
+  "label": "Terra",
+  "description": "Earthy palette, humanist sans, full-bleed hero images.",
+  "primary": "#C2410C",
+  "accent": "#4D7C0F",
+  "accent_2": "#0E7490",
+  "background": "#FBF7F0",
+  "surface": "#F1E8DA",
+  "text": "#292524",
+  "muted": "#7D7468",
+  "font_heading": "Bricolage Grotesque",
+  "font_body": "Nunito Sans",
+  "heading_weight": 650,
+  "heading_tracking": "0",
+  "radius": 12,
+  "bg_style": "panel",
+  "divider_style": "hairline"
+}

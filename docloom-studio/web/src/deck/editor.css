@@ -1,0 +1,107 @@
+/* Editing surface: Tiptap regions, add-block, block chrome. Colors come from
+   the deck theme vars (editable slides live on the themed stage). */
+
+.editable .ProseMirror,
+.editable.ProseMirror {
+  outline: none;
+  min-height: 1em;
+}
+.ProseMirror p {
+  margin: 0;
+}
+.ProseMirror:focus {
+  outline: none;
+}
+
+/* placeholder for empty single-line regions */
+.editable.ProseMirror p.is-empty:first-child::before,
+[data-placeholder] .ProseMirror p:only-child:empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  pointer-events: none;
+  float: left;
+  height: 0;
+}
+
+.edit-h1,
+.edit-title {
+  font-family: var(--font-heading);
+}
+
+/* cited text inside the editor: keep it readable (normal size) with a subtle
+   underline; the source shows on hover. */
+.rt-cite-mark {
+  border-bottom: 1.5px solid color-mix(in srgb, var(--primary) 45%, transparent);
+  cursor: help;
+}
+
+/* a hovered, editable block gets a subtle guide + delete affordance */
+.editable-block {
+  position: relative;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.editable-block:hover {
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+}
+.editable-block .editable-hint {
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.editable-block:hover .editable-hint {
+  opacity: 0.7;
+}
+.editable-del {
+  cursor: pointer;
+  background: transparent;
+  border: none;
+}
+.editable-del:hover {
+  color: var(--danger, #c2410c);
+}
+
+.edit-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* add-block affordance */
+.add-block {
+  margin-top: 6px;
+}
+.add-block-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 15px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--muted) 45%, transparent);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.add-block-btn:hover {
+  color: var(--text);
+  border-color: var(--primary);
+}
+.add-block-menu {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.add-block-menu button {
+  font-size: 14px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.add-block-menu button:hover {
+  border-color: var(--primary);
+}

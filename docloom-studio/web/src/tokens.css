@@ -1,0 +1,28 @@
+/* docloom studio UI tokens — "instrument, not admin panel".
+   Light workspace chrome; editors sit on a dark canvas so artifacts glow.
+   The full design pass (M8) refines these; components must only use tokens. */
+
+:root {
+  /* workspace chrome (light) */
+  --ws-bg: #f6f5f2;
+  --ws-panel: #ffffff;
+  --ws-line: #e4e2dc;
+  --ws-ink: #191817;
+  --ws-muted: #77736b;
+  --ws-accent: #2f5af5;
+  --ws-accent-ink: #ffffff;
+  --ws-danger: #c2410c;
+  --ws-ok: #0e9f6e;
+
+  /* editor canvas (dark stage) */
+  --stage-bg: #17181c;
+  --stage-line: #2a2c33;
+  --stage-muted: #8e93a1;
+
+  --font-display: 'Sora', system-ui, sans-serif;
+  --font-ui: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', Consolas, ui-monospace, monospace;
+
+  --radius: 10px;
+  --shadow-panel: 0 1px 2px rgb(25 24 23 / 0.05), 0 8px 24px rgb(25 24 23 / 0.06);
+}

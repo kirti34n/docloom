@@ -1,0 +1,110 @@
+@import 'tailwindcss';
+@import './tokens.css';
+
+@theme {
+  --color-ws-bg: var(--ws-bg);
+  --color-ws-panel: var(--ws-panel);
+  --color-ws-line: var(--ws-line);
+  --color-ws-ink: var(--ws-ink);
+  --color-ws-muted: var(--ws-muted);
+  --color-ws-accent: var(--ws-accent);
+  --color-ws-danger: var(--ws-danger);
+  --color-ws-ok: var(--ws-ok);
+  --color-stage-bg: var(--stage-bg);
+  --color-stage-line: var(--stage-line);
+  --color-stage-muted: var(--stage-muted);
+  --font-display: var(--font-display);
+  --font-ui: var(--font-ui);
+  --font-mono: var(--font-mono);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--ws-bg);
+  color: var(--ws-ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ws-accent);
+  outline-offset: 2px;
+}
+
+.mmd-preview {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mmd-preview svg {
+  width: 100%;
+  height: auto;
+  max-height: 100%;
+}
+
+.sheet-grid {
+  border-collapse: collapse;
+  font-size: 13px;
+  background: var(--ws-panel);
+}
+.sheet-grid th,
+.sheet-grid td {
+  border: 1px solid var(--ws-line);
+  padding: 0;
+}
+.sheet-grid th input,
+.sheet-grid td input {
+  width: 120px;
+  padding: 5px 8px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  outline: none;
+}
+.sheet-grid th input {
+  font-weight: 600;
+  background: var(--ws-bg);
+}
+.sheet-grid td input:focus {
+  outline: 2px solid var(--ws-accent);
+  outline-offset: -2px;
+}
+.sheet-rownum,
+.sheet-corner {
+  width: 34px;
+  background: var(--ws-bg);
+  color: var(--ws-muted);
+  text-align: center;
+  font-size: 11px;
+}
+.sheet-add button {
+  padding: 4px 8px;
+  color: var(--ws-muted);
+}
+
+.chat-cite {
+  font-size: 0.62em;
+  color: var(--ws-accent);
+  cursor: help;
+  padding: 0 1px;
+  vertical-align: super;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

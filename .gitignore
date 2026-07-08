@@ -1,0 +1,36 @@
+# Preserved original per-project git histories.
+# Restore (rename back to .git) to split the workspace into two repos again.
+_git_backup/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+
+# Node / web
+node_modules/
+web/dist/
+dist/
+.vite/
+
+# Build / output artifacts
+out/
+build/
+
+# Local data / secrets
+.env
+*.db
+*.sqlite
+*.sqlite3
+
+# Office temp lock files
+~$*
+
+# OS
+.DS_Store
+Thumbs.db

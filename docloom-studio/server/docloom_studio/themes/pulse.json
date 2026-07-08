@@ -1,0 +1,18 @@
+{
+  "label": "Pulse",
+  "description": "Bold gradient panels, geometric sans, oversized numbers.",
+  "primary": "#7C3AED",
+  "accent": "#F472B6",
+  "accent_2": "#22D3EE",
+  "background": "#100A1F",
+  "surface": "#1D1435",
+  "text": "#F3EFFF",
+  "muted": "#9D93BC",
+  "font_heading": "Space Grotesk",
+  "font_body": "Inter",
+  "heading_weight": 700,
+  "heading_tracking": "-0.02em",
+  "radius": 16,
+  "bg_style": "gradient",
+  "divider_style": "none"
+}

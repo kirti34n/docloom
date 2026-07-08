@@ -1,0 +1,18 @@
+{
+  "label": "Paper",
+  "description": "Minimal light: quiet type, thin dividers, one blue accent.",
+  "primary": "#2563EB",
+  "accent": "#059669",
+  "accent_2": "#7C3AED",
+  "background": "#FFFFFF",
+  "surface": "#F4F4F5",
+  "text": "#111827",
+  "muted": "#6B7280",
+  "font_heading": "Inter",
+  "font_body": "Inter",
+  "heading_weight": 650,
+  "heading_tracking": "-0.01em",
+  "radius": 10,
+  "bg_style": "solid",
+  "divider_style": "hairline"
+}

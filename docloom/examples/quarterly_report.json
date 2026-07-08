@@ -1,0 +1,217 @@
+{
+  "title": "Q2 2026 Business Review",
+  "subtitle": "Northwind Analytics — Quarterly Performance and Outlook",
+  "authors": ["Ava Chen", "Marcus Webb"],
+  "date": "2026-07-01",
+  "blocks": [
+    { "type": "heading", "level": 1, "text": "Executive Summary" },
+    {
+      "type": "paragraph",
+      "text": [
+        { "text": "Revenue grew " },
+        { "text": "18% quarter-over-quarter", "bold": true },
+        { "text": " to $4.2M, driven primarily by the enterprise tier. " },
+        {
+          "text": "Independent analysts project the segment to double by 2027.",
+          "cite": "meridian-2026"
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "style": "success",
+      "text": "Net revenue retention reached 124%, the highest in company history."
+    },
+    { "type": "heading", "level": 2, "text": "What Worked" },
+    {
+      "type": "bullets",
+      "items": [
+        { "text": "Enterprise self-serve onboarding cut sales cycle from 42 to 11 days" },
+        { "text": "Usage-based pricing adopted by 61% of new accounts" },
+        { "text": [
+            { "text": "Churn fell to 1.1% monthly, " },
+            { "text": "below the B2B SaaS median of 1.6%", "cite": "saas-benchmarks" }
+          ],
+          "level": 0
+        },
+        { "text": "EU region launch", "level": 0 },
+        { "text": "Frankfurt data residency unlocked 14 stalled deals", "level": 1 }
+      ]
+    },
+    { "type": "heading", "level": 2, "text": "Risks" },
+    {
+      "type": "numbered",
+      "items": [
+        { "text": "Concentration: top 3 customers are 31% of ARR" },
+        { "text": "Infra spend growing faster than revenue (see cost sheet)" }
+      ]
+    },
+    {
+      "type": "quote",
+      "text": "The fastest-growing companies in this cycle are the ones that made usage pricing boring and predictable.",
+      "attribution": "Meridian Research, State of SaaS 2026"
+    },
+    { "type": "divider" },
+    { "type": "heading", "level": 2, "text": "Integration Example" },
+    {
+      "type": "paragraph",
+      "text": [
+        { "text": "Partners embed reporting via the " },
+        { "text": "v2 API", "code": true },
+        { "text": ", documented at " },
+        { "text": "developers.northwind.dev", "link": "https://developers.northwind.dev" },
+        { "text": "." }
+      ]
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "code": "from northwind import Client\n\nreport = Client(api_key).reports.create(\n    quarter=\"2026-Q2\",\n    format=\"pdf\",\n)"
+    },
+    { "type": "heading", "level": 2, "text": "Key Metrics" },
+    {
+      "type": "table",
+      "header": ["Metric", "Q1 2026", "Q2 2026", "Change"],
+      "rows": [
+        ["Revenue", "$3.6M", "$4.2M", [{ "text": "+18%", "bold": true }]],
+        ["Gross margin", "71%", "74%", "+3 pts"],
+        ["Monthly churn", "1.4%", "1.1%", "-0.3 pts"],
+        ["Headcount", "58", "64", "+6"]
+      ],
+      "caption": "Quarter-over-quarter comparison"
+    }
+  ],
+  "slides": [
+    {
+      "layout": "title",
+      "title": "Q2 2026 Business Review",
+      "subtitle": "Northwind Analytics"
+    },
+    {
+      "layout": "section",
+      "title": "Performance",
+      "subtitle": "Revenue, retention, and efficiency"
+    },
+    {
+      "layout": "content",
+      "title": "Revenue grew 18% QoQ",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            { "text": "$4.2M total revenue, enterprise tier led growth" },
+            { "text": "Net revenue retention at 124%" },
+            { "text": [
+                { "text": "Analysts project segment to double by 2027", "cite": "meridian-2026" }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "info",
+          "text": "Full breakdown in the attached workbook."
+        }
+      ],
+      "notes": "Emphasize that growth came without increased ad spend. If asked about Q3, point to the pipeline slide in the appendix."
+    },
+    {
+      "layout": "two_column",
+      "title": "What worked vs. what we watch",
+      "blocks": [
+        { "type": "heading", "level": 3, "text": "Worked" },
+        {
+          "type": "bullets",
+          "items": [
+            { "text": "Self-serve onboarding" },
+            { "text": "Usage-based pricing" },
+            { "text": "EU data residency" }
+          ]
+        }
+      ],
+      "right": [
+        { "type": "heading", "level": 3, "text": "Watching" },
+        {
+          "type": "bullets",
+          "items": [
+            { "text": "Customer concentration (31% ARR)" },
+            { "text": "Infra cost growth" }
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "content",
+      "title": "Key metrics",
+      "blocks": [
+        {
+          "type": "table",
+          "header": ["Metric", "Q1", "Q2"],
+          "rows": [
+            ["Revenue", "$3.6M", "$4.2M"],
+            ["Margin", "71%", "74%"],
+            ["Churn", "1.4%", "1.1%"]
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "quote",
+      "title": null,
+      "blocks": [
+        {
+          "type": "quote",
+          "text": "Make usage pricing boring and predictable.",
+          "attribution": "Meridian Research"
+        }
+      ]
+    }
+  ],
+  "sheets": [
+    {
+      "name": "Revenue",
+      "columns": [
+        { "header": "Month", "width": 14 },
+        { "header": "Revenue", "width": 14, "format": "$#,##0" },
+        { "header": "Costs", "width": 14, "format": "$#,##0" },
+        { "header": "Margin", "width": 10, "format": "0.0%" }
+      ],
+      "rows": [
+        ["April", 1310000, 361000, { "formula": "=(B2-C2)/B2" }],
+        ["May", 1385000, 366000, { "formula": "=(B3-C3)/B3" }],
+        ["June", 1505000, 377000, { "formula": "=(B4-C4)/B4" }],
+        ["Total", { "formula": "=SUM(B2:B4)" }, { "formula": "=SUM(C2:C4)" }, { "formula": "=(B5-C5)/B5" }]
+      ]
+    },
+    {
+      "name": "Headcount",
+      "columns": [
+        { "header": "Team", "width": 18 },
+        { "header": "Q1", "width": 8 },
+        { "header": "Q2", "width": 8 }
+      ],
+      "rows": [
+        ["Engineering", 26, 29],
+        ["Sales", 14, 16],
+        ["Support", 9, 10],
+        ["G&A", 9, 9]
+      ]
+    }
+  ],
+  "sources": [
+    {
+      "id": "meridian-2026",
+      "title": "State of SaaS 2026",
+      "publisher": "Meridian Research",
+      "date": "2026-05-14",
+      "url": "https://example.com/meridian/state-of-saas-2026"
+    },
+    {
+      "id": "saas-benchmarks",
+      "title": "B2B SaaS Retention Benchmarks",
+      "publisher": "OpenComps",
+      "date": "2026-03-02",
+      "url": "https://example.com/opencomps/retention-2026"
+    }
+  ]
+}

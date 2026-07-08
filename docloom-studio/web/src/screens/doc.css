@@ -1,0 +1,34 @@
+/* Document editor: a paper column. Blocks flow with a drag handle. */
+
+.doc-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  position: relative;
+}
+.doc-grip {
+  opacity: 0;
+  cursor: grab;
+  color: var(--muted);
+  padding-top: 4px;
+  margin-left: -26px;
+  transition: opacity 0.15s;
+}
+.doc-block:hover .doc-grip {
+  opacity: 0.6;
+}
+.doc-block .editable-del {
+  left: -48px;
+}
+/* document blocks read a touch larger/tighter than slide blocks */
+.doc-block .blk-para {
+  font-size: 17px;
+  line-height: 1.65;
+}
+.doc-block .blk-li {
+  font-size: 17px;
+}
+.doc-block .blk-heading.lvl-2 {
+  font-size: 22px;
+  margin-top: 8px;
+}
