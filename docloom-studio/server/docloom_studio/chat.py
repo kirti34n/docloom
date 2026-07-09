@@ -62,7 +62,15 @@ async def stream_chat(notebook_id: str, message: str) -> AsyncIterator[str]:
     turn and the final answer (with its evidence) are persisted so the
     conversation survives reload."""
     _save_message(notebook_id, "user", message, [])
-    chunks = await retrieve(notebook_id, message, k=12)
+    try:
+        chunks = await retrieve(notebook_id, message, k=12)
+    except Exception as e:
+        err = f"[error: {e}]"
+        yield json.dumps({"type": "evidence", "items": []}) + "\n"
+        yield json.dumps({"type": "token", "text": err}) + "\n"
+        yield json.dumps({"type": "done"}) + "\n"
+        _save_message(notebook_id, "assistant", err, [])
+        return
     evidence = _evidence_items(chunks)
     yield json.dumps({"type": "evidence", "items": evidence}) + "\n"
 

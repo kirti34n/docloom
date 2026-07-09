@@ -149,20 +149,26 @@ async def export_artifact(
     if errors:
         raise HTTPException(422, detail={"findings": errors})
     filename = f"{slug(doc.title)}-v{row['version']}{FORMATS[body.format][1]}"
-    out = data_dir() / "exports" / filename
+    export_dir = data_dir() / "exports" / artifact_id
+    export_dir.mkdir(parents=True, exist_ok=True)
+    out = export_dir / filename
     try:
         render(doc, body.format, out, theme)
     except RenderError as e:
         raise HTTPException(422, str(e))
-    return {"url": f"/api/exports/{filename}", "filename": filename}
+    return {"url": f"/api/artifacts/{artifact_id}/exports/{filename}", "filename": filename}
 
 
-@router.get("/exports/{filename}")
+@router.get("/artifacts/{artifact_id}/exports/{filename}")
 async def download_export(
-    filename: str, user: dict = Depends(current_user)
+    artifact_id: str, filename: str, user: dict = Depends(current_user)
 ) -> FileResponse:
-    path = (data_dir() / "exports" / filename).resolve()
-    if not path.is_file() or path.parent != (data_dir() / "exports").resolve():
+    # Scoped per artifact (not a shared filename namespace) so exports cannot
+    # collide with, or be downloaded by, a different artifact's owner.
+    require_artifact(user["id"], artifact_id)
+    export_dir = (data_dir() / "exports" / artifact_id).resolve()
+    path = (export_dir / filename).resolve()
+    if not path.is_file() or path.parent != export_dir:
         raise HTTPException(404, "export not found")
     return FileResponse(path, filename=filename)
 
@@ -218,14 +224,21 @@ async def save_renders(
 ) -> dict:
     """Persist browser-rendered SVG/PNG for an artifact (diagram/infographic)."""
     import base64
+    import binascii
 
     require_artifact(user["id"], artifact_id)
+    png_bytes = None
+    if body.png_base64:
+        try:
+            png_bytes = base64.b64decode(body.png_base64, validate=True)
+        except (binascii.Error, ValueError) as e:
+            raise HTTPException(400, f"invalid png_base64: {e}")
     adir = data_dir() / "artifacts" / artifact_id
     adir.mkdir(parents=True, exist_ok=True)
     if body.svg:
         (adir / "render.svg").write_text(body.svg, encoding="utf-8")
-    if body.png_base64:
-        (adir / "render.png").write_bytes(base64.b64decode(body.png_base64))
+    if png_bytes is not None:
+        (adir / "render.png").write_bytes(png_bytes)
     return {"ok": True}
 
 

@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from fastapi import HTTPException
+
 from docloom import Document, Theme, ensure_ids
 
 from .settings import data_dir
@@ -36,6 +38,8 @@ def to_docloom_theme(theme_json: dict[str, Any]) -> Theme:
 
 
 def load_document(payload: dict[str, Any]) -> Document:
+    if "ir" not in payload:
+        raise HTTPException(400, "artifact payload has no document IR, not exportable or not ready yet")
     return ensure_ids(Document.model_validate(payload["ir"]))
 
 

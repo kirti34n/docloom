@@ -93,6 +93,10 @@ async def complete(
     """One completion, returning the text content."""
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         if cfg.kind == "anthropic":
+            # temperature is intentionally not forwarded here: current-generation
+            # Anthropic models reject the parameter (HTTP 400) on /v1/messages, so
+            # every anthropic call runs at the API default and generate_validated's
+            # per-round temperature escalation is a no-op for this provider.
             body: dict[str, Any] = {
                 "model": cfg.model,
                 "max_tokens": max_tokens,
@@ -132,7 +136,7 @@ async def complete(
             }
             if schema is not None:
                 body["format"] = schema
-            r = await client.post(cfg.base_url + "/api/chat", json=body)
+            r = await client.post(cfg.base_url.rstrip("/") + "/api/chat", json=body)
             _raise_for_status(r)
             return r.json()["message"]["content"]
 
@@ -171,7 +175,7 @@ async def stream_text(
                 "stream": True,
                 "options": {"num_ctx": 16384, "temperature": temperature},
             }
-            async with client.stream("POST", cfg.base_url + "/api/chat", json=body) as r:
+            async with client.stream("POST", cfg.base_url.rstrip("/") + "/api/chat", json=body) as r:
                 _raise_for_status(r)
                 async for line in r.aiter_lines():
                     if not line.strip():
@@ -215,7 +219,7 @@ async def embed(cfg: ProviderConfig, texts: list[str]) -> np.ndarray:
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         if cfg.kind == "ollama":
             r = await client.post(
-                cfg.base_url + "/api/embed",
+                cfg.base_url.rstrip("/") + "/api/embed",
                 json={"model": cfg.model, "input": texts},
             )
             _raise_for_status(r)
@@ -233,7 +237,7 @@ async def embed(cfg: ProviderConfig, texts: list[str]) -> np.ndarray:
 async def list_models(cfg: ProviderConfig) -> list[str]:
     async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
         if cfg.kind == "ollama":
-            r = await client.get(cfg.base_url + "/api/tags")
+            r = await client.get(cfg.base_url.rstrip("/") + "/api/tags")
             _raise_for_status(r)
             return [m["name"] for m in r.json().get("models", [])]
         if cfg.kind == "anthropic":

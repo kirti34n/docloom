@@ -3,6 +3,7 @@ workbook via xlsxwriter, with theme-driven header/body formatting."""
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import xlsxwriter
@@ -25,6 +26,19 @@ from ..ir import (
 from ..theme import Theme
 
 _FORBIDDEN = set("[]:*?/\\")
+_XLS_STRMAX = 32767  # Excel's per-cell character limit
+
+
+def _write_str(ws, row: int, col: int, text: str, fmt) -> None:
+    # write_string silently truncates past _XLS_STRMAX (returns -2, no
+    # exception): warn here so callers get a signal instead of lost text.
+    if len(text) > _XLS_STRMAX:
+        warnings.warn(
+            f"cell text truncated to {_XLS_STRMAX} characters (Excel's limit)",
+            stacklevel=2,
+        )
+        text = text[:_XLS_STRMAX]
+    ws.write_string(row, col, text, fmt)
 
 
 def _sheet_name(raw: str, used: set[str]) -> str:
@@ -130,7 +144,7 @@ def render(doc: Document, theme: Theme, out_path: Path) -> Path:
             )
             col_fmts.append(fmt)
             ws.set_column(c, c, col.width if col.width is not None else 12, fmt)
-            ws.write_string(0, c, col.header, header_fmt)
+            _write_str(ws, 0, c, col.header, header_fmt)
         ws.set_row(0, 20)
         ws.freeze_panes(1, 0)
         ws.autofilter(0, 0, len(sheet.rows), ncols - 1)
@@ -147,7 +161,7 @@ def render(doc: Document, theme: Theme, out_path: Path) -> Path:
                 elif isinstance(cell, bool):
                     ws.write_boolean(r, c, cell, fmt)
                 elif isinstance(cell, str):
-                    ws.write_string(r, c, cell, fmt)
+                    _write_str(ws, r, c, cell, fmt)
                 else:
                     try:
                         ws.write_number(r, c, cell, fmt)

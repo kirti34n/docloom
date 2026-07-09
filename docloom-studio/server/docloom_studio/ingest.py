@@ -19,7 +19,7 @@ from .settings import data_dir
 # control chars (minus tab/newline/CR), zero-width chars, bidi overrides, BOM
 _UNSAFE = re.compile(
     "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f"
-    "​-‏‪-‮⁦-⁩﻿]"
+    "​‎-‏‪-‮⁦-⁩﻿]"
 )
 
 CHUNK_CHARS = 1000
@@ -27,7 +27,7 @@ CHUNK_OVERLAP = 150
 
 
 def sanitize(text: str) -> str:
-    return _UNSAFE.sub("", text).replace("\r\n", "\n")
+    return _UNSAFE.sub("", text).replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _source_dir(source_id: str) -> Path:
@@ -59,10 +59,18 @@ def parse_pdf(path: Path) -> list[tuple[int, str]]:
 
 
 def parse_docx(path: Path) -> str:
+    """Extract paragraph text plus any table content (tables are not part of
+    doc.paragraphs in python-docx and would otherwise be silently dropped)."""
     import docx
 
     doc = docx.Document(str(path))
-    return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    parts = [p.text for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells]
+            if any(cells):
+                parts.append(" | ".join(cells))
+    return "\n\n".join(parts)
 
 
 def parse_pptx(path: Path) -> str:
@@ -133,6 +141,7 @@ def parse_csv(text: str) -> str:
     import csv
     import io
 
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     sample = text[:4096]
     try:
         dialect = csv.Sniffer().sniff(sample) if sample.strip() else csv.excel
@@ -244,6 +253,21 @@ def chunk_text(text: str, source_id: str, page: int | None = None) -> list[dict]
         # a short title-case line is treated as a section heading
         if len(para) < 80 and "\n" not in para and para[:1].isupper():
             section = para
+        # a paragraph longer than a whole chunk is windowed on its own so it
+        # is never emitted as one oversized chunk
+        if len(para) > CHUNK_CHARS:
+            if buf:
+                chunks.append({"text": buf.strip(), "section": section, "page": page})
+                buf = ""
+            start = 0
+            while start < len(para):
+                piece = para[start : start + CHUNK_CHARS].strip()
+                if piece:  # an all-whitespace window must not become an empty chunk
+                    chunks.append({"text": piece, "section": section, "page": page})
+                if start + CHUNK_CHARS >= len(para):
+                    break  # this window reached the end; no redundant tail window
+                start += CHUNK_CHARS - CHUNK_OVERLAP
+            continue
         if len(buf) + len(para) + 2 > CHUNK_CHARS and buf:
             chunks.append({"text": buf.strip(), "section": section, "page": page})
             buf = buf[-CHUNK_OVERLAP:] + "\n\n" + para

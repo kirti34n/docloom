@@ -405,9 +405,13 @@ def _chart_data(b: Chart):
     n = max(len(b.labels), max((len(s.values) for s in b.series), default=0))
     if n == 0 or not b.series:
         raise ValueError("empty chart data")
+    if b.chart == "pie" and len(b.series) > 1:
+        # a native pie can only carry one series; raise so the caller falls
+        # back to a data table instead of silently dropping the rest
+        raise ValueError("pie chart supports only a single series")
     data = CategoryChartData()
     data.categories = (list(b.labels) + [""] * n)[:n]
-    for s in b.series[:1] if b.chart == "pie" else b.series:
+    for s in b.series:
         # pad ragged series with None (blank points); pptx accepts None values
         data.add_series(s.name or "", (list(s.values) + [None] * n)[:n])
     return data
@@ -459,12 +463,15 @@ def _chart_block(slide, b: Chart, theme, numbers, x, y, w, max_h) -> float:
         # fallback chain: pre-rendered image if present and embeddable, else a data table
         if b.path and Path(b.path).is_file():
             try:
-                return _image_block(
+                h = _image_block(
                     slide, Image(path=b.path, alt=b.title or "", caption=b.caption),
                     theme, x, y, w, max_h,
                 )
             except Exception:
-                pass  # unembeddable (e.g. SVG) or unreadable: fall through to the table
+                h = 0.0  # unreadable: fall through to the table
+            if h > 0.0:
+                return h
+            # unembeddable (e.g. SVG, _image_block returned 0.0): fall through to the table
         return _table_block(slide, _chart_table(b), theme, numbers, x, y, w, max_h)
     if b.caption and h + 0.26 <= max_h:
         tf = _box(slide, x, y + h + 0.04, w, 0.22)
@@ -477,7 +484,7 @@ def _chart_block(slide, b: Chart, theme, numbers, x, y, w, max_h) -> float:
 
 
 def _stats_block(slide, b: StatRow, theme, x, y, w, max_h) -> float:
-    items = b.items[: LAYOUT["stat_max_cards"]]  # extras dropped; lint budgets it
+    items = b.items[: LAYOUT["stat_max_cards"]]  # extras dropped: more cards than this don't fit legibly on one row
     if not items:
         return 0.0
     gap = LAYOUT["stat_gap_in"]

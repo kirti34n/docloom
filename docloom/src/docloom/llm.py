@@ -40,20 +40,35 @@ _TYPE_ALIASES = {
 }
 
 
-def _normalize_types(node: Any, path: str, problems: list[str]) -> None:
+# only "blocks" and "right" ever hold Block union members (the IR is
+# deliberately non-recursive), so only dicts reached through those keys
+# carry a meaningful block "type" tag. Checking every dict, including the
+# document root or a slide, would flag harmless extra tags Pydantic itself
+# ignores (extra="ignore" is the default), e.g. {"type": "document", ...}.
+# keys whose value holds a type-tagged Block/Image node: the block lists
+# (blocks/right) plus the standalone Image slots (Slide.image, Document.logo)
+_BLOCK_LIST_KEYS = {"blocks", "right", "image", "logo"}
+
+
+def _normalize_types(
+    node: Any, path: str, problems: list[str], in_blocks: bool = False
+) -> None:
     if isinstance(node, dict):
-        tag = node.get("type")
-        if isinstance(tag, str) and tag not in _VALID_TYPES:
-            alias = _TYPE_ALIASES.get(tag.strip().lower().replace("-", "_"))
-            if alias:
-                node["type"] = alias
-            else:
-                problems.append(f'{path}: unknown block type "{tag}"')
+        if in_blocks:
+            tag = node.get("type")
+            if isinstance(tag, str) and tag not in _VALID_TYPES:
+                alias = _TYPE_ALIASES.get(tag.strip().lower().replace("-", "_"))
+                if alias:
+                    node["type"] = alias
+                else:
+                    problems.append(f'{path}: unknown block type "{tag}"')
         for key, value in node.items():
-            _normalize_types(value, f"{path}.{key}", problems)
+            _normalize_types(
+                value, f"{path}.{key}", problems, key in _BLOCK_LIST_KEYS
+            )
     elif isinstance(node, list):
         for i, value in enumerate(node):
-            _normalize_types(value, f"{path}[{i}]", problems)
+            _normalize_types(value, f"{path}[{i}]", problems, in_blocks)
 
 
 def parse_llm_output(text: str, model: type[BaseModel] = Document) -> Any:

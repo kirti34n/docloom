@@ -13,6 +13,7 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from PIL import Image as PILImage
 
@@ -47,6 +48,17 @@ from . import RenderError
 _FALLBACK_FONT = "Libertinus Serif"
 _MARKUP_SPECIALS = "\\#$%&_*@<>[]~`/=+-"
 _HEADING_SIZES = {1: "17pt", 2: "14pt", 3: "12.5pt", 4: "11pt"}
+_SAFE_SCHEMES = {"http", "https", "mailto"}
+
+
+def _safe_link(url: str) -> str | None:
+    """None if the scheme is not on the allow-list (matches html.py), so
+    javascript:/file:/custom-scheme links do not reach PDF link actions."""
+    try:
+        scheme = urlsplit(url).scheme.lower()
+    except ValueError:
+        return None
+    return url if scheme in _SAFE_SCHEMES else None
 
 
 def _esc(text: str) -> str:
@@ -57,6 +69,16 @@ def _esc(text: str) -> str:
     escaped = "".join("\\" + c if c in _MARKUP_SPECIALS else c for c in text)
     # "1. foo" at line start would parse as a numbered-list item: escape the dot
     return re.sub(r"^(\s*\d+)\.", r"\1\\.", escaped)
+
+
+_ENUM_MARKER_RE = re.compile(r"^(\s*\d+)\.")
+
+
+def _guard_line_start(text: str) -> str:
+    """Escape a numbered-list marker that only appears after concatenating
+    a Paragraph's spans (e.g. Span("1") + Span(". Buy milk")); _esc only
+    sees each span in isolation so it cannot catch a marker split like that."""
+    return _ENUM_MARKER_RE.sub(r"\1\\.", text)
 
 
 def _str(text: str) -> str:
@@ -83,9 +105,13 @@ def _embeddable(path: Path) -> bool:
     if path.suffix.lower() == ".svg":
         try:
             with path.open("rb") as fh:
-                return fh.read(256).lstrip().startswith(b"<")
+                head = fh.read(2048)
         except OSError:
             return False
+        # a bare "<" also matches XML/HTML-ish files that Typst's SVG parser
+        # rejects (e.g. "failed to parse SVG: missing root node"); require an
+        # actual <svg tag instead.
+        return b"<svg" in head.lower()
     try:
         with PILImage.open(path) as img:
             fmt = (img.format or "").upper()
@@ -122,15 +148,16 @@ def _rich(rt: RichText, numbers: dict[str, int], cell_link_color: str | None = N
         if sp.italic:
             piece = f"#emph[{piece}]"
         if sp.link:
-            if cell_link_color:
+            href = _safe_link(sp.link)
+            if href and cell_link_color:
                 # ponytail: typst 0.15.0 panics ("expected link ancestor in
                 # logical tree") when a styled link wraps across lines inside
                 # a table cell, so cell links render as colored text without
                 # #link — cells lose clickability until that upstream typst
                 # bug is fixed.
                 piece = f'#text(fill: rgb("{cell_link_color}"))[{piece}]'
-            else:
-                piece = f"#link({_str(sp.link)})[{piece}]"
+            elif href:
+                piece = f"#link({_str(href)})[{piece}]"
         if sp.cite and sp.cite in numbers:
             piece += f"#super[{numbers[sp.cite]}]"
         parts.append(piece)
@@ -183,7 +210,7 @@ def _block(b: Block, theme: Theme, numbers: dict[str, int]) -> list[str]:
     if isinstance(b, Heading):
         return ["=" * b.level + " " + _rich(b.text, numbers)]
     if isinstance(b, Paragraph):
-        return [_rich(b.text, numbers)]
+        return [_guard_line_start(_rich(b.text, numbers))]
     if isinstance(b, (BulletList, NumberedList)):
         marker = "-" if isinstance(b, BulletList) else "+"
         return [
@@ -328,19 +355,33 @@ def to_typst(doc: Document, theme: Theme) -> str:
             lines += ["", f"#heading(level: 2)[{_esc(sheet.name)}]", ""] + _table(tbl, theme, {})
     if doc.sources and cited_ids(doc):
         lines += ["", "= Sources", ""]
+        seen_ids: set[str] = set()
         for src in doc.sources:
+            # duplicate ids keep the first number (matches source_numbers, ir.py);
+            # listing every entry here would desync Typst's auto-numbered "+"
+            # markers from the citation superscripts, which use source_numbers.
+            if src.id in seen_ids:
+                continue
+            seen_ids.add(src.id)
             entry = _esc(src.title)
             if src.publisher:
                 entry += ", " + _esc(src.publisher)
             if src.date:
                 entry += f" ({_esc(src.date)})"
             if src.url:
-                entry += f", #link({_str(src.url)})[{_esc(src.url)}]"
+                href = _safe_link(src.url)
+                if href:
+                    entry += f", #link({_str(href)})[{_esc(src.url)}]"
+                else:
+                    entry += f", {_esc(src.url)}"
             lines.append("+ " + entry)
     return "\n".join(lines) + "\n"
 
 
-_FONT_EXTS = (".ttf", ".otf", ".woff2", ".woff", ".ttc")
+# Typst's font loader only parses TTF/OTF/TTC; WOFF/WOFF2 containers compile
+# without error but silently fall back to the default font, so they are not
+# offered here (unlike html.py, which can use them directly via @font-face).
+_FONT_EXTS = (".ttf", ".otf", ".ttc")
 
 
 def _copy_fonts(theme: Theme, tmp_dir: Path) -> list[str]:
@@ -371,13 +412,19 @@ def _inject_logo(source: str, doc: Document, tmp_dir: Path) -> str:
         local = "logo" + p.suffix
         try:
             shutil.copy(p, tmp_dir / local)
+            # count=1: the placeholder line is always emitted first, before any
+            # body content, so the first occurrence is the genuine one. A count
+            # limit stops this from also rewriting the same literal text if it
+            # appears inside user content (e.g. a Code block quoting docloom's
+            # own output) further down in the source.
             return source.replace(
                 "// __DOCLOOM_LOGO__",
                 f"#align(right)[#image({_str(local)}, height: 1.4cm)]",
+                1,
             )
         except OSError:
             pass
-    return source.replace("// __DOCLOOM_LOGO__", "")
+    return source.replace("// __DOCLOOM_LOGO__", "", 1)
 
 
 def render(doc: Document, theme: Theme, out_path: Path) -> Path:
@@ -398,7 +445,12 @@ def render(doc: Document, theme: Theme, out_path: Path) -> Path:
             and Path(b.path).is_file()
             and _embeddable(Path(b.path))
         }
-        for i, path in enumerate(sorted(images)):
+        # Longest path first: the absolute-path marker "// docloom-image: <path>"
+        # has no terminator, so if one path string is a prefix of another,
+        # replacing the shorter one first would also corrupt the longer one's
+        # still-unreplaced marker line. Replacing longest-first means a marker
+        # is always fully substituted before any shorter path can match inside it.
+        for i, path in enumerate(sorted(images, key=len, reverse=True)):
             p = Path(path)
             local = f"img{i}{p.suffix}"
             ref = (

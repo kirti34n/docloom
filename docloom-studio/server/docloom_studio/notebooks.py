@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import shutil
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from .auth import current_user, require_notebook, user_owns_workspace
 from .db import execute, new_id, now, query_all, query_one, rows_to_dicts
+from .settings import data_dir
 
 router = APIRouter(prefix="/api/notebooks", tags=["notebooks"])
 
@@ -78,6 +81,8 @@ async def delete_notebook(
     notebook_id: str, user: dict = Depends(current_user)
 ) -> dict:
     require_notebook(user["id"], notebook_id)
+    source_ids = [r["id"] for r in query_all(
+        "SELECT id FROM sources WHERE notebook_id = ?", (notebook_id,))]
     execute("DELETE FROM artifact_versions WHERE artifact_id IN "
             "(SELECT id FROM artifacts WHERE notebook_id = ?)", (notebook_id,))
     execute("DELETE FROM artifacts WHERE notebook_id = ?", (notebook_id,))
@@ -86,4 +91,8 @@ async def delete_notebook(
     # delete fails unless these are removed first
     execute("DELETE FROM chat_messages WHERE notebook_id = ?", (notebook_id,))
     execute("DELETE FROM notebooks WHERE id = ?", (notebook_id,))
+    for sid in source_ids:
+        d = data_dir() / "sources" / sid
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
     return {"ok": True}

@@ -18,9 +18,12 @@ from typing import Annotated, Literal, Union
 
 from pydantic import AfterValidator, BaseModel, Field
 
-# C0 control characters (minus \t \n \r) are forbidden in OOXML and corrupt
-# or crash every office renderer, so they are stripped at the IR boundary.
-_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# C0 control characters (minus \t \n \r), lone UTF-16 surrogates, and the
+# U+FFFE/U+FFFF noncharacters are forbidden in OOXML/XML and crash or corrupt
+# every renderer, so they are stripped at the IR boundary.
+_CTRL = re.compile(
+    "[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f\\ud800-\\udfff" + chr(0xFFFE) + chr(0xFFFF) + "]"
+)
 
 SafeStr = Annotated[str, AfterValidator(lambda v: _CTRL.sub("", v))]
 
@@ -371,7 +374,7 @@ def cited_ids(doc: Document) -> set[str]:
 
     def walk_rt(rt: RichText) -> None:
         for sp in spans(rt):
-            if sp.cite:
+            if sp.cite is not None:
                 ids.add(sp.cite)
 
     def walk_blocks(blocks: list[Block]) -> None:

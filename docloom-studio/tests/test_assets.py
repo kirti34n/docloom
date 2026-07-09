@@ -196,7 +196,7 @@ def test_export_stamps_brand_logo_on_document(monkeypatch):
                                 "theme_name": "slate"})
     res = asyncio.run(export_artifact(aid, ExportRequest(format="pptx"),
                                       user={"id": u}))
-    out = data_dir() / "exports" / res["filename"]
+    out = data_dir() / "exports" / aid / res["filename"]
     assert out.is_file()
     # the content slide carries the stamped logo picture
     from pptx import Presentation

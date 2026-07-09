@@ -97,3 +97,32 @@ def test_unreadable_image_does_not_crash_html(tmp_path):
     d.mkdir()
     doc = Document(title="t", blocks=[{"type": "image", "path": str(d), "alt": "x"}])
     render(doc, "html", tmp_path / "u.html")
+
+
+def test_llm_normalizes_standalone_image_and_logo_slots():
+    # Slide.image and Document.logo hold Image, so a misnamed tag there must
+    # still normalize (they are not inside a blocks/right list)
+    import json
+    from docloom import parse_llm_output
+    d = parse_llm_output(json.dumps({"title": "T", "slides": [
+        {"layout": "hero", "image": {"type": "img", "query": "a cat"}}]}))
+    assert d.slides[0].image is not None
+    d = parse_llm_output(json.dumps({
+        "title": "T", "logo": {"type": "picture", "path": "l.png"}, "blocks": []}))
+    assert d.logo is not None
+
+
+def test_lint_locates_right_column_blocks():
+    from docloom import lint
+    doc = Document.model_validate({"title": "T", "slides": [{"layout": "two_column",
+        "title": "x", "blocks": [{"type": "paragraph", "text": "hi"}],
+        "right": [{"type": "table", "header": ["a", "b", "c"], "rows": [["1"]]}]}]})
+    locs = [f.where for f in lint(doc) if f.rule.startswith("table")]
+    assert any(".right[0]" in w for w in locs)
+    assert not any(".blocks[1]" in w for w in locs)
+
+
+def test_markdown_escapes_indented_line_markers():
+    from docloom.render.markdown import _esc_md
+    assert "\\#" in _esc_md("    # not a heading")   # 4-space indent, once inert
+    assert _esc_md("# heading").startswith("\\#")

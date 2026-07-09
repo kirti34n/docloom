@@ -196,11 +196,24 @@ def _connect_sqlite() -> sqlite3.Connection:
 
 
 def _init_sqlite() -> None:
+    # executescript() implicitly commits before running and runs DDL in
+    # autocommit mode, so a crash or a failing statement mid-script would
+    # leave a partial schema applied while user_version still names the
+    # prior version. Splitting the script and wrapping it in one explicit
+    # transaction makes each migration atomic: all its statements and the
+    # version bump land together, or none do.
     with _connect_sqlite() as conn:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         for i, script in enumerate(MIGRATIONS[version:], start=version + 1):
-            conn.executescript(script)
-            conn.execute(f"PRAGMA user_version = {i}")
+            conn.execute("BEGIN")
+            try:
+                for stmt in _split_statements(script):
+                    conn.execute(stmt)
+                conn.execute(f"PRAGMA user_version = {i}")
+            except Exception:
+                conn.rollback()
+                raise
+            conn.commit()
 
 
 # --------------------------------------------------------------- Postgres

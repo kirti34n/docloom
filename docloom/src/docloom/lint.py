@@ -127,7 +127,7 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
     # two_column slides get half the width per column, so each column gets
     # half the character budget; other layouts get the full-width budget
     if slide.layout in ("hero", "image_left", "image_right"):
-        total = sum(_block_chars(b) for b in slide.blocks)
+        total = sum(_block_chars(b) for b in all_blocks)
         if total > MAX_SLIDE_CHARS // 2:
             out.append(Finding(
                 rule="deck/overflow", severity="error", where=where,
@@ -158,6 +158,46 @@ def _walk_images(blocks: list[Block]):
     for b in blocks:
         if isinstance(b, Image):
             yield b
+
+
+def _lint_block_refs(b: Block, where: str, out: list[Finding]) -> None:
+    if isinstance(b, Table):
+        widths = {len(b.header), *(len(r) for r in b.rows)}
+        if len(widths) > 1:
+            out.append(Finding(
+                rule="table/ragged", severity="warning", where=where,
+                message=f"header and rows have differing widths {sorted(widths)}; "
+                        "short rows are padded with blank cells",
+            ))
+    elif isinstance(b, Chart):
+        for s_ix, series in enumerate(b.series):
+            if len(series.values) != len(b.labels):
+                out.append(Finding(
+                    rule="chart/ragged-series", severity="error",
+                    where=f"{where}.series[{s_ix}]",
+                    message=f'series "{series.name}" has {len(series.values)} '
+                            f"values for {len(b.labels)} labels",
+                ))
+        if b.chart == "pie" and len(b.series) > 1:
+            out.append(Finding(
+                rule="chart/pie-multi-series", severity="warning", where=where,
+                message="pie chart has multiple series; the PPTX renderer keeps "
+                        "only the first series while other formats show all of "
+                        "them, so output would diverge across formats",
+            ))
+    elif isinstance(b, Artifact):
+        if not b.artifact_id:
+            out.append(Finding(
+                rule="artifact/unbound", severity="warning", where=where,
+                message="artifact block has no artifact_id; nothing to render",
+            ))
+        elif not b.path:
+            out.append(Finding(
+                rule="artifact/unrendered", severity="warning",
+                where=where,
+                message="artifact has no rendered file yet; export will "
+                        "skip it until a render is baked",
+            ))
 
 
 def lint(doc: Document, theme: Theme | None = None) -> list[Finding]:
@@ -200,41 +240,24 @@ def lint(doc: Document, theme: Theme | None = None) -> list[Finding]:
                 ))
             prev_level = b.level
 
-    # block-level rules across report blocks, slide blocks, and image slots
-    slide_blocks = [b for s in doc.slides for b in s.blocks + s.right]
+    # block-level rules across report blocks, slide blocks, and image slots.
+    # Each source is walked with its own index so `where` points at a real
+    # location instead of an offset into a combined list.
+    for i, b in enumerate(doc.blocks):
+        _lint_block_refs(b, f"blocks[{i}]", out)
+    slide_blocks: list[Block] = []
+    for si, s in enumerate(doc.slides):
+        slide_blocks.extend(s.blocks)
+        slide_blocks.extend(s.right)
+        # walk each column with its own index so `where` points at the real
+        # location (a right-column block is at .right[i], not .blocks[i])
+        for bi, b in enumerate(s.blocks):
+            _lint_block_refs(b, f"slides[{si}].blocks[{bi}]", out)
+        for ri, b in enumerate(s.right):
+            _lint_block_refs(b, f"slides[{si}].right[{ri}]", out)
     slot_images = [s.image for s in doc.slides if s.image is not None]
-    every_block = doc.blocks + slide_blocks + slot_images
-    for i, b in enumerate(every_block):
-        if isinstance(b, Table):
-            widths = {len(b.header), *(len(r) for r in b.rows)}
-            if len(widths) > 1:
-                out.append(Finding(
-                    rule="table/ragged", severity="warning", where=f"tables[{i}]",
-                    message=f"header and rows have differing widths {sorted(widths)}; "
-                            "short rows are padded with blank cells",
-                ))
-        elif isinstance(b, Chart):
-            for s_ix, series in enumerate(b.series):
-                if len(series.values) != len(b.labels):
-                    out.append(Finding(
-                        rule="chart/ragged-series", severity="error",
-                        where=f"blocks[{i}].series[{s_ix}]",
-                        message=f'series "{series.name}" has {len(series.values)} '
-                                f"values for {len(b.labels)} labels",
-                    ))
-        elif isinstance(b, Artifact):
-            if not b.artifact_id:
-                out.append(Finding(
-                    rule="artifact/unbound", severity="warning", where=f"blocks[{i}]",
-                    message="artifact block has no artifact_id; nothing to render",
-                ))
-            elif not b.path:
-                out.append(Finding(
-                    rule="artifact/unrendered", severity="warning",
-                    where=f"blocks[{i}]",
-                    message="artifact has no rendered file yet; export will "
-                            "skip it until a render is baked",
-                ))
+    logo_images = [doc.logo] if doc.logo is not None else []
+    every_block = doc.blocks + slide_blocks + slot_images + logo_images
 
     # image slots resolve to something; files that are named must exist
     for img in _walk_images(every_block):

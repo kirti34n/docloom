@@ -333,17 +333,18 @@ def _cell_html(cell: Cell) -> str:
 
 
 def _sheet_html(sheet: Sheet) -> str:
+    header, rows = normalize_table(
+        [c.header for c in sheet.columns], [list(row) for row in sheet.rows]
+    )
     parts = [
         f"<h3>{_esc(sheet.name)}</h3>",
         '<div class="table-wrap"><table><thead><tr>',
     ]
-    parts.extend(f"<th>{_esc(c.header)}</th>" for c in sheet.columns)
+    parts.extend(f"<th>{_esc(h)}</th>" for h in header)
     parts.append("</tr></thead><tbody>")
-    ncols = len(sheet.columns)
-    for row in sheet.rows:
-        cells = list(row[:ncols]) + [None] * (ncols - len(row))  # align to header
+    for row in rows:
         parts.append(
-            "<tr>" + "".join(f"<td>{_cell_html(c)}</td>" for c in cells) + "</tr>"
+            "<tr>" + "".join(f"<td>{_cell_html(c)}</td>" for c in row) + "</tr>"
         )
     parts.append("</tbody></table></div>")
     return "".join(parts)

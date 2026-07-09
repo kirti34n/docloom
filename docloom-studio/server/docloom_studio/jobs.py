@@ -188,10 +188,16 @@ async def sse_events(job_id: str) -> AsyncIterator[str]:
 
     queue: asyncio.Queue = asyncio.Queue()
     job.queues.append(queue)
+    # Snapshot "was it running" at subscribe time, not after replay: the
+    # replay loop below can suspend on send, letting the job finish mid
+    # replay. If we re-check job.status after replay we might see a
+    # terminal status and bail out without draining the queue, dropping
+    # the events (including the terminal one) that arrived during replay.
+    was_running = job.status == "running"
     try:
         for event in list(job.events):
             yield frame(event)
-        if job.status != "running":
+        if not was_running:
             return
         while True:
             event = await queue.get()

@@ -114,7 +114,7 @@ def test_export_pptx_from_artifact(monkeypatch, tmp_path):
 
     result = asyncio.run(export_artifact(aid, ExportRequest(format="pptx"), user=_owner(nb)))
     from docloom_studio.settings import data_dir
-    out = data_dir() / "exports" / result["filename"]
+    out = data_dir() / "exports" / aid / result["filename"]
     assert out.is_file()
     with zipfile.ZipFile(out) as z:
         assert "[Content_Types].xml" in z.namelist()
@@ -187,7 +187,7 @@ def test_doc_pipeline_assembles_blocks(monkeypatch, tmp_path):
     from docloom_studio.artifacts import export_artifact, ExportRequest
     r = asyncio.run(export_artifact(aid, ExportRequest(format="docx"), user=_owner(nb)))
     from docloom_studio.settings import data_dir
-    assert (data_dir() / "exports" / r["filename"]).is_file()
+    assert (data_dir() / "exports" / aid / r["filename"]).is_file()
 
 
 def test_sheet_pipeline_assembles_and_exports(monkeypatch):
@@ -210,7 +210,7 @@ def test_sheet_pipeline_assembles_and_exports(monkeypatch):
     import zipfile
     r = asyncio.run(export_artifact(aid, ExportRequest(format="xlsx"), user=_owner(nb)))
     from docloom_studio.settings import data_dir
-    out = data_dir() / "exports" / r["filename"]
+    out = data_dir() / "exports" / aid / r["filename"]
     with zipfile.ZipFile(out) as z:
         assert "xl/workbook.xml" in z.namelist()
 

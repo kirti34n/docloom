@@ -46,7 +46,13 @@ def render(
         raise RenderError(f"unknown format {fmt!r}; expected one of {sorted(FORMATS)}")
     module_name, ext = FORMATS[fmt]
     out = Path(out_path) if out_path else Path(slug(doc.title) + ext)
-    if out.is_dir():
+    # A trailing slash signals directory intent even if the directory does
+    # not exist yet, so out.is_dir() alone would miss it and write a file
+    # with no extension in the directory's place.
+    looks_like_dir = out.is_dir() or (
+        out_path is not None and str(out_path).endswith(("/", "\\"))
+    )
+    if looks_like_dir:
         out = out / (slug(doc.title) + ext)
     try:
         out.parent.mkdir(parents=True, exist_ok=True)

@@ -398,7 +398,11 @@ def _render_block(
 def _sources_section(docx_doc, doc: Document, theme: Theme) -> None:
     numbers = source_numbers(doc)
     docx_doc.add_paragraph("Sources", style="Heading 1")
+    seen: set[str] = set()
     for source in doc.sources:
+        if source.id in seen:  # duplicate id: numbers keeps the first, so skip the rest
+            continue
+        seen.add(source.id)
         par = docx_doc.add_paragraph()
         text = f"{numbers[source.id]}. {source.title}"
         if source.publisher:

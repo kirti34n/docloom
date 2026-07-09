@@ -49,9 +49,15 @@ def _longest_tick_run(text: str) -> int:
 def _esc_md(text: str) -> str:
     """Escape markdown specials in plain text (never applied to code)."""
     text = re.sub(r"[\\`*_\[\]<>|]", r"\\\g<0>", text)
-    # line-start constructs that would change structure: #, -, + and "1."
-    text = re.sub(r"^([#+-])", r"\\\1", text, flags=re.MULTILINE)
-    return re.sub(r"^(\d+)\.", r"\1\\.", text, flags=re.MULTILINE)
+    # collapse 4+ leading spaces first (they would be an indented code block),
+    # so a marker that ends up in the 0-3 space range below still gets escaped
+    text = re.sub(r"^ {4,}", "   ", text, flags=re.MULTILINE)
+    # line-start constructs, active with up to 3 leading spaces in GFM: #, -, +,
+    # ~ (fence), "1." / "1)" ordered markers, and a bare "=" run (setext heading)
+    text = re.sub(r"^( {0,3})([#+~-])", r"\1\\\2", text, flags=re.MULTILINE)
+    text = re.sub(r"^( {0,3})(\d+)([.)])", r"\1\2\\\3", text, flags=re.MULTILINE)
+    text = re.sub(r"^( {0,3})(=+)[ \t]*$", r"\1\\\2", text, flags=re.MULTILINE)
+    return text
 
 
 def _one_line(text: str) -> str:
@@ -60,6 +66,8 @@ def _one_line(text: str) -> str:
 
 
 def _code_span(text: str) -> str:
+    if not text:  # "``" alone is not a valid empty code span in CommonMark
+        return "` `"
     ticks = "`" * (_longest_tick_run(text) + 1)
     pad = " " if text.startswith("`") or text.endswith("`") else ""
     return f"{ticks}{pad}{text}{pad}{ticks}"
@@ -72,7 +80,14 @@ def _safe_dest(url: str) -> str | None:
         return None
     if scheme not in _SAFE_SCHEMES:
         return None
-    return url.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
+    return (
+        url.replace(" ", "%20")
+        .replace("(", "%28")
+        .replace(")", "%29")
+        .replace("\t", "%09")
+        .replace("\n", "%0A")
+        .replace("\r", "%0D")
+    )
 
 
 def _span_md(sp: Span, numbers: dict[str, int]) -> str:
@@ -122,7 +137,7 @@ def _image_md(path: str | None, alt: str, caption: str | None) -> str:
     if not path or not Path(path).is_file():
         return ""
     dest = f"<{path}>" if any(c in path for c in " ()") else path
-    alt = _one_line(alt).replace("]", "\\]")
+    alt = _one_line(alt).replace("[", "\\[").replace("]", "\\]")
     out = f"![{alt}]({dest})"
     if caption:
         out += f"\n\n*{_esc_md(_one_line(caption))}*"
