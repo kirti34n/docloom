@@ -24,6 +24,14 @@ function asString(rt: RichText): string {
   return typeof rt === 'string' ? rt : plain(rt)
 }
 
+/** Resolve a slide image (asset_id or asset:// path) to its served URL. */
+export function assetSrc(image?: Block | null): string | null {
+  if (!image) return null
+  if (image.asset_id) return `/api/assets/${image.asset_id}/file`
+  const m = (image.path ?? '').match(/^asset:\/\/(.+)$/)
+  return m ? `/api/assets/${m[1]}/file` : null
+}
+
 function AddBlock({ onAdd }: { onAdd: (type: string) => void }) {
   const [open, setOpen] = useState(false)
   return (
@@ -124,8 +132,16 @@ export function EditableSlide({ slideId }: { slideId: string }) {
       return (
         <div className="deck-stage" style={acc}>
           <div className={`image-pane ${side}`}>
-            <div className="slot-empty">{slide.image?.query
-              ? `image: ${slide.image.query}` : 'image slot'}</div>
+            {assetSrc(slide.image) ? (
+              <img
+                src={assetSrc(slide.image)!}
+                alt={slide.image?.alt ?? ''}
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
+            ) : (
+              <div className="slot-empty">{slide.image?.query
+                ? `image: ${slide.image.query}` : 'image slot'}</div>
+            )}
           </div>
           <div className="slot" style={{ top: 56, ...inset }}>
             <h2 className="blk-heading lvl-1">{titleField}</h2>

@@ -16,6 +16,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { Check, Download, GripVertical, Loader2, Plus, Redo2, Undo2 } from 'lucide-react'
 import { api } from '../api/client'
+import { toast } from '../ui/toast'
 import type { ArtifactT } from '../deck/types'
 import { themeVars } from '../deck/types'
 import { EditableBlock } from '../deck/EditableBlock'
@@ -101,7 +102,7 @@ export function DocEditor() {
       a.download = res.filename
       a.click()
     } catch (e) {
-      alert(`Export failed: ${e instanceof Error ? e.message : e}`)
+      toast.error(`Export failed: ${e instanceof Error ? e.message : e}`)
     } finally {
       setExporting(null)
     }

@@ -31,10 +31,25 @@ def _db():
 
 
 def _notebook() -> str:
+    """A notebook owned by a fresh user's workspace (route auth scoping needs it)."""
+    uid = new_id()
+    execute("INSERT INTO users (id, email, password_hash, created) VALUES (?, ?, ?, ?)",
+            (uid, f"{uid}@test.local", "x", now()))
+    wid = new_id()
+    execute("INSERT INTO workspaces (id, user_id, name, created) VALUES (?, ?, ?, ?)",
+            (wid, uid, "test-ws", now()))
     nb = new_id()
-    execute("INSERT INTO notebooks (id, name, created, updated) VALUES (?, ?, ?, ?)",
-            (nb, "test", now(), now()))
+    execute("INSERT INTO notebooks (id, name, workspace_id, created, updated) "
+            "VALUES (?, ?, ?, ?, ?)", (nb, "test", wid, now(), now()))
     return nb
+
+
+def _owner(notebook_id: str) -> dict:
+    """The {'id': user_id} that owns a notebook — for calling authed route handlers."""
+    row = query_one(
+        "SELECT w.user_id FROM notebooks n JOIN workspaces w ON w.id = n.workspace_id "
+        "WHERE n.id = ?", (notebook_id,))
+    return {"id": row["user_id"]}
 
 
 def test_deck_pipeline_assembles_and_saves(monkeypatch):
@@ -97,7 +112,7 @@ def test_export_pptx_from_artifact(monkeypatch, tmp_path):
     save_artifact(aid, "Deck", {"ir": doc.model_dump(exclude_none=True),
                                 "theme_name": "slate", "brand_kit_id": None})
 
-    result = asyncio.run(export_artifact(aid, ExportRequest(format="pptx")))
+    result = asyncio.run(export_artifact(aid, ExportRequest(format="pptx"), user=_owner(nb)))
     from docloom_studio.settings import data_dir
     out = data_dir() / "exports" / result["filename"]
     assert out.is_file()
@@ -141,7 +156,7 @@ def test_export_refuses_on_lint_errors():
     save_artifact(aid, "Bad", {"ir": doc.model_dump(exclude_none=True),
                                "theme_name": "paper"})
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(export_artifact(aid, ExportRequest(format="pptx")))
+        asyncio.run(export_artifact(aid, ExportRequest(format="pptx"), user=_owner(nb)))
     assert exc.value.status_code == 422
 
 
@@ -170,7 +185,7 @@ def test_doc_pipeline_assembles_blocks(monkeypatch, tmp_path):
     assert kinds.count("heading") == 2 and "paragraph" in kinds
     # exports to docx
     from docloom_studio.artifacts import export_artifact, ExportRequest
-    r = asyncio.run(export_artifact(aid, ExportRequest(format="docx")))
+    r = asyncio.run(export_artifact(aid, ExportRequest(format="docx"), user=_owner(nb)))
     from docloom_studio.settings import data_dir
     assert (data_dir() / "exports" / r["filename"]).is_file()
 
@@ -193,8 +208,38 @@ def test_sheet_pipeline_assembles_and_exports(monkeypatch):
 
     from docloom_studio.artifacts import export_artifact, ExportRequest
     import zipfile
-    r = asyncio.run(export_artifact(aid, ExportRequest(format="xlsx")))
+    r = asyncio.run(export_artifact(aid, ExportRequest(format="xlsx"), user=_owner(nb)))
     from docloom_studio.settings import data_dir
     out = data_dir() / "exports" / r["filename"]
     with zipfile.ZipFile(out) as z:
         assert "xl/workbook.xml" in z.namelist()
+
+
+def test_podcast_pipeline_generates_script(monkeypatch):
+    from docloom_studio.generate import (
+        PodcastScript, PodcastTurn, create_artifact, run_podcast_pipeline)
+
+    script = PodcastScript(title="Async Work", turns=[
+        PodcastTurn(speaker="A", text="Welcome to the show on async standups."),
+        PodcastTurn(speaker="B", text="They cut interruptions dramatically."),
+        PodcastTurn(speaker="A", text="How so?"),
+        PodcastTurn(speaker="B", text="No fixed meeting time to context-switch for."),
+        PodcastTurn(speaker="A", text="Makes sense."),
+        PodcastTurn(speaker="B", text="Write updates when it suits you."),
+    ])
+
+    async def fake_gv(cfg, messages, schema, parse, lint_fn=None, max_rounds=3,
+                      on_round=None):
+        return script
+
+    monkeypatch.setattr(gen, "generate_validated", fake_gv)
+    nb = _notebook()
+    aid = create_artifact(nb, "podcast")
+    asyncio.run(run_podcast_pipeline(FakeCtx(), nb, aid, "async standups"))
+
+    payload = json.loads(query_one(
+        "SELECT payload_json FROM artifacts WHERE id = ?", (aid,))["payload_json"])
+    assert payload["script"]["title"] == "Async Work"
+    assert len(payload["script"]["turns"]) == 6
+    # Kokoro isn't installed here -> audio is skipped, transcript still saved
+    assert payload["audio_path"] is None

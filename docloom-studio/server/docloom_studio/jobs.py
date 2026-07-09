@@ -1,20 +1,37 @@
 """In-process async jobs with SSE event streams.
 
-# ponytail: jobs die on restart; acceptable for minutes-long local work —
-# persisted queue only if that ever hurts.
+Jobs run in the event loop of the process that started them, so a restart
+loses the running task. `reconcile_jobs()` (called at startup) marks any job
+still flagged 'running' in the DB as 'failed' so the UI never hangs forever
+polling a zombie that no worker will ever finish.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import traceback
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from .db import execute, new_id, now, query_one
+from .db import execute, new_id, now, query_all, query_one
 
 _SENTINEL = {"stage": "__end__"}
+log = logging.getLogger("docloom_studio.jobs")
+
+# Bound concurrent job bodies so N simultaneous uploads/generations don't
+# stampede the model provider and the DB. Tune via env; work queues past it.
+_MAX_CONCURRENT = max(1, int(os.environ.get("DOCLOOM_MAX_CONCURRENT_JOBS", "4")))
+_sem: asyncio.Semaphore | None = None
+
+
+def _semaphore() -> asyncio.Semaphore:
+    global _sem
+    if _sem is None:  # created lazily so it binds to the running loop
+        _sem = asyncio.Semaphore(_MAX_CONCURRENT)
+    return _sem
 
 
 @dataclass
@@ -22,12 +39,53 @@ class Job:
     id: str
     kind: str
     status: str = "running"
+    seq: int = 0
     events: list[dict[str, Any]] = field(default_factory=list)
     queues: list[asyncio.Queue] = field(default_factory=list)
     task: asyncio.Task | None = None
 
 
 JOBS: dict[str, Job] = {}
+
+
+def _append_event(job_id: str, seq: int, stage: str, status: str,
+                  detail: str, data: Any) -> None:
+    execute(
+        "INSERT INTO job_events (job_id, seq, stage, status, detail, data_json, t) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (job_id, seq, stage, status, detail,
+         json.dumps(data) if data is not None else None, now()),
+    )
+
+
+def _events_for(job_id: str) -> list[dict[str, Any]]:
+    rows = query_all(
+        "SELECT stage, status, detail, data_json, t FROM job_events "
+        "WHERE job_id = ? ORDER BY seq", (job_id,))
+    return [{"stage": r["stage"], "status": r["status"], "detail": r["detail"],
+             "data": json.loads(r["data_json"]) if r["data_json"] else None,
+             "t": r["t"]} for r in rows]
+
+
+def reconcile_jobs() -> int:
+    """Fail-close jobs orphaned by a restart.
+
+    A job marked 'running' in the DB has no live task after the process that
+    owned it exits (in-process queue, not persisted). At startup we can only
+    have zombies, so mark every DB 'running' job 'failed' with a terminal
+    event. Returns how many were reconciled. Idempotent.
+    """
+    rows = query_all("SELECT id FROM jobs WHERE status = 'running'")
+    for row in rows:
+        nxt = query_one("SELECT COALESCE(MAX(seq), 0) AS m FROM job_events "
+                        "WHERE job_id = ?", (row["id"],))["m"] + 1
+        _append_event(row["id"], nxt, "job", "failed",
+                      "interrupted by server restart", None)
+        execute("UPDATE jobs SET status = 'failed', updated = ? WHERE id = ?",
+                (now(), row["id"]))
+    if rows:
+        log.warning("reconciled %d interrupted job(s) on startup", len(rows))
+    return len(rows)
 
 
 class JobCtx:
@@ -40,11 +98,12 @@ class JobCtx:
 
     def emit(self, stage: str, status: str = "running",
              detail: str = "", data: Any = None) -> None:
+        self._job.seq += 1
         event = {"stage": stage, "status": status, "detail": detail,
                  "data": data, "t": now()}
         self._job.events.append(event)
-        execute("UPDATE jobs SET events_json = ?, updated = ? WHERE id = ?",
-                (json.dumps(self._job.events), now(), self._job.id))
+        # append-only: one row per event, not a rewrite of the whole log
+        _append_event(self._job.id, self._job.seq, stage, status, detail, data)
         for q in list(self._job.queues):
             q.put_nowait(event)
 
@@ -63,18 +122,23 @@ def start_job(
         (job.id, kind, notebook_id, artifact_id, now(), now()),
     )
     ctx = JobCtx(job)
+    log.info("job %s start kind=%s notebook=%s", job.id, kind, notebook_id)
 
     async def runner() -> None:
         try:
-            await work(ctx)
+            async with _semaphore():   # bounded concurrency for the heavy body
+                await work(ctx)
             job.status = "done"
             ctx.emit("job", "done")
+            log.info("job %s done", job.id)
         except asyncio.CancelledError:
             job.status = "cancelled"
             ctx.emit("job", "cancelled")
+            log.info("job %s cancelled", job.id)
         except Exception as e:
             job.status = "failed"
             ctx.emit("job", "failed", detail=f"{type(e).__name__}: {e}")
+            log.error("job %s failed: %s", job.id, e)
             traceback.print_exc()
         finally:
             execute("UPDATE jobs SET status = ?, updated = ? WHERE id = ?",
@@ -103,7 +167,7 @@ def job_state(job_id: str) -> dict[str, Any] | None:
     if row is None:
         return None
     return {"id": row["id"], "kind": row["kind"], "status": row["status"],
-            "events": json.loads(row["events_json"])}
+            "events": _events_for(job_id)}
 
 
 async def sse_events(job_id: str) -> AsyncIterator[str]:

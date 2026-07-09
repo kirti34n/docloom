@@ -64,8 +64,151 @@ def parse_docx(path: Path) -> str:
     return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
 
+def parse_pptx(path: Path) -> str:
+    """Extract text from every shape (and speaker notes) of a .pptx deck."""
+    from pptx import Presentation
+
+    out: list[str] = []
+    for i, slide in enumerate(Presentation(str(path)).slides, start=1):
+        parts: list[str] = []
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.text_frame.text.strip():
+                parts.append(shape.text_frame.text.strip())
+            if shape.has_table:
+                for row in shape.table.rows:
+                    cells = [c.text.strip() for c in row.cells]
+                    if any(cells):
+                        parts.append(" | ".join(cells))
+        if slide.has_notes_slide:
+            notes = (slide.notes_slide.notes_text_frame.text or "").strip()
+            if notes:
+                parts.append(f"[notes] {notes}")
+        if parts:
+            out.append(f"Slide {i}\n" + "\n".join(parts))
+    return "\n\n".join(out)
+
+
+def parse_xlsx(path: Path) -> str:
+    """Flatten every sheet of a workbook to `col | col | col` rows."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(str(path), read_only=True, data_only=True)
+    try:
+        out: list[str] = []
+        for ws in wb.worksheets:
+            rows = [
+                " | ".join("" if v is None else str(v) for v in row).rstrip(" |")
+                for row in ws.iter_rows(values_only=True)
+                if any(v is not None and str(v).strip() for v in row)
+            ]
+            if rows:
+                out.append(f"Sheet: {ws.title}\n" + "\n".join(rows))
+        return "\n\n".join(out)
+    finally:
+        wb.close()
+
+
+def parse_epub(path: Path) -> str:
+    """Extract reading-order text from an EPUB (ebooklib + a tiny HTML strip)."""
+    from ebooklib import ITEM_DOCUMENT, epub
+
+    book = epub.read_epub(str(path))
+    tag = re.compile(r"<[^>]+>")
+    out: list[str] = []
+    for item in book.get_items_of_type(ITEM_DOCUMENT):
+        html = item.get_content().decode("utf-8", "ignore")
+        # drop scripts/styles, then strip tags; entities are left as-is (rare)
+        html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
+        text = re.sub(r"(?is)<br\s*/?>|</p>|</div>|</h[1-6]>", "\n", html)
+        text = tag.sub("", text)
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        if text:
+            out.append(text)
+    return "\n\n".join(out)
+
+
+def parse_csv(text: str) -> str:
+    import csv
+    import io
+
+    sample = text[:4096]
+    try:
+        dialect = csv.Sniffer().sniff(sample) if sample.strip() else csv.excel
+    except csv.Error:
+        dialect = csv.excel
+    return "\n".join(
+        " | ".join(cell.strip() for cell in row)
+        for row in csv.reader(io.StringIO(text), dialect)
+        if any(cell.strip() for cell in row)
+    )
+
+
+def parse_html(text: str) -> str:
+    import trafilatura
+
+    return trafilatura.extract(text, include_comments=False, include_tables=True) or text
+
+
+def read_text_smart(path: Path) -> str:
+    """Read a text file without mojibake: UTF-8 first (the common case), then
+    sniff the encoding, then a lossless latin-1 fallback (never raises, never
+    inserts U+FFFD replacement chars for western text)."""
+    raw = path.read_bytes()
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        from charset_normalizer import from_bytes
+
+        best = from_bytes(raw).best()
+        if best is not None:
+            return str(best)
+    except Exception:
+        pass
+    return raw.decode("latin-1")
+
+
+_YT = re.compile(
+    r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|embed/)|youtu\.be/)"
+    r"([A-Za-z0-9_-]{11})"
+)
+
+
+def youtube_id(url: str) -> str | None:
+    m = _YT.search(url)
+    return m.group(1) if m else None
+
+
+def fetch_youtube(url: str, video_id: str) -> tuple[str, str]:
+    """(title, transcript) for a YouTube link. Needs youtube-transcript-api."""
+    from youtube_transcript_api import YouTubeTranscriptApi
+
+    segments = YouTubeTranscriptApi.get_transcript(video_id)
+    text = " ".join(s["text"].strip() for s in segments if s.get("text", "").strip())
+    if not text:
+        raise ValueError("no transcript available for this video")
+    # cheap title: the page <title>, falling back to the id
+    title = f"YouTube {video_id}"
+    try:
+        with httpx.Client(timeout=10, follow_redirects=True,
+                          headers={"User-Agent": "docloom-studio/0.1"}) as client:
+            html = client.get(url).text
+        m = re.search(r"<title>(.*?)</title>", html, re.S)
+        if m:
+            title = re.sub(r"\s*-\s*YouTube\s*$", "", m.group(1)).strip() or title
+    except Exception:
+        pass
+    return title, text
+
+
 def fetch_url(url: str) -> tuple[str, str]:
-    """Return (title, main-text) for a web page."""
+    """Return (title, main-text) for a web page — or a transcript for YouTube."""
+    vid = youtube_id(url)
+    if vid:
+        return fetch_youtube(url, vid)
+
     import trafilatura
 
     with httpx.Client(timeout=20, follow_redirects=True,
@@ -129,10 +272,18 @@ async def ingest_source(source_id: str, ctx=None) -> None:
                     chunks += chunk_text(sanitize(page_text), source_id, page=page_no)
             elif ext == ".docx":
                 chunks += chunk_text(sanitize(parse_docx(p)), source_id)
-            else:  # txt, md, csv, etc.
-                chunks += chunk_text(
-                    sanitize(p.read_text(encoding="utf-8", errors="replace")), source_id
-                )
+            elif ext == ".pptx":
+                chunks += chunk_text(sanitize(parse_pptx(p)), source_id)
+            elif ext in (".xlsx", ".xlsm"):
+                chunks += chunk_text(sanitize(parse_xlsx(p)), source_id)
+            elif ext == ".csv":
+                chunks += chunk_text(sanitize(parse_csv(read_text_smart(p))), source_id)
+            elif ext in (".html", ".htm"):
+                chunks += chunk_text(sanitize(parse_html(read_text_smart(p))), source_id)
+            elif ext == ".epub":
+                chunks += chunk_text(sanitize(parse_epub(p)), source_id)
+            else:  # txt, md, and other text — encoding-sniffed
+                chunks += chunk_text(sanitize(read_text_smart(p)), source_id)
         elif kind == "url":
             title, text = fetch_url(url)
             meta["fetched_title"] = title

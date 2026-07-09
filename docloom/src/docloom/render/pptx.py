@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData, XyChartData
 from pptx.dml.color import RGBColor
-from pptx.enum.chart import XL_CHART_TYPE
+from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Inches, Pt
@@ -64,6 +64,10 @@ GAP = LAYOUT["gap_in"]
 MONO = "Consolas"
 BODY_PT = LAYOUT["body_pt"]
 HEAD_PT = {1: 20, 2: 18, 3: 16, 4: 14}
+# Set by _body for the duration of one slide's body render: a >1.0 factor grows
+# text on an underfull slide so it fills the space instead of floating small.
+_BODY_SCALE = 1.0
+GROW_CAP = 1.7
 CHART_TYPE = {
     "bar": XL_CHART_TYPE.BAR_CLUSTERED,
     "column": XL_CHART_TYPE.COLUMN_CLUSTERED,
@@ -86,6 +90,78 @@ def _safe_href(url: str) -> str | None:
 
 def _rgb(color: str) -> RGBColor:
     return RGBColor(*hex_to_rgb(color))
+
+
+def _tint(color: str, f: float) -> str:
+    """Lighten `color` toward white by fraction f (0..1)."""
+    r, g, b = hex_to_rgb(color)
+    return "#%02X%02X%02X" % tuple(round(c + (255 - c) * f) for c in (r, g, b))
+
+
+def _shade(color: str, f: float) -> str:
+    """Darken `color` toward black by fraction f (0..1)."""
+    r, g, b = hex_to_rgb(color)
+    return "#%02X%02X%02X" % tuple(round(c * (1 - f)) for c in (r, g, b))
+
+
+def _series_palette(theme: Theme) -> list[str]:
+    """On-brand categorical colors derived from the theme's primary + accent,
+    so native charts match the deck instead of Office's default blue/orange."""
+    return [
+        theme.primary,
+        theme.accent,
+        _tint(theme.primary, 0.42),
+        _shade(theme.accent, 0.28),
+        _tint(theme.accent, 0.5),
+        _shade(theme.primary, 0.28),
+    ]
+
+
+def _style_chart(chart, b: Chart, theme: Theme) -> None:
+    """Recolor a native chart from the theme palette and add tidy data labels.
+    Best-effort: callers wrap this so a styling hiccup never drops the chart."""
+    palette = _series_palette(theme)
+    plot = chart.plots[0]
+    if b.chart == "pie":
+        ser = plot.series[0]
+        for i, pt in enumerate(ser.points):
+            pt.format.fill.solid()
+            pt.format.fill.fore_color.rgb = _rgb(palette[i % len(palette)])
+        plot.has_data_labels = True
+        dl = plot.data_labels
+        dl.show_percentage = True
+        dl.show_value = False
+        dl.number_format = "0%"
+        dl.number_format_is_linked = False
+        dl.font.size = Pt(10)
+        dl.font.bold = True
+        dl.font.color.rgb = _rgb(theme.background)
+        return
+    for i, ser in enumerate(plot.series):
+        color = _rgb(palette[i % len(palette)])
+        if b.chart == "line":
+            ser.format.line.color.rgb = color
+            ser.format.line.width = Pt(2.25)
+        elif b.chart == "scatter":
+            ser.marker.format.fill.solid()
+            ser.marker.format.fill.fore_color.rgb = color
+            ser.format.line.color.rgb = color
+        else:  # column, bar, area
+            ser.format.fill.solid()
+            ser.format.fill.fore_color.rgb = color
+    # value labels only when uncluttered (<=2 series of bars/columns)
+    if b.chart in ("column", "bar") and len(b.series) <= 2:
+        plot.has_data_labels = True
+        dl = plot.data_labels
+        dl.number_format = "General"  # 58 not "58." (a trailing-dot glitch)
+        dl.number_format_is_linked = False
+        dl.font.size = Pt(11)
+        dl.font.bold = True
+        dl.font.color.rgb = _rgb(theme.text)
+        try:
+            dl.position = XL_LABEL_POSITION.OUTSIDE_END
+        except (ValueError, NotImplementedError):
+            pass
 
 
 def _box(slide, x: float, y: float, w: float, h: float):
@@ -157,6 +233,7 @@ def _text_block(
 ) -> float:
     color = color or theme.text
     font = font or theme.font_body
+    size = size * _BODY_SCALE
     h = min(max_h, _est_lines(plain(rt), size, w - indent) * _line_h(size))
     tf = _box(slide, x + indent, y, w - indent, h)
     _runs(tf.paragraphs[0], rt, theme, numbers, size, color, font, bold, italic)
@@ -164,10 +241,11 @@ def _text_block(
 
 
 def _list_block(slide, b, theme, numbers, x, y, w, max_h, ordered: bool) -> float:
+    bp = BODY_PT * _BODY_SCALE
     est = sum(
-        _est_lines(plain(it.text), BODY_PT, w - 0.35 * (it.level + 1))
-        * _line_h(BODY_PT)
-        + 0.05
+        _est_lines(plain(it.text), bp, w - 0.35 * (it.level + 1))
+        * _line_h(bp)
+        + 0.05 * _BODY_SCALE
         for it in b.items
     )
     h = min(max_h, est)
@@ -189,9 +267,9 @@ def _list_block(slide, b, theme, numbers, x, y, w, max_h, ordered: bool) -> floa
         m = p.add_run()
         m.text = marker
         m.font.name = theme.font_body
-        m.font.size = Pt(BODY_PT)
+        m.font.size = Pt(bp)
         m.font.color.rgb = _rgb(theme.primary)
-        _runs(p, it.text, theme, numbers, BODY_PT, theme.text, theme.font_body)
+        _runs(p, it.text, theme, numbers, bp, theme.text, theme.font_body)
     return h
 
 
@@ -270,7 +348,7 @@ def _table_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
 
 
 def _callout_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
-    size, pad, edge_w = 13, 0.14, 0.08
+    size, pad, edge_w = 13 * _BODY_SCALE, 0.14, 0.08
     est = _est_lines(plain(b.text), size, w - edge_w - 2 * pad) * _line_h(size) + 2 * pad
     h = min(max_h, est)
     _rect(slide, x, y, w, h, theme.surface)
@@ -371,6 +449,10 @@ def _chart_block(slide, b: Chart, theme, numbers, x, y, w, max_h) -> float:
         if b.chart == "pie" or len(b.series) > 1:
             chart.has_legend = True
             chart.legend.include_in_layout = False
+        try:
+            _style_chart(chart, b, theme)
+        except Exception:
+            pass  # on-brand recolor is best-effort; keep the native chart
     except Exception:
         # fallback chain: pre-rendered image if present, else data as a table
         if b.path and Path(b.path).is_file():
@@ -462,14 +544,85 @@ def _block(slide, b: Block, theme, numbers, x, y, w, max_h) -> float:
     raise RenderError(f"unhandled block type {type(b).__name__}")
 
 
+def _natural_h(b: Block, w: float) -> float:
+    """Estimate a block's natural (unclamped) height in inches, so _body can
+    tell when a slide is underfull and rebalance the whitespace."""
+    if isinstance(b, Heading):
+        s = HEAD_PT[b.level]
+        return _est_lines(plain(b.text), s, w) * _line_h(s)
+    if isinstance(b, Paragraph):
+        return _est_lines(plain(b.text), BODY_PT, w) * _line_h(BODY_PT)
+    if isinstance(b, (BulletList, NumberedList)):
+        return sum(
+            _est_lines(plain(it.text), BODY_PT, w - 0.35 * (it.level + 1))
+            * _line_h(BODY_PT) + 0.05
+            for it in b.items
+        )
+    if isinstance(b, Quote):
+        h = _est_lines(plain(b.text), 15, w - 0.4) * _line_h(15)
+        return h + (0.28 if b.attribution else 0.0)
+    if isinstance(b, Code):
+        return len(b.code.split("\n")) * _line_h(12) + 0.24
+    if isinstance(b, Table):
+        _, rows = normalize_table(b.header, b.rows)
+        return (len(rows) + 1) * 0.36 + (0.26 if b.caption else 0.0)
+    if isinstance(b, Callout):
+        return _est_lines(plain(b.text), 13, w - 0.08 - 0.28) * _line_h(13) + 0.28
+    if isinstance(b, StatRow):
+        return LAYOUT["stat_card_h_in"] if b.items else 0.0
+    if isinstance(b, Chart):
+        return LAYOUT["chart_max_h_in"] + (0.26 if b.caption else 0.0)
+    if isinstance(b, (Image, Artifact)):
+        # a resolved image tends to fill much of the content area; estimate high
+        # so a lone image centers near the top instead of floating low.
+        return 4.6 if (b.path and Path(b.path).is_file()) else 0.0
+    if isinstance(b, Divider):
+        return 0.14
+    return _line_h(BODY_PT)
+
+
 def _body(slide, blocks: list[Block], theme, numbers, x, y, w) -> float:
+    """Lay body blocks into [y, slide bottom]. When the content is sparse,
+    distribute the slack (bigger inter-block gaps) and vertically center it at
+    an optical-center bias, so slides don't plant everything in the top third."""
+    global _BODY_SCALE
     bottom = SLIDE_H - MARGIN
-    for b in blocks:
-        remaining = bottom - y
-        if remaining < 0.3:
-            break  # ponytail: overflow blocks dropped; paginate if decks need it
-        y += _block(slide, b, theme, numbers, x, y, w, remaining) + GAP
-    return y
+    if not blocks:
+        return y
+    avail = bottom - y
+    n = len(blocks)
+    is_text = (Heading, Paragraph, BulletList, NumberedList, Callout)
+    nat = [max(0.0, _natural_h(b, w)) for b in blocks]
+    text_h = sum(h for b, h in zip(blocks, nat) if isinstance(b, is_text))
+    fixed_h = sum(nat) - text_h
+    total = sum(nat) + GAP * (n - 1)
+
+    # Underfull: grow the text blocks toward an 80% fill target (capped), so a
+    # sparse slide doesn't leave the bottom half blank.
+    scale = 1.0
+    if total < avail * 0.65 and text_h > 0.2:
+        scale = max(1.0, min(GROW_CAP, (avail * 0.80 - fixed_h) / text_h))
+    scaled_total = text_h * scale + fixed_h + GAP * (n - 1)
+
+    gap, y0 = GAP, y
+    if 0 < scaled_total < avail:  # distribute residual slack + optical-center
+        slack = avail - scaled_total
+        extra_gap = min(0.5, slack * 0.5 / (n - 1)) if n > 1 else 0.0
+        gap = GAP + extra_gap
+        used = scaled_total + extra_gap * (n - 1)
+        y0 = y + max(0.0, (avail - used) * 0.42)
+
+    _BODY_SCALE = scale
+    try:
+        yy = y0
+        for b in blocks:
+            remaining = bottom - yy
+            if remaining < 0.3:
+                break  # ponytail: overflow blocks dropped; paginate if decks need it
+            yy += _block(slide, b, theme, numbers, x, yy, w, remaining) + gap
+    finally:
+        _BODY_SCALE = 1.0
+    return yy
 
 
 # ----------------------------------------------------------------- layouts
@@ -491,6 +644,32 @@ def _usable_image(img: Image | None) -> bool:
     return img is not None and bool(img.path) and Path(img.path).is_file()
 
 
+def _logo(slide, img: Image, max_h: float = 0.85) -> None:
+    """Place a brand logo in the slide's top-right corner, scaled to fit."""
+    try:
+        pic = slide.shapes.add_picture(str(img.path), 0, 0)
+    except Exception:
+        return  # unreadable image: skip rather than fail the render
+    max_w = SLIDE_W * 0.28
+    scale = min(Inches(max_h) / pic.height, Inches(max_w) / pic.width, 1.0)
+    pic.width = int(pic.width * scale)
+    pic.height = int(pic.height * scale)
+    pic.top = Inches(MARGIN)
+    pic.left = Inches(SLIDE_W - MARGIN) - pic.width
+
+
+def _doc_logo(slide, doc: Document, s: Slide) -> None:
+    """Stamp the document's brand logo on a content slide, small, top-right.
+
+    Skipped on full-bleed layouts (section/hero/image panes reach the corner)
+    and on the title slide, which places its own image."""
+    if s.layout in ("title", "section", "hero", "image_left", "image_right"):
+        return
+    if not _usable_image(doc.logo):
+        return
+    _logo(slide, doc.logo, max_h=0.4)
+
+
 def _title_band(
     slide, title: str | None, theme: Theme,
     x: float = MARGIN, w: float | None = None, accent: str | None = None,
@@ -509,6 +688,8 @@ def _title_band(
 
 def _title_slide(slide, s: Slide, doc: Document, theme: Theme, accent: str) -> None:
     _rect(slide, 0, 0, 0.3, SLIDE_H, accent)
+    if _usable_image(s.image):  # brand logo (or any title-slide image) → corner
+        _logo(slide, s.image)
     tf = _box(slide, 1.1, 2.5, SLIDE_W - 1.1 - MARGIN, 1.4)
     _runs(
         tf.paragraphs[0], s.title or doc.title, theme, {},
@@ -667,6 +848,7 @@ def _render_slide(prs, blank, s: Slide, doc: Document, theme: Theme,
         _body(slide, s.right, theme, numbers, MARGIN + col_w + 0.5, y, col_w)
     else:  # content, or an image layout without a usable image path
         _content_slide(slide, s, theme, numbers, accent)
+    _doc_logo(slide, doc, s)
     if s.notes:
         slide.notes_slide.notes_text_frame.text = s.notes
 

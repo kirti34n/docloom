@@ -148,7 +148,23 @@ def _setup_styles(docx_doc, theme: Theme) -> None:
         style.font.color.rgb = _rgb(theme.primary)
 
 
+def _logo_block(docx_doc, doc: Document) -> None:
+    """A right-aligned brand logo above the title, if the document carries a
+    usable one. Failures are swallowed so a bad image never breaks the render."""
+    logo = doc.logo
+    if not (logo and logo.path and Path(logo.path).is_file()):
+        return
+    par = docx_doc.add_paragraph()
+    par.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    try:
+        par.add_run().add_picture(str(logo.path), height=Inches(0.5))
+    except Exception:
+        # remove the now-empty paragraph so no stray gap remains
+        par._element.getparent().remove(par._element)
+
+
 def _title_block(docx_doc, doc: Document, theme: Theme) -> None:
+    _logo_block(docx_doc, doc)
     par = docx_doc.add_paragraph()
     run = par.add_run(doc.title)
     run.font.name = theme.font_heading

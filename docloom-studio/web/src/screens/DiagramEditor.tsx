@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
-import { AlertCircle, Check, Download, Loader2, Sparkles, Pencil } from 'lucide-react'
+import { AlertCircle, Check, Download, Loader2, Sparkles } from 'lucide-react'
 import { api } from '../api/client'
 import type { ArtifactT } from '../deck/types'
-import { renderMermaid, svgToPng } from '../diagram/mermaid'
+import { renderD2, svgToPng } from '../diagram/d2'
 
 interface DiagramPayload {
-  mermaid_src: string
-  excalidraw_scene: unknown
-  canvas_dirty: boolean
-  render: unknown
+  source?: string
+  mermaid_src?: string // legacy artifacts; read once, then re-saved as `source`
+  render?: unknown
 }
+
+const SAMPLE = `direction: right
+a: Input
+b: Process
+c: Output
+a -> b -> c`
 
 export function DiagramEditor() {
   const { artifactId, notebookId } = useParams()
@@ -21,10 +26,6 @@ export function DiagramEditor() {
   const [error, setError] = useState<string | null>(null)
   const [state, setState] = useState<'saved' | 'dirty' | 'saving'>('saved')
   const [repairing, setRepairing] = useState(false)
-  const [canvas, setCanvas] = useState(false)
-  const excalidrawRef = useRef<unknown>(null)
-  const [Excalidraw, setExcalidraw] = useState<React.ComponentType<Record<string, unknown>> | null>(null)
-  const [scene, setScene] = useState<{ elements: unknown[]; files?: unknown } | null>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -32,14 +33,13 @@ export function DiagramEditor() {
     api.get<ArtifactT>(`/api/artifacts/${artifactId}`).then((a) => {
       setArtifact(a)
       const p = a.payload as unknown as DiagramPayload
-      setSrc(p.mermaid_src ?? 'flowchart TD\n  A[Start] --> B[End]')
-      setCanvas(!!p.canvas_dirty)
+      setSrc(p.source ?? p.mermaid_src ?? SAMPLE)
     })
   }, [artifactId])
 
-  // render mermaid + persist source/renders (debounced)
+  // render D2 -> SVG + persist source/renders (debounced)
   const rerender = useCallback(async (code: string) => {
-    const { svg: out, error: err } = await renderMermaid(code)
+    const { svg: out, error: err } = await renderD2(code)
     if (err) {
       setError(err)
       return
@@ -51,77 +51,32 @@ export function DiagramEditor() {
     saveTimer.current = setTimeout(async () => {
       setState('saving')
       await api.put(`/api/artifacts/${artifactId}/payload`, {
-        payload: { mermaid_src: code, excalidraw_scene: null, canvas_dirty: false, render: 'svg' },
+        payload: { source: code, render: 'svg' },
       })
-      // always persist the SVG; the PNG is a best-effort extra for PPTX embeds
       let png: string | null = null
       try {
         png = await svgToPng(out!)
-      } catch { /* tainted/complex svg — skip png */ }
+      } catch { /* complex svg — skip png */ }
       await api.post(`/api/artifacts/${artifactId}/renders`, { svg: out, png_base64: png })
       setState('saved')
     }, 700)
   }, [artifactId])
 
   useEffect(() => {
-    if (src && !canvas) void rerender(src)
+    if (src) void rerender(src)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src, canvas])
+  }, [src])
 
   const fixWithAI = async () => {
     if (!error) return
     setRepairing(true)
     try {
-      const res = await api.post<{ mermaid: string }>(`/api/artifacts/${artifactId}/repair`, {
-        src, error,
-      })
-      setSrc(res.mermaid)
+      const res = await api.post<{ source?: string; d2?: string; mermaid?: string }>(
+        `/api/artifacts/${artifactId}/repair`, { src, error })
+      setSrc(res.source ?? res.d2 ?? res.mermaid ?? src)
     } finally {
       setRepairing(false)
     }
-  }
-
-  const toCanvas = async () => {
-    const [{ Excalidraw: Ex, convertToExcalidrawElements }, { parseMermaidToExcalidraw }] =
-      await Promise.all([
-        import('@excalidraw/excalidraw'),
-        import('@excalidraw/mermaid-to-excalidraw'),
-      ])
-    await import('@excalidraw/excalidraw/index.css')
-    try {
-      const { elements, files } = await parseMermaidToExcalidraw(src)
-      const converted = convertToExcalidrawElements(elements)
-      setScene({ elements: converted, files })
-      setExcalidraw(() => Ex as never)
-      setCanvas(true)
-    } catch (e) {
-      alert(`Could not convert to canvas: ${e instanceof Error ? e.message : e}`)
-    }
-  }
-
-  const saveCanvas = async () => {
-    const apiRef = excalidrawRef.current as {
-      getSceneElements: () => unknown[]
-      getFiles: () => unknown
-    } | null
-    if (!apiRef) return
-    const { exportToSvg, exportToBlob } = await import('@excalidraw/excalidraw')
-    const elements = apiRef.getSceneElements()
-    const files = apiRef.getFiles()
-    const svgEl = await exportToSvg({ elements: elements as never, files: files as never, appState: { exportBackground: true } as never })
-    const svgStr = new XMLSerializer().serializeToString(svgEl)
-    const blob = await exportToBlob({ elements: elements as never, files: files as never, mimeType: 'image/png', appState: { exportBackground: true } as never })
-    const png = await new Promise<string>((res) => {
-      const r = new FileReader()
-      r.onload = () => res((r.result as string).split(',')[1])
-      r.readAsDataURL(blob)
-    })
-    setState('saving')
-    await api.put(`/api/artifacts/${artifactId}/payload`, {
-      payload: { mermaid_src: src, excalidraw_scene: { elements }, canvas_dirty: true, render: 'svg' },
-    })
-    await api.post(`/api/artifacts/${artifactId}/renders`, { svg: svgStr, png_base64: png })
-    setState('saved')
   }
 
   const downloadRender = (ext: string) => {
@@ -144,7 +99,6 @@ export function DiagramEditor() {
             : state === 'dirty' ? 'Unsaved' : <span className="flex items-center gap-1"><Check size={12} /> Saved</span>}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
-          {canvas && <button onClick={saveCanvas} className="rounded-lg border border-stage-line px-2.5 py-1.5 text-[12px] text-stage-muted hover:text-white">Save canvas</button>}
           {['svg', 'png'].map((ext) => (
             <button key={ext} onClick={() => downloadRender(ext)}
               className="flex items-center gap-1.5 rounded-lg border border-stage-line px-2.5 py-1.5 text-[12px] text-stage-muted hover:text-white">
@@ -154,48 +108,33 @@ export function DiagramEditor() {
         </div>
       </div>
 
-      {canvas && Excalidraw ? (
-        <div className="min-h-0 flex-1">
-          <Excalidraw
-            excalidrawAPI={(a: unknown) => (excalidrawRef.current = a)}
-            initialData={{ elements: scene?.elements ?? [], files: scene?.files, appState: { viewBackgroundColor: '#ffffff' } }}
+      <div className="flex min-h-0 flex-1">
+        <div className="flex w-96 shrink-0 flex-col border-r border-stage-line">
+          <div className="px-4 py-2 text-[12px] text-stage-muted">D2 source</div>
+          <textarea
+            value={src}
+            onChange={(e) => setSrc(e.target.value)}
+            spellCheck={false}
+            className="flex-1 resize-none bg-stage-bg px-4 py-2 font-mono text-[12.5px] text-white outline-none"
           />
-        </div>
-      ) : (
-        <div className="flex min-h-0 flex-1">
-          <div className="flex w-96 shrink-0 flex-col border-r border-stage-line">
-            <div className="flex items-center justify-between px-4 py-2 text-[12px] text-stage-muted">
-              Mermaid source
-              <button onClick={toCanvas} disabled={!!error}
-                className="flex items-center gap-1 rounded-md border border-stage-line px-2 py-1 text-[11px] hover:text-white disabled:opacity-40">
-                <Pencil size={11} /> Edit on canvas
+          {error && (
+            <div className="border-t border-stage-line p-3">
+              <div className="flex items-start gap-2 text-[12px] text-red-300">
+                <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                <span className="font-mono">{error.slice(0, 200)}</span>
+              </div>
+              <button onClick={fixWithAI} disabled={repairing}
+                className="mt-2 flex items-center gap-1.5 rounded-lg bg-ws-accent px-3 py-1.5 text-[12px] font-medium text-white disabled:opacity-50">
+                {repairing ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Fix with AI
               </button>
             </div>
-            <textarea
-              value={src}
-              onChange={(e) => setSrc(e.target.value)}
-              spellCheck={false}
-              className="flex-1 resize-none bg-stage-bg px-4 py-2 font-mono text-[12.5px] text-white outline-none"
-            />
-            {error && (
-              <div className="border-t border-stage-line p-3">
-                <div className="flex items-start gap-2 text-[12px] text-red-300">
-                  <AlertCircle size={14} className="mt-0.5 shrink-0" />
-                  <span className="font-mono">{error.slice(0, 200)}</span>
-                </div>
-                <button onClick={fixWithAI} disabled={repairing}
-                  className="mt-2 flex items-center gap-1.5 rounded-lg bg-ws-accent px-3 py-1.5 text-[12px] font-medium text-white disabled:opacity-50">
-                  {repairing ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Fix with AI
-                </button>
-              </div>
-            )}
-          </div>
-          <div className="flex min-w-0 flex-1 items-center justify-center overflow-auto bg-white p-8">
-            {svg ? <div className="mmd-preview" dangerouslySetInnerHTML={{ __html: svg }} />
-              : <span className="text-ws-muted">rendering…</span>}
-          </div>
+          )}
         </div>
-      )}
+        <div className="flex min-w-0 flex-1 items-center justify-center overflow-auto bg-white p-8">
+          {svg ? <div className="w-full max-w-[1100px] [&_svg]:h-auto [&_svg]:w-full" dangerouslySetInnerHTML={{ __html: svg }} />
+            : <span className="text-ws-muted">rendering…</span>}
+        </div>
+      </div>
     </div>
   )
 }

@@ -276,6 +276,9 @@ class Document(BaseModel):
     subtitle: SafeStr | None = None
     authors: list[SafeStr] = Field(default_factory=list)
     date: SafeStr | None = None
+    logo: Image | None = Field(
+        None, description="brand logo shown on every slide / in report headers"
+    )
     blocks: list[Block] = Field(default_factory=list)
     slides: list[Slide] = Field(default_factory=list)
     sheets: list[Sheet] = Field(default_factory=list)

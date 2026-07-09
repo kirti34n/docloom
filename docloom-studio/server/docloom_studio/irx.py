@@ -18,7 +18,8 @@ from .settings import data_dir
 THEME_DIR = Path(__file__).parent / "themes"
 
 DOCLOOM_TOKENS = ("primary", "accent", "background", "surface",
-                  "text", "muted", "font_heading", "font_body")
+                  "text", "muted", "font_heading", "font_body",
+                  "font_heading_src", "font_body_src")
 
 
 def studio_theme(name: str) -> dict[str, Any]:
@@ -70,6 +71,8 @@ def bake(doc: Document) -> Document:
                     if png.is_file():
                         b.path = str(png)
 
+    if doc.logo is not None:
+        fix_image(doc.logo)
     fix_blocks(doc.blocks)
     for slide in doc.slides:
         if slide.image is not None:

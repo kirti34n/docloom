@@ -11,10 +11,11 @@ import json
 import re
 import shutil
 
-from fastapi import APIRouter, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from .auth import current_user
 from .db import execute, new_id, now, query_all, query_one, rows_to_dicts
 from .settings import data_dir, get_setting, set_setting
 
@@ -42,15 +43,17 @@ def _font_embeddable(path) -> bool:
 
 
 @router.get("/assets")
-async def list_assets() -> list[dict]:
+async def list_assets(user: dict = Depends(current_user)) -> list[dict]:
     rows = query_all("SELECT id, type, filename, tags, slot_hint, created "
-                     "FROM assets ORDER BY created DESC")
+                     "FROM assets WHERE user_id = ? ORDER BY created DESC",
+                     (user["id"],))
     return rows_to_dicts(rows)
 
 
 @router.post("/assets")
 async def upload_asset(
-    file: UploadFile, type: str = Form("image"), tags: str = Form("")
+    file: UploadFile, type: str = Form("image"), tags: str = Form(""),
+    user: dict = Depends(current_user),
 ) -> dict:
     name = file.filename or "asset"
     ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
@@ -64,8 +67,8 @@ async def upload_asset(
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
     execute(
-        "INSERT INTO assets (id, type, filename, tags, created) "
-        "VALUES (?, ?, ?, ?, ?)", (aid, type, name, tags, now()),
+        "INSERT INTO assets (id, type, filename, tags, user_id, created) "
+        "VALUES (?, ?, ?, ?, ?, ?)", (aid, type, name, tags, user["id"], now()),
     )
     warn = None
     if type == "font":
@@ -81,21 +84,25 @@ class TagPatch(BaseModel):
 
 
 @router.patch("/assets/{asset_id}")
-async def patch_asset(asset_id: str, body: TagPatch) -> dict:
-    execute("UPDATE assets SET tags = ? WHERE id = ?", (body.tags, asset_id))
+async def patch_asset(
+    asset_id: str, body: TagPatch, user: dict = Depends(current_user)
+) -> dict:
+    execute("UPDATE assets SET tags = ? WHERE id = ? AND user_id = ?",
+            (body.tags, asset_id, user["id"]))
     return {"ok": True}
 
 
 @router.delete("/assets/{asset_id}")
-async def delete_asset(asset_id: str) -> dict:
-    execute("DELETE FROM assets WHERE id = ?", (asset_id,))
+async def delete_asset(asset_id: str, user: dict = Depends(current_user)) -> dict:
+    execute("DELETE FROM assets WHERE id = ? AND user_id = ?", (asset_id, user["id"]))
     shutil.rmtree(data_dir() / "assets" / asset_id, ignore_errors=True)
     return {"ok": True}
 
 
 @router.get("/assets/{asset_id}/file")
-async def serve_asset(asset_id: str) -> FileResponse:
-    row = query_one("SELECT filename FROM assets WHERE id = ?", (asset_id,))
+async def serve_asset(asset_id: str, user: dict = Depends(current_user)) -> FileResponse:
+    row = query_one("SELECT filename FROM assets WHERE id = ? AND user_id = ?",
+                    (asset_id, user["id"]))
     if row is None:
         raise HTTPException(404, "asset not found")
     path = data_dir() / "assets" / asset_id / row["filename"]
@@ -113,14 +120,16 @@ def _words(s: str) -> set[str]:
     return set(_WORD.findall(s.lower()))
 
 
-def resolve_image(query: str) -> str | None:
-    """Pick the best image asset for a slot query by tag/filename overlap."""
+def resolve_image(query: str, user_id: str | None) -> str | None:
+    """Pick the best image asset for a slot query by tag/filename overlap,
+    within the given user's asset library."""
     q = _words(query)
-    if not q:
+    if not q or user_id is None:
         return None
     best, best_score = None, 0
     for a in rows_to_dicts(query_all(
-            "SELECT id, filename, tags FROM assets WHERE type IN ('image','logo')")):
+            "SELECT id, filename, tags FROM assets "
+            "WHERE type IN ('image','logo') AND user_id = ?", (user_id,))):
         score = len(q & (_words(a["tags"]) | _words(a["filename"])))
         if score > best_score:
             best, best_score = a["id"], score
@@ -132,27 +141,69 @@ def resolve_image(query: str) -> str | None:
 class BrandKit(BaseModel):
     accent: str | None = None
     logo_asset_id: str | None = None
+    # Optional brand fonts. *_family is the font's name (what renderers set on
+    # runs / CSS); *_asset_id points at an uploaded font file to embed.
+    heading_family: str | None = None
+    heading_asset_id: str | None = None
+    body_family: str | None = None
+    body_asset_id: str | None = None
 
 
-def active_brand() -> dict:
-    return get_setting("brand.active") or {}
+def active_brand(user_id: str | None) -> dict:
+    return get_setting("brand.active", user_id) or {}
+
+
+def _asset_file(asset_id: str | None, user_id: str | None):
+    """Absolute on-disk path for an owned asset, or None."""
+    if not asset_id:
+        return None
+    row = query_one("SELECT filename FROM assets WHERE id = ? AND user_id = ?",
+                    (asset_id, user_id))
+    if row is None:
+        return None
+    path = data_dir() / "assets" / asset_id / row["filename"]
+    return str(path) if path.is_file() else None
+
+
+def brand_logo_image(user_id: str | None) -> dict | None:
+    """The active brand logo as a docloom Image dict ({"path": ...}), or None
+    — used to stamp a logo on every slide / report header at export time."""
+    brand = active_brand(user_id)
+    path = _asset_file(brand.get("logo_asset_id"), user_id)
+    return {"path": path, "alt": "logo"} if path else None
 
 
 @router.get("/brand-kit")
-async def get_brand() -> dict:
-    return active_brand()
+async def get_brand(user: dict = Depends(current_user)) -> dict:
+    return active_brand(user["id"])
 
 
 @router.put("/brand-kit")
-async def put_brand(body: BrandKit) -> dict:
-    set_setting("brand.active", body.model_dump())
+async def put_brand(body: BrandKit, user: dict = Depends(current_user)) -> dict:
+    set_setting("brand.active", body.model_dump(), user["id"])
     return {"ok": True}
 
 
-def apply_brand(theme_json: dict) -> dict:
-    """Overlay the active brand accent onto a theme's tokens."""
-    brand = active_brand()
+def apply_brand(theme_json: dict, user_id: str | None) -> dict:
+    """Overlay the user's active brand (accent + fonts) onto a theme's tokens.
+
+    Font families set the renderer-facing name; a matching uploaded font file
+    is threaded through as *_src so self-contained/font-path renderers embed
+    the real font (HTML @font-face, PDF font path)."""
+    brand = active_brand(user_id)
     accent = brand.get("accent")
     if accent:
         theme_json = {**theme_json, "primary": accent, "accent": accent}
+    heading_family = brand.get("heading_family")
+    if heading_family:
+        theme_json = {**theme_json, "font_heading": heading_family}
+    body_family = brand.get("body_family")
+    if body_family:
+        theme_json = {**theme_json, "font_body": body_family}
+    heading_src = _asset_file(brand.get("heading_asset_id"), user_id)
+    if heading_src:
+        theme_json = {**theme_json, "font_heading_src": heading_src}
+    body_src = _asset_file(brand.get("body_asset_id"), user_id)
+    if body_src:
+        theme_json = {**theme_json, "font_body_src": body_src}
     return theme_json

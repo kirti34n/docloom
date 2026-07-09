@@ -277,6 +277,9 @@ def to_typst(doc: Document, theme: Theme) -> str:
         f"#show heading.where(level: {lvl}): set text(size: {size})"
         for lvl, size in _HEADING_SIZES.items()
     ]
+    # Logo placeholder: render() swaps this comment for a sized #image if the
+    # document carries a usable logo, else it renders as nothing.
+    lines += ["", "// __DOCLOOM_LOGO__"]
     lines += [
         "",
         f"#text(font: {_font(theme.font_heading)}, size: 24pt, "
@@ -315,6 +318,46 @@ def to_typst(doc: Document, theme: Theme) -> str:
     return "\n".join(lines) + "\n"
 
 
+_FONT_EXTS = (".ttf", ".otf", ".woff2", ".woff", ".ttc")
+
+
+def _copy_fonts(theme: Theme, tmp_dir: Path) -> list[str]:
+    """Copy the theme's brand font files into `tmp_dir` so typst resolves the
+    theme's font *names* against them. Returns the font-path list (empty if
+    none), to pass to typst.compile(font_paths=...)."""
+    copied = False
+    for i, src in enumerate((theme.font_body_src, theme.font_heading_src)):
+        if not src:
+            continue
+        p = Path(src)
+        if p.suffix.lower() not in _FONT_EXTS or not p.is_file():
+            continue
+        try:
+            shutil.copy(p, tmp_dir / f"font{i}{p.suffix}")
+            copied = True
+        except OSError:
+            pass
+    return [str(tmp_dir)] if copied else []
+
+
+def _inject_logo(source: str, doc: Document, tmp_dir: Path) -> str:
+    """Replace the __DOCLOOM_LOGO__ placeholder with a right-aligned, sized
+    brand logo (copied local to the compile dir), or drop it."""
+    logo = doc.logo
+    if logo and logo.path and Path(logo.path).is_file() and _embeddable(Path(logo.path)):
+        p = Path(logo.path)
+        local = "logo" + p.suffix
+        try:
+            shutil.copy(p, tmp_dir / local)
+            return source.replace(
+                "// __DOCLOOM_LOGO__",
+                f"#align(right)[#image({_str(local)}, height: 1.4cm)]",
+            )
+        except OSError:
+            pass
+    return source.replace("// __DOCLOOM_LOGO__", "")
+
+
 def render(doc: Document, theme: Theme, out_path: Path) -> Path:
     try:
         import typst
@@ -347,10 +390,14 @@ def render(doc: Document, theme: Theme, out_path: Path) -> Path:
                 source = source.replace(ref, f"// docloom-image skipped: {p.as_posix()}")
                 continue
             source = source.replace(ref, f"#image({_str(local)})")
+        source = _inject_logo(source, doc, tmp_dir)
+        # Copy any brand font files so typst resolves the theme's font names.
+        font_paths = _copy_fonts(theme, tmp_dir)
         typ_file = tmp_dir / "document.typ"
         typ_file.write_text(source, encoding="utf-8")
         try:
-            pdf = typst.compile(str(typ_file))
+            pdf = (typst.compile(str(typ_file), font_paths=font_paths)
+                   if font_paths else typst.compile(str(typ_file)))
         except Exception as exc:
             raise RenderError(f"typst compilation failed: {exc}") from exc
     out_path.write_bytes(pdf)

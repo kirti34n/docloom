@@ -19,6 +19,11 @@ class Theme(BaseModel):
     muted: str = "#6B7280"
     font_heading: str = "Arial"
     font_body: str = "Georgia"
+    # Optional local font files (.woff2/.ttf/.otf) for the two families above.
+    # When set, self-contained renderers (HTML) embed them so the brand font
+    # renders anywhere; font-path renderers (PDF/typst) resolve by directory.
+    font_heading_src: str | None = None
+    font_body_src: str | None = None
 
     @field_validator("primary", "accent", "background", "surface", "text", "muted")
     @classmethod

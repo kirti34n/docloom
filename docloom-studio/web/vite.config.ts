@@ -4,6 +4,9 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // D2 ships a WASM engine + web worker; pre-bundling it breaks worker resolution.
+  optimizeDeps: { exclude: ['@terrastruct/d2'] },
+  worker: { format: 'es' },
   server: {
     port: 8898,
     proxy: {

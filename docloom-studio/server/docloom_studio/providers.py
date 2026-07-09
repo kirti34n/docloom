@@ -2,8 +2,10 @@
 
 llama-server / LM Studio / OpenAI speak OpenAI-compatible chat completions
 (json_schema response_format = enforced structured output on llama-server and
-LM Studio). Ollama uses its native /api/chat — with the `think` key OMITTED
-entirely (ollama#15260: think=false silently disables schema masking).
+LM Studio). Ollama uses its native /api/chat with the `format` schema for
+masking; the `think` API flag is never set (ollama#15260: think=false silently
+disables masking). For qwen3 models we instead inject the `/no_think` prompt
+token, which stops the slow reasoning block while keeping masking on.
 Anthropic uses /v1/messages with output_config structured outputs.
 
 Every schema-shaped generation goes through generate_validated(): complete →
@@ -63,6 +65,24 @@ def _openai_required_transform(schema: dict) -> dict:
     return schema
 
 
+# qwen3 / qwen3.5 emit a slow <think> block by default (measured ~20x latency on
+# Ollama, and it can exhaust the budget and return nothing). The `/no_think`
+# soft-switch disables reasoning while KEEPING Ollama's `format` grammar masking
+# on — unlike the `think=false` API flag, which silently disables masking
+# (ollama#15260) and makes structured output unreliable. So we inject the token
+# rather than set the flag.
+def _apply_no_think(cfg: "ProviderConfig", messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    if cfg.kind != "ollama" or "qwen3" not in (cfg.model or "").lower():
+        return messages
+    msgs = [dict(m) for m in messages]
+    for m in reversed(msgs):
+        if m["role"] == "user":
+            m["content"] = m["content"].rstrip() + " /no_think"
+            return msgs
+    msgs.append({"role": "user", "content": "/no_think"})
+    return msgs
+
+
 async def complete(
     cfg: ProviderConfig,
     messages: list[dict[str, str]],
@@ -105,10 +125,10 @@ async def complete(
         if cfg.kind == "ollama":
             body = {
                 "model": cfg.model,
-                "messages": messages,
+                "messages": _apply_no_think(cfg, messages),
                 "stream": False,
-                "options": {"num_ctx": 16384, "temperature": temperature},
-                # `think` deliberately omitted — ollama#15260
+                "options": {"num_ctx": 16384, "temperature": temperature,
+                            "num_predict": max_tokens},
             }
             if schema is not None:
                 body["format"] = schema
@@ -147,7 +167,8 @@ async def stream_text(
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         if cfg.kind == "ollama":
             body = {
-                "model": cfg.model, "messages": messages, "stream": True,
+                "model": cfg.model, "messages": _apply_no_think(cfg, messages),
+                "stream": True,
                 "options": {"num_ctx": 16384, "temperature": temperature},
             }
             async with client.stream("POST", cfg.base_url + "/api/chat", json=body) as r:

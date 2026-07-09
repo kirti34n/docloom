@@ -11,6 +11,10 @@ interface Asset {
 interface Brand {
   accent?: string | null
   logo_asset_id?: string | null
+  heading_family?: string | null
+  heading_asset_id?: string | null
+  body_family?: string | null
+  body_asset_id?: string | null
 }
 
 export function AssetLibrary() {
@@ -50,6 +54,7 @@ export function AssetLibrary() {
   }
 
   const images = assets.filter((a) => a.type === 'image' || a.type === 'logo')
+  const fonts = assets.filter((a) => a.type === 'font')
 
   return (
     <div className="mx-auto max-w-5xl px-8 py-10">
@@ -109,6 +114,21 @@ export function AssetLibrary() {
             </select>
           </label>
         </div>
+
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <FontRow label="Heading font" family={brand.heading_family}
+            assetId={brand.heading_asset_id} fonts={fonts}
+            onFamily={(v) => saveBrand({ ...brand, heading_family: v })}
+            onAsset={(v) => saveBrand({ ...brand, heading_asset_id: v })} />
+          <FontRow label="Body font" family={brand.body_family}
+            assetId={brand.body_asset_id} fonts={fonts}
+            onFamily={(v) => saveBrand({ ...brand, body_family: v })}
+            onAsset={(v) => saveBrand({ ...brand, body_asset_id: v })} />
+        </div>
+        <p className="mt-2 text-[11px] text-ws-muted">
+          Fonts embed in PDF & HTML exports. PowerPoint stores the font name only —
+          install the font locally to see it in PPTX.
+        </p>
       </div>
 
       {/* asset grid */}
@@ -144,6 +164,37 @@ export function AssetLibrary() {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function FontRow({
+  label, family, assetId, fonts, onFamily, onAsset,
+}: {
+  label: string
+  family?: string | null
+  assetId?: string | null
+  fonts: Asset[]
+  onFamily: (v: string | null) => void
+  onAsset: (v: string | null) => void
+}) {
+  return (
+    <div className="rounded-lg border border-ws-line bg-ws-bg p-3">
+      <div className="text-[12px] font-medium">{label}</div>
+      <div className="mt-2 flex flex-col gap-2">
+        <input
+          value={family ?? ''}
+          onChange={(e) => onFamily(e.target.value || null)}
+          placeholder="Font family name (e.g. Inter)"
+          className="w-full rounded border border-ws-line bg-ws-panel px-2 py-1.5 text-[12px] outline-none focus:border-ws-accent"
+        />
+        <select value={assetId ?? ''}
+          onChange={(e) => onAsset(e.target.value || null)}
+          className="w-full rounded border border-ws-line bg-ws-panel px-2 py-1.5 text-[12px]">
+          <option value="">Embed file: none (name only)</option>
+          {fonts.map((a) => <option key={a.id} value={a.id}>{a.filename}</option>)}
+        </select>
+      </div>
     </div>
   )
 }

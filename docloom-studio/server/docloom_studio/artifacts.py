@@ -1,4 +1,5 @@
-"""Artifact routes: create-with-generation, read, autosave, export, jobs."""
+"""Artifact routes: create-with-generation, read, autosave, export, jobs.
+All scoped to the current user's notebooks/artifacts."""
 
 from __future__ import annotations
 
@@ -7,14 +8,16 @@ from pathlib import Path
 
 from docloom import FORMATS, lint, render
 from docloom.render import RenderError, slug
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
+from .auth import current_user, require_artifact, require_notebook
 from .db import execute, now, query_all, query_one
 from .generate import (
-    create_artifact, repair_mermaid, run_deck_pipeline, run_diagram_pipeline,
-    run_doc_pipeline, run_infographic_pipeline, run_sheet_pipeline, save_artifact,
+    create_artifact, repair_diagram, run_deck_pipeline, run_diagram_pipeline,
+    run_doc_pipeline, run_infographic_pipeline, run_podcast_pipeline,
+    run_sheet_pipeline, save_artifact,
 )
 from .irx import bake, load_document, studio_theme, to_docloom_theme
 from .jobs import cancel_job, job_state, sse_events, start_job
@@ -30,12 +33,14 @@ class GenerateRequest(BaseModel):
 
 
 @router.post("/notebooks/{notebook_id}/artifacts")
-async def generate_artifact(notebook_id: str, body: GenerateRequest) -> dict:
-    if query_one("SELECT id FROM notebooks WHERE id = ?", (notebook_id,)) is None:
-        raise HTTPException(404, "notebook not found")
+async def generate_artifact(
+    notebook_id: str, body: GenerateRequest, user: dict = Depends(current_user)
+) -> dict:
+    require_notebook(user["id"], notebook_id)
     pipelines = {"deck": run_deck_pipeline, "doc": run_doc_pipeline,
                  "sheet": run_sheet_pipeline, "diagram": run_diagram_pipeline,
-                 "infographic": run_infographic_pipeline}
+                 "infographic": run_infographic_pipeline,
+                 "podcast": run_podcast_pipeline}
     if body.kind not in pipelines:
         raise HTTPException(400, f"unknown kind {body.kind!r}")
     artifact_id = create_artifact(notebook_id, body.kind)
@@ -60,7 +65,8 @@ def _artifact_row(artifact_id: str):
 
 
 @router.get("/artifacts/{artifact_id}")
-async def get_artifact(artifact_id: str) -> dict:
+async def get_artifact(artifact_id: str, user: dict = Depends(current_user)) -> dict:
+    require_artifact(user["id"], artifact_id)
     row = _artifact_row(artifact_id)
     return {"id": row["id"], "notebook_id": row["notebook_id"],
             "kind": row["kind"], "title": row["title"],
@@ -73,8 +79,10 @@ class IrUpdate(BaseModel):
 
 
 @router.put("/artifacts/{artifact_id}/ir")
-async def update_ir(artifact_id: str, body: IrUpdate) -> dict:
-    row = _artifact_row(artifact_id)
+async def update_ir(
+    artifact_id: str, body: IrUpdate, user: dict = Depends(current_user)
+) -> dict:
+    require_artifact(user["id"], artifact_id)
     doc = load_document(body.payload)  # validates
     version = save_artifact(artifact_id, title=doc.title, payload=body.payload)
     findings = lint(doc)
@@ -83,7 +91,8 @@ async def update_ir(artifact_id: str, body: IrUpdate) -> dict:
 
 
 @router.get("/artifacts/{artifact_id}/versions")
-async def versions(artifact_id: str) -> list[dict]:
+async def versions(artifact_id: str, user: dict = Depends(current_user)) -> list[dict]:
+    require_artifact(user["id"], artifact_id)
     return [dict(r) for r in query_all(
         "SELECT version, created FROM artifact_versions WHERE artifact_id = ? "
         "ORDER BY version DESC", (artifact_id,)
@@ -95,7 +104,10 @@ class RevertRequest(BaseModel):
 
 
 @router.post("/artifacts/{artifact_id}/revert")
-async def revert(artifact_id: str, body: RevertRequest) -> dict:
+async def revert(
+    artifact_id: str, body: RevertRequest, user: dict = Depends(current_user)
+) -> dict:
+    require_artifact(user["id"], artifact_id)
     row = query_one(
         "SELECT payload_json FROM artifact_versions WHERE artifact_id = ? "
         "AND version = ?", (artifact_id, body.version))
@@ -112,15 +124,26 @@ class ExportRequest(BaseModel):
 
 
 @router.post("/artifacts/{artifact_id}/export")
-async def export_artifact(artifact_id: str, body: ExportRequest) -> dict:
+async def export_artifact(
+    artifact_id: str, body: ExportRequest, user: dict = Depends(current_user)
+) -> dict:
+    require_artifact(user["id"], artifact_id)
     row = _artifact_row(artifact_id)
     if body.format not in FORMATS:
         raise HTTPException(400, f"unknown format {body.format!r}")
     payload = json.loads(row["payload_json"])
     doc = bake(load_document(payload))
-    from .assets import apply_brand
+    from .assets import apply_brand, brand_logo_image
+    from docloom.ir import Image as IRImage
 
-    theme = to_docloom_theme(apply_brand(studio_theme(payload.get("theme_name", "paper"))))
+    # Stamp the active brand logo on every slide / report header, unless the
+    # document already carries its own logo.
+    if doc.logo is None:
+        logo = brand_logo_image(user["id"])
+        if logo:
+            doc.logo = IRImage(**logo)
+    theme = to_docloom_theme(
+        apply_brand(studio_theme(payload.get("theme_name", "paper")), user["id"]))
     findings = lint(doc, theme)
     errors = [f.model_dump() for f in findings if f.severity == "error"]
     if errors:
@@ -135,7 +158,9 @@ async def export_artifact(artifact_id: str, body: ExportRequest) -> dict:
 
 
 @router.get("/exports/{filename}")
-async def download_export(filename: str) -> FileResponse:
+async def download_export(
+    filename: str, user: dict = Depends(current_user)
+) -> FileResponse:
     path = (data_dir() / "exports" / filename).resolve()
     if not path.is_file() or path.parent != (data_dir() / "exports").resolve():
         raise HTTPException(404, "export not found")
@@ -143,7 +168,7 @@ async def download_export(filename: str) -> FileResponse:
 
 
 @router.get("/files")
-async def serve_file(path: str) -> FileResponse:
+async def serve_file(path: str, user: dict = Depends(current_user)) -> FileResponse:
     """Serve a local file, confined to the app data directory."""
     root = data_dir().resolve()
     candidate = Path(path)
@@ -158,8 +183,11 @@ class SavePayload(BaseModel):
 
 
 @router.put("/artifacts/{artifact_id}/payload")
-async def update_payload(artifact_id: str, body: SavePayload) -> dict:
+async def update_payload(
+    artifact_id: str, body: SavePayload, user: dict = Depends(current_user)
+) -> dict:
     """Generic payload save for non-Document artifacts (diagram/infographic)."""
+    require_artifact(user["id"], artifact_id)
     row = _artifact_row(artifact_id)
     version = save_artifact(artifact_id, row["title"], body.payload)
     return {"version": version}
@@ -171,9 +199,12 @@ class RepairRequest(BaseModel):
 
 
 @router.post("/artifacts/{artifact_id}/repair")
-async def repair(artifact_id: str, body: RepairRequest) -> dict:
-    fixed = await repair_mermaid(body.src, body.error)
-    return {"mermaid": fixed}
+async def repair(
+    artifact_id: str, body: RepairRequest, user: dict = Depends(current_user)
+) -> dict:
+    require_artifact(user["id"], artifact_id)
+    fixed = await repair_diagram(body.src, body.error, user["id"])
+    return {"source": fixed}
 
 
 class RendersRequest(BaseModel):
@@ -182,11 +213,13 @@ class RendersRequest(BaseModel):
 
 
 @router.post("/artifacts/{artifact_id}/renders")
-async def save_renders(artifact_id: str, body: RendersRequest) -> dict:
+async def save_renders(
+    artifact_id: str, body: RendersRequest, user: dict = Depends(current_user)
+) -> dict:
     """Persist browser-rendered SVG/PNG for an artifact (diagram/infographic)."""
     import base64
 
-    _artifact_row(artifact_id)
+    require_artifact(user["id"], artifact_id)
     adir = data_dir() / "artifacts" / artifact_id
     adir.mkdir(parents=True, exist_ok=True)
     if body.svg:
@@ -197,27 +230,55 @@ async def save_renders(artifact_id: str, body: RendersRequest) -> dict:
 
 
 @router.get("/artifacts/{artifact_id}/render.{ext}")
-async def get_render(artifact_id: str, ext: str) -> FileResponse:
+async def get_render(
+    artifact_id: str, ext: str, user: dict = Depends(current_user)
+) -> FileResponse:
+    require_artifact(user["id"], artifact_id)
     path = data_dir() / "artifacts" / artifact_id / f"render.{ext}"
     if not path.is_file():
         raise HTTPException(404, "no render yet")
     return FileResponse(path)
 
 
-@router.get("/jobs/{job_id}")
-async def get_job(job_id: str) -> dict:
+@router.get("/artifacts/{artifact_id}/audio.{ext}")
+async def get_audio(
+    artifact_id: str, ext: str, user: dict = Depends(current_user)
+) -> FileResponse:
+    """Serve a podcast's synthesized audio. Starlette's FileResponse handles
+    HTTP Range requests, so the player can seek/scrub."""
+    require_artifact(user["id"], artifact_id)
+    path = data_dir() / "artifacts" / artifact_id / f"audio.{ext}"
+    if not path.is_file():
+        raise HTTPException(404, "no audio yet")
+    return FileResponse(path, media_type=f"audio/{ext}")
+
+
+def _require_job(user_id: str, job_id: str) -> dict:
+    """Job state, but only if the job's notebook belongs to the user."""
     state = job_state(job_id)
     if state is None:
         raise HTTPException(404, "job not found")
+    row = query_one("SELECT notebook_id FROM jobs WHERE id = ?", (job_id,))
+    if row is not None and row["notebook_id"]:
+        require_notebook(user_id, row["notebook_id"])  # 404 if not owned
     return state
 
 
+@router.get("/jobs/{job_id}")
+async def get_job(job_id: str, user: dict = Depends(current_user)) -> dict:
+    return _require_job(user["id"], job_id)
+
+
 @router.get("/jobs/{job_id}/events")
-async def job_events(job_id: str) -> StreamingResponse:
+async def job_events(
+    job_id: str, user: dict = Depends(current_user)
+) -> StreamingResponse:
+    _require_job(user["id"], job_id)
     return StreamingResponse(sse_events(job_id), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache"})
 
 
 @router.post("/jobs/{job_id}/cancel")
-async def job_cancel(job_id: str) -> dict:
+async def job_cancel(job_id: str, user: dict = Depends(current_user)) -> dict:
+    _require_job(user["id"], job_id)
     return {"cancelled": cancel_job(job_id)}

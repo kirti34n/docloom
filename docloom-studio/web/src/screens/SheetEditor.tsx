@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { Check, Download, Loader2, Plus } from 'lucide-react'
 import { api } from '../api/client'
+import { toast } from '../ui/toast'
 import type { ArtifactT } from '../deck/types'
 
 type Cell = string | number | boolean | null | { formula: string }
@@ -82,7 +83,7 @@ export function SheetEditor() {
       const res = await api.post<{ url: string; filename: string }>(`/api/artifacts/${artifactId}/export`, { format: fmt })
       const a = document.createElement('a')
       a.href = res.url; a.download = res.filename; a.click()
-    } catch (e) { alert(`Export failed: ${e instanceof Error ? e.message : e}`) }
+    } catch (e) { toast.error(`Export failed: ${e instanceof Error ? e.message : e}`) }
     finally { setExporting(null) }
   }
 

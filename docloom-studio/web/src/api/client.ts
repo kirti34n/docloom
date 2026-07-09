@@ -8,6 +8,12 @@ export class ApiError extends Error {
   }
 }
 
+/** Called whenever any request 401s, so the auth layer can drop to login. */
+let onUnauthorized: (() => void) | null = null
+export function setUnauthorizedHandler(fn: (() => void) | null) {
+  onUnauthorized = fn
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
@@ -15,6 +21,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
+    if (res.status === 401) onUnauthorized?.()
     throw new ApiError(res.status, text || res.statusText)
   }
   return (await res.json()) as T
@@ -42,7 +49,10 @@ export async function streamNdjson(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!res.ok || !res.body) throw new ApiError(res.status, await res.text())
+  if (!res.ok || !res.body) {
+    if (res.status === 401) onUnauthorized?.()
+    throw new ApiError(res.status, await res.text().catch(() => ''))
+  }
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''

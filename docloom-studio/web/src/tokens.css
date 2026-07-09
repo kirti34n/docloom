@@ -12,6 +12,7 @@
   --ws-accent: #2f5af5;
   --ws-accent-ink: #ffffff;
   --ws-danger: #c2410c;
+  --ws-warn: #b45309;
   --ws-ok: #0e9f6e;
 
   /* editor canvas (dark stage) */
@@ -24,5 +25,27 @@
   --font-mono: 'JetBrains Mono', Consolas, ui-monospace, monospace;
 
   --radius: 10px;
+  --radius-sm: 7px;
+  --radius-lg: 14px;
   --shadow-panel: 0 1px 2px rgb(25 24 23 / 0.05), 0 8px 24px rgb(25 24 23 / 0.06);
+  --shadow-sm: 0 1px 2px rgb(25 24 23 / 0.06);
+  --shadow-md: 0 2px 8px rgb(25 24 23 / 0.08), 0 1px 2px rgb(25 24 23 / 0.05);
+  --shadow-lg: 0 12px 32px rgb(25 24 23 / 0.12), 0 2px 8px rgb(25 24 23 / 0.06);
+
+  /* editorial type scale (1.25 minor-third), in rem */
+  --text-2xs: 0.6875rem; /* 11px */
+  --text-xs: 0.75rem;    /* 12px */
+  --text-sm: 0.8125rem;  /* 13px */
+  --text-base: 0.875rem; /* 14px */
+  --text-md: 1rem;       /* 16px */
+  --text-lg: 1.25rem;    /* 20px */
+  --text-xl: 1.5rem;     /* 24px */
+  --text-2xl: 1.875rem;  /* 30px */
+
+  /* motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  --dur-slow: 320ms;
 }

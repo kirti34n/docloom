@@ -95,17 +95,67 @@ def _css_font(name: str) -> str:
     return '"' + re.sub(r"[^\w \-]", "", name) + '"'
 
 
-def _css(theme: Theme) -> str:
+_FONT_MIME = {
+    ".woff2": "font/woff2", ".woff": "font/woff",
+    ".ttf": "font/ttf", ".otf": "font/otf",
+}
+_FONT_FORMAT = {
+    ".woff2": "woff2", ".woff": "woff", ".ttf": "truetype", ".otf": "opentype",
+}
+
+
+def _face(family: str, src: str | None) -> str:
+    """An @font-face embedding a local font file as a data URI, or '' if the
+    file is missing/unreadable (the family name then just falls back)."""
+    if not src:
+        return ""
+    p = Path(src)
+    ext = p.suffix.lower()
+    if ext not in _FONT_MIME or not p.is_file():
+        return ""
+    try:
+        data = base64.b64encode(p.read_bytes()).decode("ascii")
+    except OSError:
+        return ""
     return (
-        f":root{{--primary:{theme.primary};--accent:{theme.accent};"
+        f"@font-face{{font-family:{_css_font(family)};"
+        f"src:url(data:{_FONT_MIME[ext]};base64,{data}) "
+        f"format('{_FONT_FORMAT[ext]}');font-display:swap}}\n"
+    )
+
+
+def _css(theme: Theme) -> str:
+    faces = _face(theme.font_body, theme.font_body_src)
+    if theme.font_heading != theme.font_body or not theme.font_body_src:
+        faces += _face(theme.font_heading, theme.font_heading_src)
+    return (
+        faces
+        + f":root{{--primary:{theme.primary};--accent:{theme.accent};"
         f"--bg:{theme.background};--surface:{theme.surface};"
         f"--text:{theme.text};--muted:{theme.muted}}}\n"
         + _CSS_STATIC
+        + f"header .brand-logo{{max-height:2.5rem;margin-bottom:.75rem}}\n"
         + f"body{{font-family:{_css_font(theme.font_body)},Georgia,"
         f'"Times New Roman",serif}}\n'
         f"h1,h2,h3,h4,h5{{font-family:{_css_font(theme.font_heading)},"
         f'-apple-system,"Segoe UI",Arial,sans-serif}}\n'
     )
+
+
+def _logo_html(logo: Image | None) -> str:
+    """A brand logo <img> (data-URI embedded) for the document header, or ''."""
+    if logo is None or not logo.path:
+        return ""
+    p = Path(logo.path)
+    if not p.is_file():
+        return ""
+    mime = mimetypes.guess_type(p.name)[0] or "image/png"
+    try:
+        data = base64.b64encode(p.read_bytes()).decode("ascii")
+    except OSError:
+        return ""
+    return (f'<img class="brand-logo" src="data:{mime};base64,{data}" '
+            f'alt="{_esc(logo.alt or "logo")}">')
 
 
 def _safe_href(url: str) -> str | None:
@@ -313,7 +363,7 @@ def _sources_html(doc: Document) -> str:
 
 def to_html(doc: Document, theme: Theme) -> str:
     numbers = source_numbers(doc)
-    parts = [f"<header><h1>{_esc(doc.title)}</h1>"]
+    parts = [f"<header>{_logo_html(doc.logo)}<h1>{_esc(doc.title)}</h1>"]
     if doc.subtitle:
         parts.append(f'<p class="subtitle">{_esc(doc.subtitle)}</p>')
     meta = " \u00b7 ".join(x for x in (", ".join(doc.authors), doc.date or "") if x)

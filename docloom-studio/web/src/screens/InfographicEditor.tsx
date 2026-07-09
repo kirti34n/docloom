@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { Check, Download, Loader2, Plus, Trash2 } from 'lucide-react'
 import { api } from '../api/client'
+import { toast } from '../ui/toast'
 import type { ArtifactT } from '../deck/types'
 
 interface Item { label: string; desc: string }
@@ -65,8 +66,13 @@ export function InfographicEditor() {
           template,
           data: { title, lists: items },
           editable: true,
-          width: 900,
-          height: 620,
+          // Roomy canvas + top padding, and — crucially — an absolute title
+          // font size. The template otherwise scales the title with the canvas,
+          // so it always wrapped to two lines and collided with the graphic.
+          width: 1240,
+          height: 760,
+          padding: [56, 40, 36, 40],
+          themeConfig: { title: { 'font-size': 18, 'font-weight': 700 } },
         } as never)
         inst.render()
         ig.current = inst as never
@@ -112,7 +118,7 @@ export function InfographicEditor() {
       a.download = `${title || 'infographic'}.svg`
       a.click()
     } catch (e) {
-      alert(`Export failed: ${e instanceof Error ? e.message : e}`)
+      toast.error(`Export failed: ${e instanceof Error ? e.message : e}`)
     }
   }
 
@@ -162,7 +168,7 @@ export function InfographicEditor() {
           <div>
             <div className="flex items-center justify-between">
               <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stage-muted">Items</h3>
-              <button onClick={addItem} className="text-stage-muted hover:text-white"><Plus size={14} /></button>
+              <button onClick={addItem} aria-label="Add item" className="text-stage-muted hover:text-white"><Plus size={14} /></button>
             </div>
             <div className="mt-2 space-y-2">
               {items.map((it, i) => (
@@ -171,7 +177,7 @@ export function InfographicEditor() {
                     <input value={it.label} onChange={(e) => setItem(i, { label: e.target.value })}
                       placeholder="Label"
                       className="flex-1 bg-transparent text-[13px] font-medium outline-none" />
-                    <button onClick={() => delItem(i)} className="text-stage-muted hover:text-red-400"><Trash2 size={12} /></button>
+                    <button onClick={() => delItem(i)} aria-label="Delete item" className="text-stage-muted hover:text-red-400"><Trash2 size={12} /></button>
                   </div>
                   <input value={it.desc} onChange={(e) => setItem(i, { desc: e.target.value })}
                     placeholder="Description"
@@ -185,7 +191,7 @@ export function InfographicEditor() {
         {/* canvas */}
         <div className="flex min-w-0 flex-1 items-center justify-center overflow-auto bg-white p-8">
           {error && <div className="absolute rounded bg-red-500/90 px-3 py-1.5 text-[12px] text-white">{error.slice(0, 120)}</div>}
-          <div ref={container} style={{ width: 900, height: 620 }} className="[&_svg]:h-full [&_svg]:w-full" />
+          <div ref={container} style={{ width: 1240, maxWidth: '100%' }} className="[&_svg]:h-auto [&_svg]:max-w-full" />
         </div>
       </div>
     </div>

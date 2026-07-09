@@ -1,0 +1,18 @@
+{
+  "label": "Aurora",
+  "description": "Cool indigo on white, teal accent, crisp modern sans.",
+  "primary": "#4F46E5",
+  "accent": "#0D9488",
+  "accent_2": "#F59E0B",
+  "background": "#FFFFFF",
+  "surface": "#F4F6FB",
+  "text": "#0F172A",
+  "muted": "#64748B",
+  "font_heading": "Sora",
+  "font_body": "Inter",
+  "heading_weight": 680,
+  "heading_tracking": "-0.02em",
+  "radius": 12,
+  "bg_style": "solid",
+  "divider_style": "hairline"
+}

@@ -31,6 +31,10 @@ build/
 # Office temp lock files
 ~$*
 
+# Source snapshot / archives
+docloomsource.zip
+*.zip
+
 # OS
 .DS_Store
 Thumbs.db

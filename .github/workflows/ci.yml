@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  engine:
+    name: docloom engine (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    defaults:
+      run:
+        working-directory: docloom
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[pdf,dev]"
+      - run: pytest -q
+
+  studio-backend:
+    name: docloom-studio backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Install the engine from the monorepo checkout, then the studio + dev deps.
+      - run: pip install -e ./docloom[pdf]
+      - run: pip install -e "./docloom-studio[dev,ingest]"
+      - run: pytest -q
+        working-directory: docloom-studio
+
+  studio-postgres:
+    name: docloom-studio on Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: docloom_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    env:
+      DOCLOOM_DB_URL: postgresql://postgres:postgres@127.0.0.1:5432/docloom_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ./docloom[pdf]
+      - run: pip install -e "./docloom-studio[dev,postgres]"
+      # These suites clean up after themselves, so they're safe on a shared DB
+      # and exercise the full auth API + the live PG round-trip.
+      - run: pytest -q tests/test_db_backend.py tests/test_auth.py
+        working-directory: docloom-studio
+
+  studio-frontend:
+    name: docloom-studio web (lint + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docloom-studio/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: docloom-studio/web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build

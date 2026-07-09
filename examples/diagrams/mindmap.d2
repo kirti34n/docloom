@@ -1,0 +1,29 @@
+# Sample D2 mind map for the docloom studio Diagram editor.
+direction: right
+
+classes: {
+  root: { style: { fill: "#4F46E5"; stroke: "#4F46E5"; font-color: "#FFFFFF"; border-radius: 14; bold: true } }
+  theme: { style: { fill: "#EEF2FF"; stroke: "#4F46E5"; stroke-width: 2; border-radius: 12; font-color: "#1E1B4B" } }
+  leaf: { style: { fill: "#ECFDF5"; stroke: "#0D9488"; stroke-width: 2; border-radius: 10; font-color: "#0F766E" } }
+}
+
+docloom: docloom { class: root }
+engine: Engine { class: theme }
+studio: Studio { class: theme }
+ir: IR { class: theme }
+renderers: Renderers { class: leaf }
+linter: Linter { class: leaf }
+notebooks: Notebooks { class: leaf }
+chat: Grounded chat { class: leaf }
+guides: Guides { class: leaf }
+vjson: Validated JSON { class: leaf }
+
+docloom -> engine
+docloom -> studio
+docloom -> ir
+engine -> renderers
+engine -> linter
+studio -> notebooks
+studio -> chat
+studio -> guides
+ir -> vjson

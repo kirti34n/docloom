@@ -6,6 +6,7 @@ import { useThemes, themeByName } from '../deck/useThemes'
 import { SourcesPanel } from '../notebook/SourcesPanel'
 import { ChatPanel } from '../notebook/ChatPanel'
 import { ArtifactsPanel } from '../notebook/ArtifactsPanel'
+import { SourceReader } from '../notebook/SourceReader'
 
 interface ArtifactSummary {
   id: string
@@ -25,6 +26,7 @@ export function NotebookWorkspace() {
   const navigate = useNavigate()
   const [notebook, setNotebook] = useState<NotebookDetail | null>(null)
   const [job, setJob] = useState<{ jobId: string; kind: string; title: string } | null>(null)
+  const [reader, setReader] = useState<{ sourceId: string; highlight: string } | null>(null)
   const themes = useThemes()
 
   const load = () => api.get<NotebookDetail>(`/api/notebooks/${notebookId}`).then(setNotebook)
@@ -63,12 +65,25 @@ export function NotebookWorkspace() {
       </div>
       <div className="flex min-h-0 flex-1">
         {notebookId && <SourcesPanel notebookId={notebookId} />}
-        {notebookId && <ChatPanel notebookId={notebookId} />}
-        <ArtifactsPanel
-          artifacts={notebook?.artifacts ?? []}
-          onGenerate={generate}
-          onOpen={(a) => navigate(`/n/${notebookId}/${a.kind}/${a.id}`)}
-        />
+        {notebookId && (
+          <ChatPanel
+            notebookId={notebookId}
+            onCite={(e) => setReader({ sourceId: e.source_id, highlight: e.text })}
+          />
+        )}
+        {reader ? (
+          <SourceReader
+            sourceId={reader.sourceId}
+            highlight={reader.highlight}
+            onClose={() => setReader(null)}
+          />
+        ) : (
+          <ArtifactsPanel
+            artifacts={notebook?.artifacts ?? []}
+            onGenerate={generate}
+            onOpen={(a) => navigate(`/n/${notebookId}/${a.kind}/${a.id}`)}
+          />
+        )}
       </div>
     </div>
   )

@@ -15,10 +15,10 @@ from docloom.ir import Block, Heading, Image
 from docloom.llm import parse_llm_output
 from pydantic import BaseModel, Field
 
-from .db import execute, new_id, now, query_one
+from .db import execute, new_id, now, owner_of_notebook, query_one
 from .jobs import JobCtx
 from .providers import GenerationFailed, ProviderConfig, generate_validated
-from .settings import get_setting
+from .settings import data_dir, get_setting
 
 OutlineLayout = Literal["section", "content", "two_column", "quote",
                         "hero", "image_left", "image_right"]
@@ -95,16 +95,16 @@ def _slide_errors(deck_title: str, slide: Slide) -> list[str]:
             for f in findings if f.severity == "error"]
 
 
-def _resolve_deck_images(doc: Document) -> None:
+def _resolve_deck_images(doc: Document, user_id: str | None) -> None:
     """Fill image-layout slots from the user's tagged assets, and put the brand
     logo on the title slide. Slots that resolve to nothing render empty."""
     from .assets import active_brand, resolve_image
 
-    logo = active_brand().get("logo_asset_id")
+    logo = active_brand(user_id).get("logo_asset_id")
     for s in doc.slides:
         if s.layout in ("hero", "image_left", "image_right"):
             q = (s.image.query if s.image and s.image.query else s.title) or ""
-            aid = resolve_image(q)
+            aid = resolve_image(q, user_id)
             if aid:
                 s.image = Image(asset_id=aid, path=f"asset://{aid}", alt=q or None)
         elif s.layout == "title" and logo:
@@ -119,7 +119,8 @@ async def run_deck_pipeline(
     context_lines: list[str] | None = None,
     sources: list[dict] | None = None,
 ) -> None:
-    cfg = ProviderConfig(**get_setting("provider.generation"))
+    owner = owner_of_notebook(notebook_id)
+    cfg = ProviderConfig(**get_setting("provider.generation", owner))
     sources = sources or []
 
     ctx.emit("context", "done",
@@ -133,7 +134,8 @@ async def run_deck_pipeline(
         )
 
     has_images = query_one(
-        "SELECT 1 FROM assets WHERE type IN ('image','logo') LIMIT 1") is not None
+        "SELECT 1 FROM assets WHERE type IN ('image','logo') AND user_id = ? LIMIT 1",
+        (owner,)) is not None
     outline_sys = OUTLINE_SYSTEM + (IMAGE_LAYOUT_HINT if has_images else NO_IMAGE_HINT)
     slide_sys = SLIDE_SYSTEM + (IMAGE_SLIDE_HINT if has_images else "")
 
@@ -161,10 +163,12 @@ async def run_deck_pipeline(
     for index, item in enumerate(outline.slides):
         ctx.emit("slide", "running", detail=item.title,
                  data={"index": index + 1, "total": len(outline.slides)})
+        sec_block = await _section_block(
+            notebook_id, f"{item.title} — {item.intent}", context_block, bool(sources))
         user = (
             f'Deck: "{outline.deck_title}"\nFull outline:\n{plan_lines}\n\n'
             f'Draft slide {index + 1}: "{item.title}" (layout: {item.layout}).\n'
-            f"Intent: {item.intent}{context_block}"
+            f"Intent: {item.intent}{sec_block}"
         )
         try:
             slide: Slide = await generate_validated(
@@ -194,14 +198,14 @@ async def run_deck_pipeline(
         sources=[Source(**s) for s in sources],
     )
     _citation_gate(doc, {s["id"] for s in sources})
-    _resolve_deck_images(doc)
+    _resolve_deck_images(doc, owner)
     doc = ensure_ids(doc)
     findings = lint(doc)
     ctx.emit("lint", "done", data={
         "findings": [f.model_dump() for f in findings],
     })
 
-    theme_name = get_setting("deck.theme")
+    theme_name = get_setting("deck.theme", owner)
     payload = {"ir": doc.model_dump(exclude_none=True),
                "theme_name": theme_name, "brand_kit_id": None}
     save_artifact(artifact_id, title=doc.title, payload=payload)
@@ -243,7 +247,8 @@ async def run_doc_pipeline(
     ctx: JobCtx, notebook_id: str, artifact_id: str, prompt: str,
     context_lines: list[str] | None = None, sources: list[dict] | None = None,
 ) -> None:
-    cfg = ProviderConfig(**get_setting("provider.generation"))
+    owner = owner_of_notebook(notebook_id)
+    cfg = ProviderConfig(**get_setting("provider.generation", owner))
     sources = sources or []
     ctx.emit("context", "done", detail=f"{len(sources)} sources")
     context_block = _context_block(context_lines)
@@ -266,13 +271,15 @@ async def run_doc_pipeline(
         ctx.emit("section", "running", detail=item.heading,
                  data={"index": i + 1, "total": len(outline.sections)})
         blocks.append(Heading(level=2, text=item.heading))
+        sec_block = await _section_block(
+            notebook_id, f"{item.heading} — {item.intent}", context_block, bool(sources))
         try:
             section: DocSection = await generate_validated(
                 cfg,
                 [{"role": "system", "content": DOC_SECTION_SYSTEM},
                  {"role": "user", "content":
                     f'Report: "{outline.doc_title}"\nSection: "{item.heading}"\n'
-                    f"Intent: {item.intent}{context_block}"}],
+                    f"Intent: {item.intent}{sec_block}"}],
                 schema=llm_schema(DocSection),
                 parse=lambda t: parse_llm_output(t, DocSection),
             )
@@ -290,7 +297,7 @@ async def run_doc_pipeline(
     ctx.emit("lint", "done", data={"findings": [f.model_dump() for f in findings]})
     save_artifact(artifact_id, doc.title,
                   {"ir": doc.model_dump(exclude_none=True),
-                   "theme_name": get_setting("deck.theme"), "brand_kit_id": None})
+                   "theme_name": get_setting("deck.theme", owner), "brand_kit_id": None})
     ctx.emit("save", "done", data={"artifact_id": artifact_id, "title": doc.title})
 
 
@@ -314,7 +321,8 @@ async def run_sheet_pipeline(
     ctx: JobCtx, notebook_id: str, artifact_id: str, prompt: str,
     context_lines: list[str] | None = None, sources: list[dict] | None = None,
 ) -> None:
-    cfg = ProviderConfig(**get_setting("provider.generation"))
+    owner = owner_of_notebook(notebook_id)
+    cfg = ProviderConfig(**get_setting("provider.generation", owner))
     ctx.emit("context", "done")
     ctx.emit("sheet", "running")
     result: SheetDoc = await generate_validated(
@@ -330,7 +338,7 @@ async def run_sheet_pipeline(
     ctx.emit("lint", "done", data={"findings": [f.model_dump() for f in findings]})
     save_artifact(artifact_id, doc.title,
                   {"ir": doc.model_dump(exclude_none=True),
-                   "theme_name": get_setting("deck.theme"), "brand_kit_id": None})
+                   "theme_name": get_setting("deck.theme", owner), "brand_kit_id": None})
     ctx.emit("save", "done", data={"artifact_id": artifact_id, "title": doc.title})
 
 
@@ -339,26 +347,40 @@ async def run_sheet_pipeline(
 
 class DiagramGen(BaseModel):
     title: str
-    mermaid: str = Field(description="a complete Mermaid flowchart, code only")
+    d2: str = Field(description="complete D2 (d2lang) diagram source, code only")
 
 
 DIAGRAM_SYSTEM = """\
-You produce architecture and process diagrams as Mermaid FLOWCHARTS only.
+You produce architecture and process diagrams as D2 (d2lang) source only.
+D2 is NOT Mermaid: never write `flowchart`, `graph`, `[...]` node brackets, or
+`-->`. Use D2 syntax exactly like the example.
+
 Rules:
-- Start with `flowchart TD` or `flowchart LR`.
-- Use at most 20 nodes; short labels.
-- Only flowchart syntax (nodes, edges, subgraphs) — no sequence/class/other
-  diagram types, no styling/classDef.
-- Output ONLY the mermaid code, nothing else."""
+- First line: `direction: right` (or `down`).
+- A node is `id: Label`. A connection is `a -> b`. Chains `a -> b -> c` are fine.
+- Special shapes: `{ shape: cylinder }` for databases/stores, `{ shape: person }`
+  for users/actors, `{ shape: document }` for files/outputs.
+- Keep to at most 20 nodes with short labels.
+
+Example of the exact format:
+direction: right
+user: User { shape: person }
+api: API service
+db: Store { shape: cylinder }
+user -> api
+api -> db
+
+Output ONLY valid D2 source in the `d2` field, nothing else."""
 
 
-def _looks_like_flowchart(src: str) -> list[str]:
+def _looks_like_d2(src: str) -> list[str]:
     s = src.strip()
-    first = s.splitlines()[0].strip().lower() if s else ""
-    if not (first.startswith("flowchart") or first.startswith("graph")):
-        return ['must start with "flowchart TD" or "flowchart LR"']
-    if s.count("[") != s.count("]") or s.count("(") != s.count(")"):
-        return ["unbalanced brackets/parentheses"]
+    if not s:
+        return ["empty diagram"]
+    if "->" not in s and "--" not in s:
+        return ["a D2 diagram needs at least one connection, e.g. `a -> b`"]
+    if s.count("{") != s.count("}"):
+        return ["unbalanced braces"]
     return []
 
 
@@ -366,7 +388,8 @@ async def run_diagram_pipeline(
     ctx: JobCtx, notebook_id: str, artifact_id: str, prompt: str,
     context_lines: list[str] | None = None, sources: list[dict] | None = None,
 ) -> None:
-    cfg = ProviderConfig(**get_setting("provider.generation"))
+    owner = owner_of_notebook(notebook_id)
+    cfg = ProviderConfig(**get_setting("provider.generation", owner))
     ctx.emit("context", "done")
     ctx.emit("body", "running", detail="drawing the diagram")
     result: DiagramGen = await generate_validated(
@@ -375,12 +398,11 @@ async def run_diagram_pipeline(
          {"role": "user", "content": prompt + _context_block(context_lines)}],
         schema=llm_schema(DiagramGen),
         parse=lambda t: parse_llm_output(t, DiagramGen),
-        lint_fn=lambda d: _looks_like_flowchart(d.mermaid),
+        lint_fn=lambda d: _looks_like_d2(d.d2),
     )
     ctx.emit("body", "done", detail=result.title)
     save_artifact(artifact_id, result.title, {
-        "mermaid_src": result.mermaid, "excalidraw_scene": None,
-        "canvas_dirty": False, "render": None,
+        "source": result.d2, "render": None,
     })
     ctx.emit("save", "done", data={"artifact_id": artifact_id, "title": result.title})
 
@@ -419,7 +441,8 @@ async def run_infographic_pipeline(
     ctx: JobCtx, notebook_id: str, artifact_id: str, prompt: str,
     context_lines: list[str] | None = None, sources: list[dict] | None = None,
 ) -> None:
-    cfg = ProviderConfig(**get_setting("provider.generation"))
+    owner = owner_of_notebook(notebook_id)
+    cfg = ProviderConfig(**get_setting("provider.generation", owner))
     ctx.emit("context", "done")
     ctx.emit("body", "running", detail="composing the infographic")
     spec: InfographicSpec = await generate_validated(
@@ -444,19 +467,85 @@ async def run_infographic_pipeline(
     ctx.emit("save", "done", data={"artifact_id": artifact_id, "title": spec.title})
 
 
-async def repair_mermaid(src: str, error: str) -> str:
-    cfg = ProviderConfig(**get_setting("provider.generation"))
+# ------------------------------------------------------------------ podcast
+
+
+class PodcastTurn(BaseModel):
+    speaker: Literal["A", "B"] = Field(description="A = host, B = expert guest")
+    text: str = Field(description="one conversational turn, 1-4 sentences")
+
+
+class PodcastScript(BaseModel):
+    title: str
+    turns: list[PodcastTurn]
+
+
+PODCAST_SYSTEM = """\
+You write short two-host audio overviews (like a podcast). Two speakers:
+A is a warm, curious host; B is a knowledgeable guest. Return JSON: a `title`
+and a `turns` array of {speaker, text}. Alternate A/B, open with A introducing
+the topic, and close with A wrapping up. 8-24 turns, each 1-4 spoken sentences,
+natural and conversational (contractions, brief reactions). Ground every claim
+in the provided evidence; do not invent facts. No stage directions or markdown
+— just what each person says."""
+
+
+async def run_podcast_pipeline(
+    ctx: JobCtx, notebook_id: str, artifact_id: str, prompt: str,
+    context_lines: list[str] | None = None, sources: list[dict] | None = None,
+) -> None:
+    owner = owner_of_notebook(notebook_id)
+    cfg = ProviderConfig(**get_setting("provider.generation", owner))
+    ctx.emit("context", "done")
+    ctx.emit("script", "running")
+    script: PodcastScript = await generate_validated(
+        cfg,
+        [{"role": "system", "content": PODCAST_SYSTEM},
+         {"role": "user", "content": prompt + _context_block(context_lines)}],
+        schema=llm_schema(PodcastScript),
+        parse=lambda t: parse_llm_output(t, PodcastScript),
+        lint_fn=lambda s: ([] if 6 <= len(s.turns) <= 40
+                           else ["need between 6 and 40 turns"]),
+    )
+    ctx.emit("script", "done",
+             data={"title": script.title, "turns": len(script.turns)})
+
+    payload = {"script": script.model_dump(), "audio_path": None,
+               "duration_s": None}
+    save_artifact(artifact_id, script.title, payload)
+
+    # Synthesize audio if a TTS backend is available; the transcript ships
+    # either way (audio is a best-effort enrichment).
+    try:
+        from .tts import synthesize_podcast
+
+        ctx.emit("audio", "running", detail="synthesizing voices")
+        out = data_dir() / "artifacts" / artifact_id / "audio.wav"
+        duration = await synthesize_podcast(
+            script.model_dump(), out, get_setting("provider.tts", owner))
+        payload["audio_path"] = f"artifacts/{artifact_id}/audio.wav"
+        payload["duration_s"] = round(duration, 1)
+        save_artifact(artifact_id, script.title, payload)
+        ctx.emit("audio", "done", detail=f"{payload['duration_s']}s")
+    except Exception as e:
+        ctx.emit("audio", "skipped", detail=str(e)[:200])
+
+    ctx.emit("save", "done", data={"artifact_id": artifact_id, "title": script.title})
+
+
+async def repair_diagram(src: str, error: str, user_id: str | None) -> str:
+    cfg = ProviderConfig(**get_setting("provider.generation", user_id))
     out: DiagramGen = await generate_validated(
         cfg,
         [{"role": "system", "content": DIAGRAM_SYSTEM},
          {"role": "user", "content":
-            f"This Mermaid failed to parse with error:\n{error}\n\n"
-            f"Code:\n{src}\n\nReturn ONLY the corrected Mermaid flowchart."}],
+            f"This D2 diagram failed to parse with error:\n{error}\n\n"
+            f"Code:\n{src}\n\nReturn ONLY the corrected D2 source."}],
         schema=llm_schema(DiagramGen),
         parse=lambda t: parse_llm_output(t, DiagramGen),
-        lint_fn=lambda d: _looks_like_flowchart(d.mermaid),
+        lint_fn=lambda d: _looks_like_d2(d.d2),
     )
-    return out.mermaid
+    return out.d2
 
 
 def _context_block(context_lines: list[str] | None) -> str:
@@ -464,6 +553,30 @@ def _context_block(context_lines: list[str] | None) -> str:
         return ""
     return ("\n\nGround every factual claim in this evidence and set the span's "
             '`cite` to the given source id.\nEvidence:\n' + "\n".join(context_lines))
+
+
+async def _section_block(
+    notebook_id: str, query: str, base_block: str, have_sources: bool, k: int = 6
+) -> str:
+    """Retrieve evidence targeted at ONE section/slide and append it to the
+    broad context block. Falls back to just `base_block` when the notebook has
+    no sources or retrieval finds nothing (keeps stubbed tests deterministic)."""
+    if not have_sources:
+        return base_block
+    try:
+        from .embeddings import retrieve
+
+        chunks = await retrieve(notebook_id, query, k=k)
+    except Exception:
+        chunks = []
+    if not chunks:
+        return base_block
+    lines = [
+        f'[cite id: "{c.source_id}"] '
+        f'({c.source_title}{f", p.{c.page}" if c.page else ""}) {c.text}'
+        for c in chunks
+    ]
+    return base_block + "\n\nMost relevant to THIS section:\n" + "\n".join(lines)
 
 
 def create_artifact(notebook_id: str, kind: str, title: str = "") -> str:

@@ -1,5 +1,16 @@
-import type { StudioTheme } from './types'
+import { useEffect, useState } from 'react'
+import { X } from 'lucide-react'
+import { api } from '../api/client'
+import type { Block, SlideT, StudioTheme } from './types'
 import { useDeck } from './deckStore'
+
+interface Asset {
+  id: string
+  type: string
+  filename: string
+}
+
+const IMAGE_LAYOUTS = ['image_left', 'image_right', 'hero', 'title']
 
 const LAYOUTS = [
   ['content', 'Content'],
@@ -18,6 +29,31 @@ export function Inspector({ themes }: { themes: StudioTheme[] }) {
   const findings = useDeck((s) => s.findings)
   const updateSlide = useDeck((s) => s.updateSlide)
   const setTheme = useDeck((s) => s.setTheme)
+
+  const [assets, setAssets] = useState<Asset[]>([])
+  useEffect(() => {
+    api
+      .get<Asset[]>('/api/assets')
+      .then((a) => setAssets(a.filter((x) => x.type === 'image' || x.type === 'logo')))
+      .catch(() => {})
+  }, [])
+
+  const imgPath = slide?.image?.path ?? ''
+  const currentAssetId =
+    slide?.image?.asset_id ?? (imgPath.startsWith('asset://') ? imgPath.slice(8) : null)
+
+  const setImage = (id: string | null) => {
+    if (!slideId || !slide) return
+    if (id === null) {
+      updateSlide(slideId, { image: null })
+      return
+    }
+    const patch: Partial<SlideT> = {
+      image: { type: 'image', path: `asset://${id}`, asset_id: id } as Block,
+    }
+    if (!IMAGE_LAYOUTS.includes(slide.layout)) patch.layout = 'image_left'
+    updateSlide(slideId, patch)
+  }
 
   const theme = themes.find((t) => t.name === themeName)
   const accents = theme
@@ -71,6 +107,44 @@ export function Inspector({ themes }: { themes: StudioTheme[] }) {
                 </option>
               ))}
             </select>
+          </section>
+
+          <section>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stage-muted">
+              Image
+            </h3>
+            <div className="mt-2 grid grid-cols-3 gap-1.5">
+              <button
+                onClick={() => setImage(null)}
+                title="No image"
+                className={`flex h-12 items-center justify-center rounded border ${
+                  !currentAssetId ? 'border-ws-accent' : 'border-stage-line'
+                }`}
+              >
+                <X size={14} className="text-stage-muted" />
+              </button>
+              {assets.map((a) => (
+                <button
+                  key={a.id}
+                  onClick={() => setImage(a.id)}
+                  title={a.filename}
+                  className={`overflow-hidden rounded border-2 ${
+                    currentAssetId === a.id ? 'border-ws-accent' : 'border-transparent'
+                  }`}
+                >
+                  <img
+                    src={`/api/assets/${a.id}/file`}
+                    alt={a.filename}
+                    className="h-12 w-full object-cover"
+                  />
+                </button>
+              ))}
+            </div>
+            {assets.length === 0 && (
+              <p className="mt-2 text-[12px] text-stage-muted">
+                Upload images under Assets to place them on slides.
+              </p>
+            )}
           </section>
 
           <section>

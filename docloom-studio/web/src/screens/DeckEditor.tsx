@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { Check, Download, Loader2, Redo2, Undo2 } from 'lucide-react'
 import { api } from '../api/client'
+import { toast } from '../ui/toast'
 import type { ArtifactT, StudioTheme } from '../deck/types'
 import { themeVars } from '../deck/types'
 import { EditableSlide } from '../deck/EditableSlide'
@@ -105,7 +106,7 @@ export function DeckEditor() {
       a.download = res.filename
       a.click()
     } catch (e) {
-      alert(`Export failed: ${e instanceof Error ? e.message : e}`)
+      toast.error(`Export failed: ${e instanceof Error ? e.message : e}`)
     } finally {
       setExporting(null)
     }

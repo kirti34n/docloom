@@ -1,5 +1,9 @@
-import { NavLink, Outlet } from 'react-router'
-import { Library, NotebookPen, Settings2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { NavLink, Outlet, useLocation } from 'react-router'
+import { Library, LogOut, Menu, NotebookPen, Plus, Settings2, X } from 'lucide-react'
+import { Toaster, toast } from './ui/toast'
+import { api } from './api/client'
+import { useAuth, type Workspace } from './auth/AuthContext'
 
 const navItems = [
   { to: '/', label: 'Notebooks', icon: NotebookPen, end: true },
@@ -7,14 +11,90 @@ const navItems = [
   { to: '/settings', label: 'Settings', icon: Settings2, end: false },
 ]
 
-export function Shell() {
+function WorkspaceSwitcher() {
+  const { workspaces, currentWorkspace, setCurrentWorkspace, refreshWorkspaces } = useAuth()
+
+  const create = async () => {
+    try {
+      const ws = await api.post<Workspace>('/api/workspaces', {
+        name: `Workspace ${workspaces.length + 1}`,
+      })
+      const all = await refreshWorkspaces()
+      const created = all.find((w) => w.id === ws.id)
+      if (created) setCurrentWorkspace(created)
+    } catch (e) {
+      toast.error(`Couldn't create workspace: ${e instanceof Error ? e.message : e}`)
+    }
+  }
+
+  if (!currentWorkspace) return null
   return (
-    <div className="flex h-full">
-      <aside className="flex w-52 shrink-0 flex-col border-r border-ws-line bg-ws-panel">
-        <div className="px-5 pt-5 pb-4">
+    <div className="flex items-center gap-1.5 px-2">
+      <select
+        aria-label="Workspace"
+        value={currentWorkspace.id}
+        onChange={(e) => {
+          const w = workspaces.find((x) => x.id === e.target.value)
+          if (w) setCurrentWorkspace(w)
+        }}
+        className="min-w-0 flex-1 truncate rounded-lg border border-ws-line bg-ws-bg px-2.5 py-1.5 text-[13px] font-medium outline-none focus:border-ws-accent"
+      >
+        {workspaces.map((w) => (
+          <option key={w.id} value={w.id}>
+            {w.name}
+          </option>
+        ))}
+      </select>
+      <button
+        onClick={create}
+        aria-label="New workspace"
+        title="New workspace"
+        className="shrink-0 rounded-lg border border-ws-line p-1.5 text-ws-muted hover:bg-ws-bg hover:text-ws-ink"
+      >
+        <Plus size={15} />
+      </button>
+    </div>
+  )
+}
+
+export function Shell() {
+  const { user, logout } = useAuth()
+  const location = useLocation()
+  const [navOpen, setNavOpen] = useState(false)
+  // route the outlet through a keyed wrapper so each screen fades in
+  const routeKey = location.pathname.split('/').slice(0, 3).join('/')
+  // close the mobile drawer on navigation
+  useEffect(() => setNavOpen(false), [routeKey])
+  return (
+    <div className="relative flex h-full">
+      {/* mobile top bar with a menu toggle — only below md */}
+      <div className="absolute inset-x-0 top-0 z-30 flex h-12 items-center gap-2 border-b border-ws-line bg-ws-panel px-3 md:hidden">
+        <button aria-label="Open menu" onClick={() => setNavOpen(true)}
+          className="rounded-lg p-1.5 text-ws-muted hover:bg-ws-bg hover:text-ws-ink">
+          <Menu size={18} />
+        </button>
+        <span className="font-display text-[15px] font-semibold tracking-tight">
+          docloom<span className="text-ws-accent"> studio</span>
+        </span>
+      </div>
+      {/* scrim behind the drawer */}
+      {navOpen && (
+        <div className="fixed inset-0 z-30 bg-black/30 md:hidden" onClick={() => setNavOpen(false)} />
+      )}
+      <aside className={`z-40 flex w-52 shrink-0 flex-col border-r border-ws-line bg-ws-panel
+        max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:shadow-lg max-md:transition-transform
+        ${navOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full'}`}>
+        <div className="flex items-center justify-between px-5 pt-5 pb-3">
           <span className="font-display text-[17px] font-semibold tracking-tight">
             docloom<span className="text-ws-accent"> studio</span>
           </span>
+          <button aria-label="Close menu" onClick={() => setNavOpen(false)}
+            className="rounded-lg p-1 text-ws-muted hover:text-ws-ink md:hidden">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="pb-3">
+          <WorkspaceSwitcher />
         </div>
         <nav className="flex flex-col gap-0.5 px-2">
           {navItems.map(({ to, label, icon: Icon, end }) => (
@@ -23,9 +103,9 @@ export function Shell() {
               to={to}
               end={end}
               className={({ isActive }) =>
-                `flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
+                `relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
                   isActive
-                    ? 'bg-ws-bg text-ws-ink'
+                    ? 'bg-ws-bg text-ws-ink before:absolute before:left-0 before:top-1/2 before:h-4 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-ws-accent'
                     : 'text-ws-muted hover:bg-ws-bg hover:text-ws-ink'
                 }`
               }
@@ -35,13 +115,22 @@ export function Shell() {
             </NavLink>
           ))}
         </nav>
-        <div className="mt-auto px-5 py-4 text-[11px] text-ws-muted">
-          local · private · free
+        <div className="mt-auto border-t border-ws-line px-3 py-3">
+          <div className="truncate px-1 text-[11px] text-ws-muted" title={user?.email}>
+            {user?.email}
+          </div>
+          <button
+            onClick={logout}
+            className="mt-1 flex w-full items-center gap-2 rounded-lg px-1 py-1.5 text-[12px] text-ws-muted hover:text-ws-ink"
+          >
+            <LogOut size={13} /> Sign out
+          </button>
         </div>
       </aside>
-      <main className="min-w-0 flex-1 overflow-auto">
+      <main key={routeKey} className="min-w-0 flex-1 overflow-auto animate-fade-in max-md:pt-12">
         <Outlet />
       </main>
+      <Toaster />
     </div>
   )
 }

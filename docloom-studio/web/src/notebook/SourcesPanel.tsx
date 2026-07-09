@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
+  AlertTriangle,
   FileText,
   Globe,
   Loader2,
@@ -93,6 +94,12 @@ export function SourcesPanel({ notebookId }: { notebookId: string }) {
     load()
   }
 
+  const reingest = async (id: string) => {
+    setSources((s) => s.map((x) => (x.id === id ? { ...x, status: 'pending' } : x)))
+    await api.post(`/api/sources/${id}/reingest`, {})
+    load()
+  }
+
   const RESEARCH_LABELS: Record<string, string> = {
     plan: 'Planning searches…',
     search: 'Searching the web…',
@@ -131,7 +138,7 @@ export function SourcesPanel({ notebookId }: { notebookId: string }) {
           </button>
         </div>
         <input ref={fileInput} type="file" hidden
-          accept=".pdf,.docx,.txt,.md,.csv"
+          accept=".pdf,.docx,.pptx,.xlsx,.xlsm,.csv,.html,.htm,.epub,.txt,.md,.markdown,.rst,.json"
           onChange={(e) => e.target.files?.[0] && uploadFile(e.target.files[0])} />
       </div>
 
@@ -175,7 +182,7 @@ export function SourcesPanel({ notebookId }: { notebookId: string }) {
         <div className="px-3 pb-2">
           <input value={urlVal} onChange={(e) => setUrlVal(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && addUrl()}
-            placeholder="https://…" autoFocus
+            placeholder="Web page or YouTube link…" autoFocus
             className="w-full rounded-md border border-ws-line px-2 py-1.5 text-[12px]" />
         </div>
       )}
@@ -205,6 +212,8 @@ export function SourcesPanel({ notebookId }: { notebookId: string }) {
                       <Loader2 size={14} className="mt-0.5 animate-spin text-ws-accent" />
                     ) : s.status === 'failed' ? (
                       <AlertCircle size={14} className="mt-0.5 text-ws-danger" />
+                    ) : s.status === 'stale' ? (
+                      <AlertTriangle size={14} className="mt-0.5 text-ws-warn" />
                     ) : (
                       <Icon size={14} className="mt-0.5 text-ws-muted" />
                     )}
@@ -212,11 +221,23 @@ export function SourcesPanel({ notebookId }: { notebookId: string }) {
                       {s.title}
                     </span>
                     <button onClick={() => remove(s.id)}
+                      aria-label="Remove source"
                       className="hidden text-ws-muted hover:text-ws-danger group-hover:block">
                       <Trash2 size={13} />
                     </button>
                   </div>
                   {s.error && <p className="mt-1 text-[11px] text-ws-danger">{s.error}</p>}
+                  {s.status === 'stale' && (
+                    <div className="mt-1 flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-ws-warn">
+                        Index out of date — re-embed to make it searchable.
+                      </span>
+                      <button onClick={() => reingest(s.id)}
+                        className="shrink-0 rounded border border-ws-line px-1.5 py-0.5 text-[10.5px] hover:bg-ws-bg">
+                        Re-ingest
+                      </button>
+                    </div>
+                  )}
                   {s.status === 'ready' && (
                     <div className="mt-2 flex gap-1">
                       {MODES.map(([m, label]) => (
