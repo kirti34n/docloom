@@ -1,40 +1,22 @@
 <!-- krt -->
-<div align="center">
-
 # docloom
 
-**The document output layer for AI apps.**
-Your LLM emits a validated JSON schema; docloom deterministically renders
-**PPTX, DOCX, XLSX, PDF, and HTML**, with a linter that catches broken slides
-before anyone sees them.
+docloom turns a language model's structured output into documents. Your model emits a validated document, and deterministic renderers produce PPTX, DOCX, XLSX, PDF, HTML, and Markdown, with a linter that returns machine-readable findings the model can correct against.
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-4F46E5)
 ![License](https://img.shields.io/badge/license-MIT-0D9488)
-![Formats](https://img.shields.io/badge/formats-PPTX%20DOCX%20XLSX%20PDF%20HTML-64748B)
-![Local first](https://img.shields.io/badge/local--first-yes-4F46E5)
 
-</div>
+This repository contains two projects: [`docloom`](docloom/), the render engine (a pip-installable Python library), and [`docloom-studio`](docloom-studio/), a local-first app built on it.
 
-![Architecture](docs/assets/architecture.png)
-
----
-
-## Why
-
-Teams wire LLMs to make slides and reports two ways, and both break:
-
-- **LLMs writing python-pptx code:** non-deterministic, unvalidated, fails silently.
-- **Markdown-to-slides:** lossy, no native charts, no brand control.
-
-docloom takes a third path: the model fills a **validated JSON IR**, a **linter**
-checks it, and **deterministic renderers** produce real files. The model owns the
-content; docloom owns the pixels.
-
-## Quickstart
+## Install
 
 ```bash
 pip install "docloom[pdf]"
 ```
+
+## Getting started
+
+Build a document and render it. The same document renders to any format.
 
 ```python
 from docloom import Document, render
@@ -47,75 +29,82 @@ doc = Document(title="Q3 review", slides=[
     ]},
 ])
 
-render(doc, "pptx", "q3.pptx")   # also: docx, xlsx, pdf, html
+render(doc, "pptx", "q3.pptx")
+render(doc, "pdf", "q3.pdf")
 ```
 
-Runnable samples for every feature live in [`examples/`](examples/).
+Runnable samples for every feature, with their rendered output, are in [`examples/`](examples/).
 
-<details>
-<summary><b>What each format gives you</b></summary>
+## Rendering to formats
 
-| Format | Engine | Highlights |
+One document carries slides (a deck), blocks (a report), and sheets (a workbook). Each renderer takes what it needs.
+
+| Format | Engine | Output |
 | --- | --- | --- |
-| PPTX | python-pptx | Native editable charts, tables, speaker notes, per-slide accents |
+| PPTX | python-pptx | Native editable charts, tables, speaker notes |
 | DOCX | python-docx | Styled headings, callouts, numbered citations |
 | XLSX | xlsxwriter | Real formulas and number formats |
-| PDF | typst | High-quality typesetting, embedded fonts |
-| HTML | built-in | One self-contained file, fonts and images inlined |
+| PDF | Typst | Typeset in-process, embedded fonts |
+| HTML | built-in | One self-contained file |
+| Markdown | built-in | Portable text |
 
-</details>
+## Generating from a model
 
-<details>
-<summary><b>Design principles</b></summary>
+The document is a Pydantic model, so it doubles as a structured-output target. `llm_schema()` returns the JSON Schema for strict structured-output modes, and `parse_llm_output()` accepts output that is fenced or wrapped.
 
-- **Schema, not code:** the LLM fills a Pydantic schema; it never writes rendering code.
-- **Validate before render:** the linter rejects broken layouts before any file is produced.
-- **Deterministic renderers:** the same IR always produces the same document.
-- **Semantic theming:** renderers map theme tokens to native mechanisms, so one theme keeps every format on-brand.
-- **Local first:** everything runs on your machine by default; API keys are optional.
+```python
+from docloom import llm_schema, parse_llm_output, lint, render
 
-</details>
+# call your model with llm_schema() as the response format, then:
+doc = parse_llm_output(model_output)   # tolerant of fenced or wrapped JSON
+findings = lint(doc)                    # [] or machine-readable findings
+render(doc, "pptx", "deck.pptx")
+```
+
+The schema is non-recursive and uses plain tagged unions, so it validates under both OpenAI strict mode and Anthropic structured outputs.
 
 ## What it produces
 
-| Presentations (native charts) | Grounded, cited documents |
+| Presentation with a native chart | Grounded, cited document |
 | :---: | :---: |
-| ![deck](docs/assets/deck.png) | ![study guide](docs/assets/study-guide.png) |
+| ![deck](docs/assets/deck.png) | ![document](docs/assets/document.png) |
+
+| Infographic | Diagram |
+| :---: | :---: |
+| ![infographic](docs/assets/infographic.png) | ![diagram](docs/assets/diagram.png) |
 
 ## docloom studio
 
-A free, local-first app built on the engine (NotebookLM plus Gamma, self-hosted):
+docloom studio is a free, local-first app built on the engine. You add sources to a notebook, ask questions that are answered with citations, and generate editable decks, documents, spreadsheets, diagrams, and infographics that export through docloom.
 
-- **Notebooks** with your uploaded sources or agent web research
-- **Retrieval-grounded chat** that answers with citations
-- One-click generation of editable **decks, documents, sheets, diagrams, and infographics**
-- **Guides:** Study guide, Briefing, FAQ, Timeline, and Mind map, grounded in your sources
-- Premium **D2** diagrams (no Mermaid), and a brand kit applied to every export
+![studio](docs/assets/guides.png)
 
-| Notebook workspace and one-click guides | D2 diagrams |
-| :---: | :---: |
-| ![guides](docs/assets/guides.png) | ![diagram](docs/assets/diagram.png) |
+- Notebooks with your uploaded sources or agent web research
+- Retrieval-grounded chat that cites its sources
+- One-click guides: study guide, briefing, FAQ, timeline, and mind map
+- D2 diagrams, and a brand kit applied to every export
+- Runs on your machine; a local model works offline
 
 ```bash
 # from docloom-studio/
 pip install -e "../docloom[pdf]" && pip install -e ".[dev]"
 cd web && npm install && npm run build
-python -m docloom_studio.main        # opens http://127.0.0.1:8899
+python -m docloom_studio.main        # http://127.0.0.1:8899
 ```
 
-Point the generation model at a local Ollama model (qwen3.5 recommended) or a
-hosted API in Settings. Everything works offline with a local model.
+> [!NOTE]
+> Set the generation model in Settings. A local Ollama model (qwen3.5 works well) runs fully offline; a hosted API key is optional.
 
 ## Repository
 
-- [`docloom/`](docloom/) - the render engine (pip installable, MIT)
-- [`docloom-studio/`](docloom-studio/) - the local-first studio app
-- [`examples/`](examples/) - runnable samples for each feature
+| Path | What it is |
+| --- | --- |
+| [`docloom/`](docloom/) | The render engine (pip installable, MIT) |
+| [`docloom-studio/`](docloom-studio/) | The local-first studio app |
+| [`examples/`](examples/) | Runnable samples for each feature, with rendered output |
 
 ## License
 
 MIT.
 
-<div align="center">
 <sub>Maintained by <b>krt</b>.</sub>
-</div>
