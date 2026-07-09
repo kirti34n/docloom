@@ -58,7 +58,11 @@ async def add_file(
     notebook_id: str, file: UploadFile, user: dict = Depends(current_user)
 ) -> dict:
     require_notebook(user["id"], notebook_id)
-    name = file.filename or "upload"
+    # basename only: strip any directory components (both separators) so a
+    # crafted filename like "../../evil" cannot escape the source directory
+    name = (file.filename or "upload").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not name or name in (".", ".."):
+        name = "upload"
     ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
     if ext not in ALLOWED_EXT:
         raise HTTPException(

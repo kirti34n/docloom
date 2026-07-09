@@ -225,6 +225,9 @@ def _table_html(
     caption: str | None,
     numbers: dict[str, int],
 ) -> str:
+    header, rows = normalize_table(header, rows)  # align ragged rows to the header
+    if not header:
+        return ""
     parts = ['<div class="table-wrap"><table>']
     if caption:
         parts.append(f"<caption>{_esc(caption)}</caption>")
@@ -245,7 +248,10 @@ def _figure_html(path: str | None, alt: str, caption: str | None) -> str:
         return ""
     p = Path(path)
     mime = mimetypes.guess_type(p.name)[0] or "image/png"
-    data = base64.b64encode(p.read_bytes()).decode("ascii")
+    try:
+        data = base64.b64encode(p.read_bytes()).decode("ascii")
+    except OSError:
+        return ""  # exists but unreadable: treat like a missing image
     out = f'<figure><img src="data:{mime};base64,{data}" alt="{_esc(alt)}">'
     if caption:
         out += f"<figcaption>{_esc(caption)}</figcaption>"
@@ -333,9 +339,11 @@ def _sheet_html(sheet: Sheet) -> str:
     ]
     parts.extend(f"<th>{_esc(c.header)}</th>" for c in sheet.columns)
     parts.append("</tr></thead><tbody>")
+    ncols = len(sheet.columns)
     for row in sheet.rows:
+        cells = list(row[:ncols]) + [None] * (ncols - len(row))  # align to header
         parts.append(
-            "<tr>" + "".join(f"<td>{_cell_html(c)}</td>" for c in row) + "</tr>"
+            "<tr>" + "".join(f"<td>{_cell_html(c)}</td>" for c in cells) + "</tr>"
         )
     parts.append("</tbody></table></div>")
     return "".join(parts)

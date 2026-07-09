@@ -82,5 +82,8 @@ async def delete_notebook(
             "(SELECT id FROM artifacts WHERE notebook_id = ?)", (notebook_id,))
     execute("DELETE FROM artifacts WHERE notebook_id = ?", (notebook_id,))
     execute("DELETE FROM sources WHERE notebook_id = ?", (notebook_id,))
+    # chat_messages also references notebooks(id); with foreign_keys=ON the final
+    # delete fails unless these are removed first
+    execute("DELETE FROM chat_messages WHERE notebook_id = ?", (notebook_id,))
     execute("DELETE FROM notebooks WHERE id = ?", (notebook_id,))
     return {"ok": True}

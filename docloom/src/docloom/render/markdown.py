@@ -104,6 +104,8 @@ def _pipe_safe(text: str) -> str:
 def _table_md(
     header: list[str], rows: list[list[str]], caption: str | None
 ) -> str:
+    if not header:  # a zero-column table is not valid GFM; emit nothing
+        return ""
     lines = ["| " + " | ".join(header) + " |", "|" + " --- |" * len(header)]
     lines.extend("| " + " | ".join(row) + " |" for row in rows)
     if caption:

@@ -27,12 +27,14 @@ from ..ir import (
     Code,
     Divider,
     Document,
+    Formula,
     Heading,
     Image,
     NumberedList,
     Paragraph,
     Quote,
     RichText,
+    Sheet,
     Span,
     StatRow,
     Table,
@@ -273,16 +275,17 @@ def _render_table(
         docx_doc.add_paragraph()
 
 
-def _render_image(docx_doc, block: Image, theme: Theme) -> None:
+def _render_image(docx_doc, block: Image, theme: Theme) -> bool:
+    """Embed an image; returns True if a picture was actually added."""
     if not block.path:
-        return
+        return False
     path = Path(block.path)
     if not path.is_file():
-        return
+        return False
     try:
         picture = docx_doc.add_picture(str(path))
     except Exception:
-        return
+        return False  # unembeddable (e.g. SVG) or unreadable
     if picture.width > MAX_IMAGE_WIDTH:
         picture.height = Emu(round(picture.height * MAX_IMAGE_WIDTH / picture.width))
         picture.width = MAX_IMAGE_WIDTH
@@ -294,6 +297,7 @@ def _render_image(docx_doc, block: Image, theme: Theme) -> None:
         run.italic = True
         run.font.size = Pt(9)
         run.font.color.rgb = _rgb(theme.muted)
+    return True
 
 
 def _render_chart(
@@ -303,8 +307,9 @@ def _render_chart(
         run = docx_doc.add_paragraph().add_run(block.title)
         run.bold = True
     if block.path and Path(block.path).is_file():
-        _render_image(docx_doc, Image(path=block.path, caption=block.caption), theme)
-        return
+        if _render_image(docx_doc, Image(path=block.path, caption=block.caption), theme):
+            return
+        # image present but unembeddable (SVG/corrupt): fall through to a data table
     rows = [
         [s.name] + ["" if v is None else f"{v:g}" for v in s.values]
         for s in block.series
@@ -411,6 +416,30 @@ def _sources_section(docx_doc, doc: Document, theme: Theme) -> None:
                 par.add_run(source.url).font.size = Pt(10)
 
 
+def _sheet_cell_text(cell) -> str:
+    if isinstance(cell, Formula):
+        return cell.formula
+    if cell is None:
+        return ""
+    if isinstance(cell, bool):
+        return "TRUE" if cell else "FALSE"
+    return str(cell)
+
+
+def _render_sheet(docx_doc, sheet: Sheet, theme: Theme) -> None:
+    run = docx_doc.add_paragraph(style="Heading 2").add_run(sheet.name)
+    run.bold = True
+    _render_table(
+        docx_doc,
+        Table(
+            header=[c.header for c in sheet.columns],
+            rows=[[_sheet_cell_text(c) for c in row] for row in sheet.rows],
+        ),
+        theme,
+        {},
+    )
+
+
 def render(doc: Document, theme: Theme, out_path: Path) -> Path:
     docx_doc = DocxDocument()
     _setup_styles(docx_doc, theme)
@@ -418,6 +447,8 @@ def render(doc: Document, theme: Theme, out_path: Path) -> Path:
     numbers = source_numbers(doc)
     for block in report_blocks(doc):
         _render_block(docx_doc, block, theme, numbers)
+    for sheet in doc.sheets:  # workbooks would otherwise be silently dropped in DOCX
+        _render_sheet(docx_doc, sheet, theme)
     if doc.sources and cited_ids(doc):
         _sources_section(docx_doc, doc, theme)
     docx_doc.save(str(out_path))

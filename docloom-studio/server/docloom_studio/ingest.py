@@ -6,6 +6,7 @@ treated as data, never instructions."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -213,7 +214,9 @@ def fetch_url(url: str) -> tuple[str, str]:
 
     with httpx.Client(timeout=20, follow_redirects=True,
                       headers={"User-Agent": "docloom-studio/0.1"}) as client:
-        html = client.get(url).text
+        resp = client.get(url)
+        resp.raise_for_status()  # 404/403/500 must fail ingestion, not feed error HTML
+        html = resp.text
     text = trafilatura.extract(html, include_comments=False,
                                include_tables=True) or ""
     meta = trafilatura.extract_metadata(html)
@@ -314,6 +317,12 @@ async def ingest_source(source_id: str, ctx=None) -> None:
                 (json.dumps(meta), source_id))
         if ctx:
             ctx.emit("embed", "done")
+    except asyncio.CancelledError:
+        # job cancel or server shutdown: don't leave the source stuck in 'pending'
+        meta["error"] = "ingestion cancelled"
+        execute("UPDATE sources SET status = 'failed', meta_json = ? WHERE id = ?",
+                (json.dumps(meta), source_id))
+        raise  # propagate cancellation
     except Exception as e:
         meta["error"] = str(e)[:300]
         execute("UPDATE sources SET status = 'failed', meta_json = ? WHERE id = ?",

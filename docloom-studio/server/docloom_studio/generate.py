@@ -11,7 +11,7 @@ from docloom import (
     AUTHORING_GUIDE, Document, Sheet, Slide, Source, Span, ensure_ids, lint,
     llm_schema,
 )
-from docloom.ir import Block, Heading, Image
+from docloom.ir import Block, Heading, Image, Table
 from docloom.llm import parse_llm_output
 from pydantic import BaseModel, Field
 
@@ -82,6 +82,12 @@ def _citation_gate(doc: Document, known_ids: set[str]) -> None:
                 for it in b.items:
                     if hasattr(it, "text"):
                         clean(it.text)
+            if isinstance(b, Table):  # cites can hide in table cells too
+                for cell in b.header:
+                    clean(cell)
+                for row in b.rows:
+                    for cell in row:
+                        clean(cell)
 
     for s in doc.slides:
         walk_blocks(s.blocks)
@@ -89,8 +95,11 @@ def _citation_gate(doc: Document, known_ids: set[str]) -> None:
     walk_blocks(doc.blocks)
 
 
-def _slide_errors(deck_title: str, slide: Slide) -> list[str]:
-    findings = lint(Document(title=deck_title, slides=[slide]))
+def _slide_errors(deck_title: str, slide: Slide, source_ids: set[str]) -> list[str]:
+    # lint the slide with the notebook's real source ids so cites the model was
+    # asked to emit are not flagged as cite/unknown-source
+    sources = [Source(id=i, title=i) for i in sorted(source_ids)]
+    findings = lint(Document(title=deck_title, slides=[slide], sources=sources))
     return [f"{f.severity} [{f.rule}] {f.message}"
             for f in findings if f.severity == "error"]
 
@@ -177,7 +186,8 @@ async def run_deck_pipeline(
                  {"role": "user", "content": user}],
                 schema=llm_schema(Slide),
                 parse=lambda t: parse_llm_output(t, Slide),
-                lint_fn=lambda s: _slide_errors(outline.deck_title, s),
+                lint_fn=lambda s: _slide_errors(
+                    outline.deck_title, s, {so["id"] for so in sources}),
             )
         except GenerationFailed:
             # keep the deck moving: a skeleton slide the user can fill in
@@ -198,12 +208,14 @@ async def run_deck_pipeline(
         sources=[Source(**s) for s in sources],
     )
     _citation_gate(doc, {s["id"] for s in sources})
-    _resolve_deck_images(doc, owner)
     doc = ensure_ids(doc)
+    # lint the model's content before image slots are filled with asset:// refs
+    # (those are baked to real files at export, so linting them here is spurious)
     findings = lint(doc)
     ctx.emit("lint", "done", data={
         "findings": [f.model_dump() for f in findings],
     })
+    _resolve_deck_images(doc, owner)
 
     theme_name = get_setting("deck.theme", owner)
     payload = {"ir": doc.model_dump(exclude_none=True),

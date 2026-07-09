@@ -138,6 +138,9 @@ async def retrieve(notebook_id: str, query: str, k: int = 12) -> list[Retrieved]
         if len(chunks) != len(vecs):
             _mark_stale(source_id)  # surface it rather than skip silently
             continue
+        if mats and vecs.shape[1] != mats[0].shape[1]:
+            _mark_stale(source_id)  # embedding dim changed (model switch): re-embed
+            continue
         mats.append(vecs)
         for c in chunks:
             index.append((source_id, title, c))
@@ -148,7 +151,10 @@ async def retrieve(notebook_id: str, query: str, k: int = 12) -> list[Retrieved]
     corpus = _normalize(np.vstack(mats).astype(np.float32))
     q = await embed(_embed_cfg(owner_of_notebook(notebook_id)), [query])
     qn = _normalize(q.astype(np.float32))[0]
-    cosine = corpus @ qn
+    if corpus.shape[1] == qn.shape[0]:
+        cosine = corpus @ qn
+    else:  # stored vectors predate a model change: fall back to lexical only
+        cosine = np.zeros(len(index), dtype=np.float32)
 
     # lexical BM25 over the same chunks
     corpus_tokens = [_tokens(c["text"]) for _, _, c in index]
@@ -172,7 +178,10 @@ async def retrieve(notebook_id: str, query: str, k: int = 12) -> list[Retrieved]
     seen_text: set[str] = set()
     deduped: list[int] = []
     for i in order:
-        key = " ".join(corpus_tokens[i][:40])
+        toks = corpus_tokens[i]
+        # non-Latin text (CJK/Devanagari/Arabic) yields zero word tokens, which
+        # would give every chunk the same empty key and collapse retrieval to one
+        key = " ".join(toks[:40]) if toks else index[i][2]["text"][:120]
         if key in seen_text:
             continue
         seen_text.add(key)

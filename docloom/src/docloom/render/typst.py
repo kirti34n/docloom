@@ -25,12 +25,14 @@ from ..ir import (
     Code,
     Divider,
     Document,
+    Formula,
     Heading,
     Image,
     NumberedList,
     Paragraph,
     Quote,
     RichText,
+    Sheet,
     StatRow,
     Table,
     cited_ids,
@@ -86,8 +88,11 @@ def _embeddable(path: Path) -> bool:
             return False
     try:
         with PILImage.open(path) as img:
+            fmt = (img.format or "").upper()
             img.verify()
-        return True
+        # Typst decodes only these raster formats; PIL can verify many more
+        # (BMP, TIFF, ICO, ...) that would crash the compile, so skip them.
+        return fmt in {"PNG", "JPEG", "GIF", "WEBP"}
     except Exception:
         return False
 
@@ -262,6 +267,16 @@ def _block(b: Block, theme: Theme, numbers: dict[str, int]) -> list[str]:
     raise RenderError(f"unhandled block type {type(b).__name__}")
 
 
+def _sheet_cell(cell) -> str:
+    if isinstance(cell, Formula):
+        return cell.formula
+    if cell is None:
+        return ""
+    if isinstance(cell, bool):
+        return "TRUE" if cell else "FALSE"
+    return str(cell)
+
+
 def to_typst(doc: Document, theme: Theme) -> str:
     numbers = source_numbers(doc)
     lines = [
@@ -304,12 +319,19 @@ def to_typst(doc: Document, theme: Theme) -> str:
         rendered = _block(b, theme, numbers)
         if rendered:
             lines += [""] + rendered
+    for sheet in doc.sheets:  # workbooks would otherwise be silently dropped in PDF
+        if sheet.columns:
+            tbl = Table(
+                header=[c.header for c in sheet.columns],
+                rows=[[_sheet_cell(c) for c in row] for row in sheet.rows],
+            )
+            lines += ["", f"#heading(level: 2)[{_esc(sheet.name)}]", ""] + _table(tbl, theme, {})
     if doc.sources and cited_ids(doc):
         lines += ["", "= Sources", ""]
         for src in doc.sources:
             entry = _esc(src.title)
             if src.publisher:
-                entry += " \u2014 " + _esc(src.publisher)
+                entry += ", " + _esc(src.publisher)
             if src.date:
                 entry += f" ({_esc(src.date)})"
             if src.url:

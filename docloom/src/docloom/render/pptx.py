@@ -418,7 +418,9 @@ def _chart_table(b: Chart) -> Table:
         s.name or f"Series {i + 1}" for i, s in enumerate(b.series)
     ]
     rows: list[list[RichText]] = []
-    for i, label in enumerate(b.labels):
+    n = max([len(b.labels)] + [len(s.values) for s in b.series], default=0)
+    for i in range(n):
+        label = b.labels[i] if i < len(b.labels) else ""
         row: list[RichText] = [label]
         for s in b.series:
             v = s.values[i] if i < len(s.values) else None
@@ -454,12 +456,15 @@ def _chart_block(slide, b: Chart, theme, numbers, x, y, w, max_h) -> float:
         except Exception:
             pass  # on-brand recolor is best-effort; keep the native chart
     except Exception:
-        # fallback chain: pre-rendered image if present, else data as a table
+        # fallback chain: pre-rendered image if present and embeddable, else a data table
         if b.path and Path(b.path).is_file():
-            return _image_block(
-                slide, Image(path=b.path, alt=b.title or "", caption=b.caption),
-                theme, x, y, w, max_h,
-            )
+            try:
+                return _image_block(
+                    slide, Image(path=b.path, alt=b.title or "", caption=b.caption),
+                    theme, x, y, w, max_h,
+                )
+            except Exception:
+                pass  # unembeddable (e.g. SVG) or unreadable: fall through to the table
         return _table_block(slide, _chart_table(b), theme, numbers, x, y, w, max_h)
     if b.caption and h + 0.26 <= max_h:
         tf = _box(slide, x, y + h + 0.04, w, 0.22)
@@ -631,12 +636,8 @@ def _body(slide, blocks: list[Block], theme, numbers, x, y, w) -> float:
 def _slide_accent(s: Slide, theme: Theme) -> str:
     """Per-slide accent override for rules/edges; invalid hex falls back."""
     c = (s.accent or "").strip().lstrip("#")
-    try:
-        if len(c) == 6:
-            int(c, 16)
-            return "#" + c.upper()
-    except ValueError:
-        pass
+    if len(c) == 6 and all(ch in "0123456789abcdefABCDEF" for ch in c):
+        return "#" + c.upper()
     return theme.primary
 
 
@@ -720,8 +721,9 @@ def _section_slide(slide, s: Slide, theme: Theme) -> None:
 
 
 def _quote_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int]) -> None:
-    q = next((b for b in s.blocks if isinstance(b, Quote)), None)
-    rest = [b for b in s.blocks if b is not q]
+    body = s.blocks + s.right  # right column would otherwise be silently dropped
+    q = next((b for b in body if isinstance(b, Quote)), None)
+    rest = [b for b in body if b is not q]
     if s.title:
         tf = _box(slide, MARGIN, 0.5, SLIDE_W - 2 * MARGIN, 0.4)
         _runs(tf.paragraphs[0], s.title, theme, {}, 16, theme.muted, theme.font_heading)
@@ -859,15 +861,21 @@ def _sources_slide(prs, blank, doc: Document, theme: Theme) -> None:
     slide.background.fill.fore_color.rgb = _rgb(theme.background)
     y = _title_band(slide, "Sources", theme)
     tf = _box(slide, MARGIN, y, SLIDE_W - 2 * MARGIN, SLIDE_H - MARGIN - y)
-    for i, src in enumerate(doc.sources):
-        line = f"{i + 1}. {src.title}"
+    seen: dict[str, int] = {}
+    first = True
+    for src in doc.sources:
+        if src.id in seen:
+            continue  # dedupe so numbering matches the citation superscripts
+        seen[src.id] = len(seen) + 1
+        line = f"{seen[src.id]}. {src.title}"
         if src.publisher:
-            line += f" \u2014 {src.publisher}"
+            line += f", {src.publisher}"
         if src.date:
             line += f" ({src.date})"
         if src.url:
             line += f", {src.url}"
-        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p = tf.paragraphs[0] if first else tf.add_paragraph()
+        first = False
         p.space_after = Pt(6)
         _runs(p, line, theme, {}, 12, theme.muted, theme.font_body)
 

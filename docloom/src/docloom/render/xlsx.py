@@ -138,7 +138,10 @@ def render(doc: Document, theme: Theme, out_path: Path) -> Path:
             for c, cell in enumerate(row[:ncols]):
                 fmt = col_fmts[c]
                 if isinstance(cell, Formula):
-                    ws.write_formula(r, c, cell.formula, fmt)
+                    if cell.formula.strip():
+                        ws.write_formula(r, c, cell.formula, fmt)
+                    else:
+                        ws.write_blank(r, c, None, fmt)
                 elif cell is None:
                     ws.write_blank(r, c, None, fmt)
                 elif isinstance(cell, bool):
@@ -146,6 +149,10 @@ def render(doc: Document, theme: Theme, out_path: Path) -> Path:
                 elif isinstance(cell, str):
                     ws.write_string(r, c, cell, fmt)
                 else:
-                    ws.write_number(r, c, cell, fmt)
+                    try:
+                        ws.write_number(r, c, cell, fmt)
+                    except (OverflowError, TypeError):
+                        # ints outside float range (or non-finite) cannot be a number cell
+                        ws.write_string(r, c, str(cell), fmt)
     workbook.close()
     return out_path
