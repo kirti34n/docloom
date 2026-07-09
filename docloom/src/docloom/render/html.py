@@ -347,7 +347,7 @@ def _sources_html(doc: Document) -> str:
     for src in doc.sources:
         line = _esc(src.title)
         if src.publisher:
-            line += f" \u2014 {_esc(src.publisher)}"
+            line += f", {_esc(src.publisher)}"
         if src.date:
             line += f" ({_esc(src.date)})"
         if src.url:

@@ -10,8 +10,18 @@ This repository contains two projects: [`docloom`](docloom/), the render engine 
 
 ## Install
 
+docloom is not published to PyPI yet, so install the engine from this repository:
+
 ```bash
-pip install "docloom[pdf]"
+git clone https://github.com/kirti34n/docloom.git
+cd docloom
+pip install -e "./docloom[pdf]"      # editable install of the engine
+```
+
+Or in one line, without cloning:
+
+```bash
+pip install "docloom[pdf] @ git+https://github.com/kirti34n/docloom.git#subdirectory=docloom"
 ```
 
 ## Getting started

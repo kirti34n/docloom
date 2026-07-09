@@ -29,11 +29,15 @@ docloom takes the third path:
 
 ## Install
 
+Not on PyPI yet; install from source. From a clone of the repository, `docloom` is the `docloom/` subdirectory:
+
+```bash
+pip install -e "./docloom"            # pptx, docx, xlsx, html, md
+pip install -e "./docloom[pdf]"       # + PDF via bundled Typst compiler
+pip install -e "./docloom[mcp]"       # + MCP server for agents
 ```
-pip install docloom            # pptx, docx, xlsx, html, md
-pip install "docloom[pdf]"     # + PDF via bundled Typst compiler
-pip install "docloom[mcp]"     # + MCP server for agents
-```
+
+Once published, `pip install "docloom[pdf]"` will work directly.
 
 ## 30 seconds to a deck
 
