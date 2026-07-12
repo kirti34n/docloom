@@ -138,7 +138,7 @@ def _table_md(
     lines = ["| " + " | ".join(header) + " |", "|" + " --- |" * len(header)]
     lines.extend("| " + " | ".join(row) + " |" for row in rows)
     if caption:
-        lines += ["", f"*{_esc_md(_one_line(caption))}*"]
+        lines += ["", _wrap_flank(_esc_md(_one_line(caption)), "*")]
     return "\n".join(lines)
 
 
@@ -195,10 +195,10 @@ def _image_md(
         return ""
     dest = (copier.dest(path) if copier is not None else None) or path
     dest_ref = f"<{dest}>" if any(c in dest for c in " ()") else dest
-    alt = _one_line(alt).replace("[", "\\[").replace("]", "\\]")
+    alt = _one_line(alt).replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
     out = f"![{alt}]({dest_ref})"
     if caption:
-        out += f"\n\n*{_esc_md(_one_line(caption))}*"
+        out += f"\n\n{_wrap_flank(_esc_md(_one_line(caption)), '*')}"
     return out
 
 
@@ -313,7 +313,11 @@ def _sheet_md(sheet: Sheet) -> str:
 
 def _footnotes_md(doc: Document, numbers: dict[str, int]) -> str:
     defs = []
+    seen: set[str] = set()
     for src in doc.sources:
+        if src.id in seen:  # duplicate id: numbers keeps the first, so skip the rest
+            continue
+        seen.add(src.id)
         line = _esc_md(src.title)
         if src.publisher:
             line += f" \u2014 {_esc_md(src.publisher)}"
@@ -332,7 +336,7 @@ def to_markdown(doc: Document, copier: _AssetCopier | None = None) -> str:
         x for x in (doc.subtitle or "", ", ".join(doc.authors), doc.date or "") if x
     )
     if meta:
-        parts.append(f"*{_esc_md(_one_line(meta))}*")
+        parts.append(_wrap_flank(_esc_md(_one_line(meta)), "*"))
     for b in report_blocks(doc):
         rendered = _block_md(b, numbers, copier)
         if rendered:

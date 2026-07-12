@@ -280,15 +280,17 @@ export function ChatPanel({
       .finally(() => setHistoryLoaded(true))
   }, [notebookId])
 
-  const runChat = async (msg: string) => {
+  const runChat = async (msg: string, at: number) => {
     setBusy(true)
     try {
       await streamNdjson(`/api/notebooks/${notebookId}/chat`, { message: msg }, (obj) => {
         setTurns((t) => {
           const next = [...t]
-          const last = next[next.length - 1]
-          if (obj.type === 'evidence') last.evidence = obj.items as Evidence[]
-          else if (obj.type === 'token') last.text += obj.text as string
+          const turn = next[at]
+          if (turn?.role === 'assistant') {
+            if (obj.type === 'evidence') turn.evidence = obj.items as Evidence[]
+            else if (obj.type === 'token') turn.text += obj.text as string
+          }
           return next
         })
         scroll.current?.scrollTo({ top: scroll.current.scrollHeight })
@@ -296,9 +298,9 @@ export function ChatPanel({
     } catch (e) {
       setTurns((t) => {
         const next = [...t]
-        const last = next[next.length - 1]
-        if (last && last.role === 'assistant') {
-          last.error = e instanceof Error ? e.message : String(e)
+        const turn = next[at]
+        if (turn?.role === 'assistant') {
+          turn.error = e instanceof Error ? e.message : String(e)
         }
         return next
       })
@@ -312,17 +314,17 @@ export function ChatPanel({
     if (!msg || busy) return
     setInput('')
     setTurns((t) => [...t, { role: 'user', text: msg }, { role: 'assistant', text: '' }])
-    runChat(msg)
+    runChat(msg, turns.length + 1)
   }
 
-  const retry = (msg: string) => {
+  const retry = (i: number, msg: string) => {
     if (!msg || busy) return
     setTurns((t) => {
       const next = [...t]
-      next[next.length - 1] = { role: 'assistant', text: '' }
+      next[i] = { role: 'assistant', text: '' }
       return next
     })
-    runChat(msg)
+    runChat(msg, i)
   }
 
   return (
@@ -344,7 +346,7 @@ export function ChatPanel({
                   <div className="text-[13px]">
                     <span className="text-madder">Couldn't get an answer: {turn.error}</span>
                     <button
-                      onClick={() => retry(turns[i - 1]?.text ?? '')}
+                      onClick={() => retry(i, turns[i - 1]?.text ?? '')}
                       className="ml-2 rounded-[var(--radius-sm)] border border-ws-line px-2 py-0.5 text-[12px] text-ws-ink hover:bg-ws-bg"
                     >
                       Retry

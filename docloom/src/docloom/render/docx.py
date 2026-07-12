@@ -368,7 +368,7 @@ def _render_chart(
     # is wired in: a titled, captioned data table stands in for the chart
     # instead of a bare, unlabeled one.
     rows = [
-        [s.name] + ["" if v is None else f"{v:g}" for v in s.values]
+        [s.name] + ["" if chart_svg._finite(v) is None else chart_svg._fmt(v) for v in s.values]
         for s in block.series
     ]
     _render_table(

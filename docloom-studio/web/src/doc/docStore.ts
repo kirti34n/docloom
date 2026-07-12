@@ -133,8 +133,10 @@ export const useDoc = create<DocState>()(
 )
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+let saveSeq = 0
 
 function save(): void {
+  const mySeq = ++saveSeq
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(async () => {
     const s = useDoc.getState()
@@ -145,7 +147,16 @@ function save(): void {
         `/api/artifacts/${s.artifactId}/ir`,
         { payload: { ir: s.toDocument(), theme_name: s.themeName, brand_kit_id: null } },
       )
-      useDoc.setState({ rev: res.version, findings: res.findings, dirty: false, saving: false })
+      // another save() ran while this PUT was in flight (saveSeq moved on):
+      // its edits are not in this payload, so leave dirty alone and let its
+      // own already-scheduled timer send them
+      const clean = saveSeq === mySeq
+      useDoc.setState({
+        rev: res.version,
+        findings: res.findings,
+        saving: false,
+        ...(clean ? { dirty: false } : {}),
+      })
     } catch {
       useDoc.setState({ saving: false })
     }

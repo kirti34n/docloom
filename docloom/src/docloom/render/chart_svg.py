@@ -100,7 +100,10 @@ def _ticks(vmin: float, vmax: float, count: int = 5) -> list[float]:
 def _fmt(v: float) -> str:
     if v == int(v):
         return f"{int(v):,}"
-    return f"{v:,.2f}".rstrip("0").rstrip(".")
+    d = 2
+    if 0 < abs(v) < 1:  # small fractionals need more places or they collapse
+        d = 2 - math.floor(math.log10(abs(v)))
+    return f"{v:,.{d}f}".rstrip("0").rstrip(".")
 
 
 def _text_w(s: str, size: float) -> float:
@@ -491,8 +494,8 @@ def _pie(chart: Chart, theme: Theme, width: int, height: int) -> str:
     values = (values + [None] * n)[:n]
     slices = [(labels[i], values[i]) for i in range(n) if values[i] and values[i] > 0]
     total = sum(v for _, v in slices)
-    if total <= 0:
-        return "".join(parts)
+    if total <= 0:  # no positive slice: return empty so callers fall back to a table
+        return ""
 
     legend_items = [(lbl or f"Slice {i + 1}", palette[i % len(palette)]) for i, (lbl, _) in enumerate(slices)]
     legend_w = min(width * 0.34, 40 + max((_text_w(t, 10.5) for t, _ in legend_items), default=0))
@@ -540,6 +543,8 @@ def render_svg(
         body = _bar_chart(chart, theme, width, height)
     else:  # column / line / area
         body = _x_category_chart(chart, theme, width, height, chart.chart)
+    if not body:  # only a no-positive-slice pie: let callers use a data table
+        return ""
     title = _esc(chart.title or "chart")
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '

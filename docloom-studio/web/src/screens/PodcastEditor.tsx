@@ -36,6 +36,12 @@ export function PodcastEditor() {
   // this to bust the browser's cache and force the <audio> element to reload
   const [audioVersion, setAudioVersion] = useState(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // always holds the latest turns so a failed regenerate re-saves any edit the
+  // user made mid-synthesis, instead of the stale array its closure captured
+  const turnsRef = useRef<Turn[]>([])
+  useEffect(() => {
+    turnsRef.current = turns
+  }, [turns])
 
   useEffect(() => {
     api
@@ -104,6 +110,11 @@ export function PodcastEditor() {
       setState('saved')
       toast.success('Audio regenerated')
     } catch (e) {
+      // We cancelled the pending autosave above, but the POST failed before
+      // the server persisted the script, so re-arm the save to avoid silently
+      // losing the transcript edits. Use the latest turns (turnsRef), not the
+      // closure's stale copy, so an edit made during synthesis is kept.
+      persist(turnsRef.current)
       toast.error(`Regenerate failed: ${e instanceof Error ? e.message : e}`)
     } finally {
       setRegenerating(false)

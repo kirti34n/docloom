@@ -40,7 +40,7 @@ function EditableCanvas({ theme }: { theme: StudioTheme }) {
           style={{ aspectRatio: '1280 / 720', width: '100%' }}
         >
           <div style={{ width: 1280, height: 720, transform: `scale(${scale})`, transformOrigin: 'top left', ...vars }}>
-            <EditableSlide slideId={selected} />
+            <EditableSlide key={selected} slideId={selected} />
           </div>
         </div>
       </div>
@@ -53,6 +53,7 @@ export function DeckEditor() {
   const navigate = useNavigate()
   const themes = useThemes()
   const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [exporting, setExporting] = useState<string | null>(null)
   const load = useDeck((s) => s.load)
   const title = useDeck((s) => s.title)
@@ -66,7 +67,7 @@ export function DeckEditor() {
     api.get<ArtifactT>(`/api/artifacts/${artifactId}`).then((a) => {
       load(a)
       setLoaded(true)
-    })
+    }).catch((e) => setLoadError(e instanceof Error ? e.message : String(e)))
   }, [artifactId, load])
 
   useEffect(() => {
@@ -82,6 +83,11 @@ export function DeckEditor() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  if (loadError)
+    return (
+      <div className="flex h-full items-center justify-center bg-stage-bg text-madder text-[13px]">{loadError}</div>
+    )
 
   if (!loaded || themes.length === 0) {
     return (

@@ -119,11 +119,13 @@ def parse_llm_output(text: str, model: type[BaseModel] = Document) -> Any:
     strict, and an unknown block type raises one clear, self-correctable
     error instead of a cascade of union mismatches.
 
-    A model that emits an example fence followed by the real document fence
-    (common with local models) is handled by collecting every fenced JSON
-    candidate (matched non-greedily, so each fence is isolated instead of
-    spanning from the first candidate's { to the last candidate's }) and
-    returning the first one that actually validates.
+    A model that emits an illustrative example fence alongside the real
+    document fence (common with local models) is handled by collecting every
+    fenced JSON candidate (matched non-greedily, so each fence is isolated
+    instead of spanning from the first candidate's { to the last candidate's })
+    and returning the *richest* one that validates. An example is usually a
+    title-only skeleton while the real document carries blocks/slides/sheets,
+    so the real one wins whether the example precedes or follows it.
     """
     t = text.strip()
     candidates = [
@@ -134,12 +136,26 @@ def parse_llm_output(text: str, model: type[BaseModel] = Document) -> Any:
         start, end = t.find("{"), t.rfind("}")
         candidates = [t[start:end + 1]] if start != -1 and end > start else [t]
 
-    for candidate in candidates[:-1]:
+    validated = []
+    for candidate in candidates:
         try:
-            return _parse_one(candidate, model)
+            validated.append(_parse_one(candidate, model))
         except Exception:
-            continue  # try the next candidate; the last one's error wins
-    return _parse_one(candidates[-1], model)
+            continue
+    if not validated:
+        return _parse_one(candidates[-1], model)  # none valid: surface its error
+
+    def _content_len(parsed: Any) -> int:
+        # blocks/slides/sheets on a Document; 0 for a bare skeleton or a model
+        # that has none of them, so ties fall through to the later candidate
+        return sum(len(getattr(parsed, attr, None) or [])
+                   for attr in ("blocks", "slides", "sheets"))
+
+    best = validated[0]
+    for parsed in validated[1:]:
+        if _content_len(parsed) >= _content_len(best):  # >= keeps the later one
+            best = parsed
+    return best
 
 
 def _filter_union_errors(data: Any, exc: Exception) -> list[str]:

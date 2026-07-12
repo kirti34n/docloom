@@ -1011,10 +1011,11 @@ def _image_side_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int],
     px = 0.0 if left_side else SLIDE_W - pane_w
     # Matte the pane in the surface tint first, so a contain-fit image that does
     # not fill the pane sits in a deliberate frame rather than a white gap.
-    _rect(slide, px, 0.0, pane_w, SLIDE_H, theme.surface)
+    matte = _rect(slide, px, 0.0, pane_w, SLIDE_H, theme.surface)
     try:
         pic = slide.shapes.add_picture(str(s.image.path), Inches(px), 0)
-    except Exception:  # unreadable file: behave like content layout
+    except Exception:  # unembeddable file: drop the matte, behave like content layout
+        matte._element.getparent().remove(matte._element)
         _content_slide(slide, s, theme, numbers, accent)
         return
     # Contain-fit, not cover-fit: a side image is often a diagram or chart, and

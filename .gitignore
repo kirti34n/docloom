@@ -39,3 +39,6 @@ docloomsource.zip
 # OS
 .DS_Store
 Thumbs.db
+
+# uv lockfile (repo is pip-based; do not commit auto-generated locks)
+uv.lock

@@ -26,6 +26,7 @@ export function DiagramEditor() {
   const { artifactId, notebookId } = useParams()
   const navigate = useNavigate()
   const [artifact, setArtifact] = useState<ArtifactT | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [src, setSrc] = useState('')
   const [svg, setSvg] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -45,7 +46,7 @@ export function DiagramEditor() {
       setArtifact(a)
       const p = a.payload as unknown as DiagramPayload
       setSrc(p.source ?? p.mermaid_src ?? SAMPLE)
-    })
+    }).catch((e) => setLoadError(e instanceof Error ? e.message : String(e)))
     Promise.all(
       RENDER_EXTS.map((ext) =>
         fetch(`/api/artifacts/${artifactId}/render.${ext}`, { method: 'HEAD' })
@@ -120,6 +121,9 @@ export function DiagramEditor() {
     a.download = `${artifact?.title ?? 'diagram'}.${ext}`
     a.click()
   }
+
+  if (loadError)
+    return <div className="flex h-full items-center justify-center bg-stage-bg text-madder text-[13px]">{loadError}</div>
 
   if (!artifact)
     return <div className="flex h-full items-center justify-center bg-stage-bg text-stage-muted"><Loader2 className="animate-spin" /></div>

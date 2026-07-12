@@ -70,7 +70,13 @@ async def add_file(
                  + ", ".join(sorted(ALLOWED_EXT)))
 
     sid = new_id()
-    dest = _source_dir(sid) / name
+    # containment: confirm the destination stays inside the source dir. The
+    # basename strip above leaves a Windows drive prefix intact, so a name like
+    # "D:pwned.txt" would otherwise write to D:'s root, escaping data_dir().
+    base = _source_dir(sid).resolve()
+    dest = (base / name).resolve()
+    if dest.parent != base:
+        raise HTTPException(400, "invalid filename")
     # stream to disk with a hard size cap so an oversized upload is rejected
     # without buffering the whole file in memory
     written = 0

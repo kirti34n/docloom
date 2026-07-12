@@ -56,6 +56,10 @@ async def upload_asset(
     file: UploadFile, type: str = Form("image"), tags: str = Form(""),
     user: dict = Depends(current_user),
 ) -> dict:
+    # validate type up front so an unknown value (e.g. "icon") cannot slip past
+    # the extension gates below and write an arbitrary extension
+    if type not in ("image", "logo", "font"):
+        raise HTTPException(400, "invalid type")
     # basename only: strip any directory components (both separators) so a
     # crafted filename like "../../evil" cannot escape the asset directory
     name = (file.filename or "asset").replace("\\", "/").rsplit("/", 1)[-1].strip()
@@ -68,7 +72,13 @@ async def upload_asset(
         raise HTTPException(400, "not an image file")
 
     aid = new_id()
-    dest = _asset_dir(aid) / name
+    adir = _asset_dir(aid).resolve()
+    dest = (adir / name).resolve()
+    # basename stripping misses a Windows drive-relative name like "D:evil.exe"
+    # (no separator to strip, but it joins onto another drive's root); confirm
+    # the resolved dest still sits directly inside this asset's directory
+    if dest.parent != adir:
+        raise HTTPException(400, "invalid filename")
     # stream to disk with a hard size cap so an oversized upload is rejected
     # without buffering the whole file in memory
     written = 0

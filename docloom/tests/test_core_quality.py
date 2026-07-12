@@ -112,14 +112,14 @@ def test_lint_chart_with_data_has_no_empty_finding():
 # --------------------------------------------------------- scatter labels
 
 
-def test_lint_scatter_chart_non_numeric_labels_is_an_error():
+def test_lint_scatter_chart_non_numeric_labels_is_a_warning():
     doc = Document(title="T", blocks=[
         Chart(chart="scatter", labels=["Q1", "Q2"],
               series=[Series(name="s", values=[1.0, 2.0])]),
     ])
     findings = [f for f in lint(doc) if f.rule == "chart/scatter-non-numeric"]
     assert len(findings) == 1
-    assert findings[0].severity == "error"
+    assert findings[0].severity == "warning"
 
 
 def test_lint_scatter_chart_numeric_labels_is_clean():

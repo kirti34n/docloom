@@ -217,7 +217,17 @@ export const useDeck = create<DeckState>()(
       duplicateSlide: (slideId) => {
         const slide = get().slides[slideId]
         if (!slide) return
-        const copy = withIds({ ...slide, id: undefined })
+        // give every block a fresh id so the copy never shares ids with the
+        // original (shared ids make EditableBlock reuse the same editor and
+        // cross-contaminate content, and collide when persisted)
+        const fresh = (list?: Block[]) => (list ?? []).map((b) => ({ ...b, id: key() }))
+        const copy: SlideT = {
+          ...slide,
+          id: key(),
+          blocks: fresh(slide.blocks),
+          right: slide.right ? fresh(slide.right) : slide.right,
+          image: slide.image ? { ...slide.image, id: key() } : slide.image,
+        }
         const order = [...get().order]
         order.splice(order.indexOf(slideId) + 1, 0, copy.id!)
         set({ slides: { ...get().slides, [copy.id!]: copy }, order, selected: copy.id!, dirty: true })

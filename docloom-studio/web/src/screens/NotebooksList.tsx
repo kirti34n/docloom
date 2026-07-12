@@ -160,15 +160,21 @@ export function NotebooksList() {
   const [error, setError] = useState<string | null>(null)
   const navigate = useNavigate()
   const workspaceId = currentWorkspace?.id
+  const reqRef = useRef(0)
 
   const load = useCallback(() => {
     if (!workspaceId) return
+    const req = ++reqRef.current
     setError(null)
     setNotebooks(null)
     api
       .get<Notebook[]>(`/api/notebooks?workspace_id=${workspaceId}`)
-      .then(setNotebooks)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .then((nbs) => {
+        if (req === reqRef.current) setNotebooks(nbs)
+      })
+      .catch((e) => {
+        if (req === reqRef.current) setError(e instanceof Error ? e.message : String(e))
+      })
   }, [workspaceId])
 
   useEffect(() => {

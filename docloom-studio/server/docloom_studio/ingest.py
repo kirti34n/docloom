@@ -19,9 +19,10 @@ import httpx
 from .db import execute, owner_of_source, query_one
 from .settings import data_dir, get_setting
 
-# control chars (minus tab/newline/CR), zero-width chars, bidi overrides, BOM
+# control chars (minus tab/newline/CR), NEL and line/paragraph separators,
+# zero-width chars, bidi overrides, BOM
 _UNSAFE = re.compile(
-    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f"
+    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x85\u2028\u2029"
     "​‎-‏‪-‮⁦-⁩﻿]"
 )
 
@@ -472,4 +473,8 @@ def load_chunks(source_id: str) -> list[dict]:
     path = _source_dir(source_id) / "chunks.jsonl"
     if not path.is_file():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    # split only on real record separators: str.splitlines() would also break
+    # on NEL/LINE SEPARATOR/PARAGRAPH SEPARATOR that json.dumps emits literally
+    # inside a record, corrupting the JSON. read_text() has already normalized
+    # \r\n and \r to \n, and json.dumps escapes any real newline inside strings.
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").split("\n") if line]

@@ -273,6 +273,13 @@ def _pg_connect():
 
 def _init_postgres() -> None:
     with _pg_connect() as conn:
+        # Serialize concurrent migrators on a shared Postgres. Without this,
+        # two app processes booting at once run their DDL in parallel and the
+        # loser crashes with "relation already exists" / duplicate pg_type.
+        # The transaction-level advisory lock is held until this migration's
+        # single commit, so a late starter blocks here, then reads
+        # schema_version already at the latest version and runs zero migrations.
+        conn.execute("SELECT pg_advisory_xact_lock(8274919283)")
         conn.execute("CREATE TABLE IF NOT EXISTS schema_version "
                      "(version INTEGER NOT NULL)")
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()

@@ -49,7 +49,7 @@ MIN_CONTRAST_BODY = 4.5  # WCAG AA
 # char budget above cannot see. Keep these numbers in sync with render/pptx.py.
 SLIDE_BODY_H_IN = 5.48   # slide height 7.5 - margin 0.6 - title band 1.42
 FULL_BODY_W_IN = 12.13   # slide width 13.333 - 2 x margin 0.6
-NARROW_BODY_W_IN = FULL_BODY_W_IN / 2  # two_column column / hero-family pane
+NARROW_BODY_W_IN = FULL_BODY_W_IN / 2  # two_column column / image-slot pane
 CHART_H_IN = 4.5         # render/pptx.py LAYOUT["chart_max_h_in"]
 IMAGE_H_IN = 4.6         # render/pptx.py _natural_h's resolved image/artifact estimate
 STATS_H_IN = 1.4         # render/pptx.py LAYOUT["stat_card_h_in"]
@@ -180,7 +180,7 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
 
     # two_column slides get half the width per column, so each column gets
     # half the character budget; other layouts get the full-width budget
-    if slide.layout in ("hero", "image_left", "image_right"):
+    if slide.layout in ("image_left", "image_right"):
         total = sum(_block_chars(b) for b in all_blocks)
         if total > MAX_SLIDE_CHARS // 2:
             out.append(Finding(
@@ -198,7 +198,21 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
                             f"(budget {MAX_SLIDE_CHARS // 2} at half width); "
                             "this will overflow the slide — split it",
                 ))
-    else:
+    elif slide.layout == "hero":
+        # a hero body renders in a short bottom caption band (~1.5in), not a
+        # full slide body, so it holds far less: use the half budget. Warn
+        # rather than error because the renderer auto-shrinks a lone block and
+        # only drops trailing ones, so this degrades instead of crashing and
+        # must not hard-block export.
+        total = sum(_block_chars(b) for b in all_blocks)
+        if total > MAX_SLIDE_CHARS // 2:
+            out.append(Finding(
+                rule="deck/overflow", severity="warning", where=where,
+                message=f"~{total} chars in the hero caption band "
+                        f"(budget {MAX_SLIDE_CHARS // 2}); trim it or move the "
+                        "body to a content slide",
+            ))
+    elif slide.layout in ("content", "quote"):
         total = sum(_block_chars(b) for b in all_blocks)
         if total > MAX_SLIDE_CHARS:
             out.append(Finding(
@@ -209,11 +223,11 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
 
     # height budget: fixed-size blocks (chart/image/table/stats) are blind to
     # the char budget above but not to physical space. Estimate inches and
-    # compare to the slide body's usable height. two_column/hero-family
+    # compare to the slide body's usable height. two_column/image-slot
     # layouts get a narrower text column (the same "half" approximation the
     # char budget above makes), but the *vertical* budget does not shrink for
     # them: only the image or the other column takes width, not height.
-    narrow = slide.layout in ("hero", "image_left", "image_right", "two_column")
+    narrow = slide.layout in ("image_left", "image_right", "two_column")
     w_in = NARROW_BODY_W_IN if narrow else FULL_BODY_W_IN
     if slide.layout == "two_column":
         height_groups = [
@@ -292,7 +306,7 @@ def _lint_block_refs(b: Block, where: str, out: list[Finding]) -> None:
             bad = [lb for lb in b.labels if not _is_numeric(lb)]
             if bad:
                 out.append(Finding(
-                    rule="chart/scatter-non-numeric", severity="error", where=where,
+                    rule="chart/scatter-non-numeric", severity="warning", where=where,
                     message="scatter chart labels are plotted as numeric "
                             f"x-values; non-numeric label(s) {bad[:3]} make "
                             "the PPTX renderer fall back to a data table",

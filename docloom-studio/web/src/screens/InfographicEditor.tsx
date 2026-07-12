@@ -34,6 +34,7 @@ export function InfographicEditor() {
   // itself and bails out until it's real, so this never dereferences undefined
   const theme = themeByName(themes, 'paper')!
   const [artifact, setArtifact] = useState<ArtifactT | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [style, setStyle] = useState('list')
   const [template, setTemplate] = useState('')
   const [title, setTitle] = useState('')
@@ -58,7 +59,7 @@ export function InfographicEditor() {
       setTemplate(p.antv?.template ?? TEMPLATES.list[0])
       setTitle(p.antv?.data?.title ?? '')
       setItems(p.antv?.data?.lists ?? [])
-    })
+    }).catch((e) => setLoadError(e instanceof Error ? e.message : String(e)))
   }, [artifactId])
 
   // (re)render the infographic when spec changes
@@ -147,6 +148,9 @@ export function InfographicEditor() {
       toast.error(`Export failed: ${e instanceof Error ? e.message : e}`)
     }
   }
+
+  if (loadError)
+    return <div className="flex h-full items-center justify-center bg-stage-bg text-madder text-[13px]">{loadError}</div>
 
   if (!artifact || themes.length === 0)
     return <div className="flex h-full items-center justify-center bg-stage-bg text-stage-muted"><Loader2 className="animate-spin" /></div>

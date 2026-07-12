@@ -75,6 +75,16 @@ def _encrypt_secrets(value: Any) -> Any:
     return value
 
 
+def _decrypt_stored(key: str, value: Any) -> Any:
+    """Decrypt a loaded setting value, honoring both the nested secret fields
+    and the bare-string secret keys in _SECRET_KEYS (e.g. research.tavily_key)."""
+    from . import crypto
+
+    if key in _SECRET_KEYS:
+        return crypto.decrypt(value) if crypto.is_encrypted(value) else value
+    return _decrypt_secrets(value)
+
+
 def get_setting(key: str, user_id: str | None = None) -> Any:
     """A setting's value: the user's own override (if user_id given), else the
     global value, else the built-in default. Secret fields are decrypted."""
@@ -85,17 +95,21 @@ def get_setting(key: str, user_id: str | None = None) -> Any:
             "SELECT value_json FROM user_settings WHERE user_id = ? AND key = ?",
             (user_id, key))
         if row is not None:
-            return _decrypt_secrets(json.loads(row["value_json"]))
+            return _decrypt_stored(key, json.loads(row["value_json"]))
     row = query_one("SELECT value_json FROM settings WHERE key = ?", (key,))
     if row is None:
         return DEFAULTS.get(key)
-    return _decrypt_secrets(json.loads(row["value_json"]))
+    return _decrypt_stored(key, json.loads(row["value_json"]))
 
 
 def set_setting(key: str, value: Any, user_id: str | None = None) -> None:
+    from . import crypto
     from .db import execute
 
-    value = _encrypt_secrets(value)
+    if key in _SECRET_KEYS and isinstance(value, str) and value and not crypto.is_encrypted(value):
+        value = crypto.encrypt(value)
+    else:
+        value = _encrypt_secrets(value)
     if user_id is not None:
         execute(
             "INSERT INTO user_settings (user_id, key, value_json) VALUES (?, ?, ?) "
@@ -115,12 +129,12 @@ def all_settings(user_id: str | None = None) -> dict[str, Any]:
     from .db import query_all
 
     for row in query_all("SELECT key, value_json FROM settings"):
-        merged[row["key"]] = _decrypt_secrets(json.loads(row["value_json"]))
+        merged[row["key"]] = _decrypt_stored(row["key"], json.loads(row["value_json"]))
     if user_id is not None:
         for row in query_all(
             "SELECT key, value_json FROM user_settings WHERE user_id = ?", (user_id,)
         ):
-            merged[row["key"]] = _decrypt_secrets(json.loads(row["value_json"]))
+            merged[row["key"]] = _decrypt_stored(row["key"], json.loads(row["value_json"]))
     return merged
 
 
@@ -131,13 +145,18 @@ def all_settings(user_id: str | None = None) -> dict[str, Any]:
 # means "keep the stored value" so the round-trip doesn't wipe the real key.
 SECRET_MASK = "__stored__"
 _SECRET_FIELDS = ("api_key",)
+# Bare-string top-level secret settings (stored/masked as the whole value,
+# not as a nested field). Kept encrypted at rest and masked on the way out.
+_SECRET_KEYS = ("research.tavily_key", "assets.pexels_key")
 
 
 def redact_settings(merged: dict[str, Any]) -> dict[str, Any]:
     """Copy of `merged` with any populated secret field masked."""
     out: dict[str, Any] = {}
     for key, value in merged.items():
-        if isinstance(value, dict):
+        if key in _SECRET_KEYS and value:
+            value = SECRET_MASK
+        elif isinstance(value, dict):
             value = dict(value)
             for field in _SECRET_FIELDS:
                 if value.get(field):
@@ -149,6 +168,8 @@ def redact_settings(merged: dict[str, Any]) -> dict[str, Any]:
 def unmask_value(key: str, value: Any, user_id: str | None = None) -> Any:
     """Restore masked secrets from the user's stored value before persisting."""
     if not isinstance(value, dict):
+        if key in _SECRET_KEYS and value == SECRET_MASK:
+            return get_setting(key, user_id) or ""
         return value
     stored = get_setting(key, user_id) or {}
     value = dict(value)

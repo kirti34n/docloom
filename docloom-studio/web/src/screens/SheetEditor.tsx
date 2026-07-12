@@ -49,6 +49,7 @@ export function SheetEditor() {
   const { artifactId, notebookId } = useParams()
   const navigate = useNavigate()
   const [artifact, setArtifact] = useState<ArtifactT | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [sheets, setSheets] = useState<SheetT[]>([])
   const [active, setActive] = useState(0)
   const [state, setState] = useState<'saved' | 'dirty' | 'saving'>('saved')
@@ -63,7 +64,7 @@ export function SheetEditor() {
     api.get<ArtifactT>(`/api/artifacts/${artifactId}`).then((a) => {
       setArtifact(a)
       setSheets(((a.payload.ir as { sheets?: SheetT[] }).sheets ?? []))
-    })
+    }).catch((e) => setLoadError(e instanceof Error ? e.message : String(e)))
   }, [artifactId])
 
   const persist = (next: SheetT[]) => {
@@ -128,6 +129,7 @@ export function SheetEditor() {
     finally { setExporting(null) }
   }
 
+  if (loadError) return <div className="flex h-full items-center justify-center text-madder text-[13px]">{loadError}</div>
   if (!artifact) return <div className="flex h-full items-center justify-center text-ws-muted"><Loader2 className="animate-spin" /></div>
   const sheet = sheets[active]
 

@@ -84,6 +84,7 @@ export function DocEditor() {
   const navigate = useNavigate()
   const themes = useThemes()
   const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [exporting, setExporting] = useState<string | null>(null)
   const [addOpen, setAddOpen] = useState(false)
   const load = useDoc((s) => s.load)
@@ -103,8 +104,11 @@ export function DocEditor() {
     api.get<ArtifactT>(`/api/artifacts/${artifactId}`).then((a) => {
       load(a)
       setLoaded(true)
-    })
+    }).catch((e) => setLoadError(e instanceof Error ? e.message : String(e)))
   }, [artifactId, load])
+
+  if (loadError)
+    return <div className="flex h-full items-center justify-center text-madder text-[13px]">{loadError}</div>
 
   if (!loaded || themes.length === 0)
     return <div className="flex h-full items-center justify-center text-ws-muted"><Loader2 className="animate-spin" /></div>

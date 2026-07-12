@@ -78,7 +78,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const afterAuth = async (u: User) => {
     setUser(u)
-    await loadWorkspaces()
+    try {
+      await loadWorkspaces()
+    } catch (e) {
+      clear()
+      throw e
+    }
   }
 
   const login = async (email: string, password: string) =>

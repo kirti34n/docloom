@@ -25,9 +25,10 @@ DOCLOOM_TOKENS = ("primary", "accent", "background", "surface",
 
 
 def studio_theme(name: str) -> dict[str, Any]:
-    path = THEME_DIR / f"{name}.json"
-    if not path.is_file():
-        path = THEME_DIR / "paper.json"
+    base = THEME_DIR.resolve()
+    path = (base / f"{name}.json").resolve()
+    if path.parent != base or not path.is_file():
+        path = base / "paper.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     data["name"] = path.stem
     return data

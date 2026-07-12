@@ -359,7 +359,7 @@ def to_typst(doc: Document, theme: Theme) -> str:
         if rendered:
             lines += [""] + rendered
     for sheet in doc.sheets:  # workbooks would otherwise be silently dropped in PDF
-        if sheet.columns:
+        if sheet.columns or any(sheet.rows):  # any() skips a rows=[[]] no-cell sheet
             tbl = Table(
                 header=[c.header for c in sheet.columns],
                 rows=[[_sheet_cell(c) for c in row] for row in sheet.rows],
