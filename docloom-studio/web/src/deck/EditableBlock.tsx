@@ -10,11 +10,13 @@ const LIST_BLOCKS = new Set(['bullets', 'numbered'])
 export function EditableBlock({
   block,
   citeNumbers,
+  extRev = 0,
   onChange,
   onDelete,
 }: {
   block: Block
   citeNumbers?: Map<string, number>
+  extRev?: number
   onChange: (block: Block) => void
   onDelete: () => void
 }) {
@@ -36,6 +38,7 @@ export function EditableBlock({
         <div className={`blk-heading lvl-${Math.min(block.level ?? 2, 4)}`}>
           <EditableText
             value={block.text ?? ''}
+            extRev={extRev}
             onChange={(text: RichText) => onChange({ ...block, text })}
           />
         </div>
@@ -43,6 +46,7 @@ export function EditableBlock({
         <div className="blk-para">
           <EditableText
             value={block.text ?? ''}
+            extRev={extRev}
             onChange={(text: RichText) => onChange({ ...block, text })}
           />
         </div>
@@ -50,6 +54,7 @@ export function EditableBlock({
         <div className="blk-quote">
           <EditableText
             value={block.text ?? ''}
+            extRev={extRev}
             onChange={(text: RichText) => onChange({ ...block, text })}
           />
           {block.attribution && <cite>— {block.attribution}</cite>}
@@ -58,6 +63,7 @@ export function EditableBlock({
         <div className={`blk-callout style-${block.style ?? 'info'}`}>
           <EditableText
             value={block.text ?? ''}
+            extRev={extRev}
             onChange={(text: RichText) => onChange({ ...block, text })}
           />
         </div>
@@ -66,6 +72,7 @@ export function EditableBlock({
           <EditableList
             items={(block.items ?? []) as ListItem[]}
             ordered={block.type === 'numbered'}
+            extRev={extRev}
             onChange={(items: ListItem[]) => onChange({ ...block, items })}
           />
         </div>

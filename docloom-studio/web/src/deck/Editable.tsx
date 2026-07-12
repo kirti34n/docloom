@@ -28,6 +28,26 @@ const INLINE_KIT = StarterKit.configure({
   link: { openOnClick: false, autolink: false },
 })
 
+// for regions that commit through asString() (Slide.title/subtitle are plain
+// strings in the IR): no bold/italic/code/link, so the editor never offers
+// formatting it would then silently throw away on commit
+const PLAIN_KIT = StarterKit.configure({
+  document: false,
+  heading: false,
+  bulletList: false,
+  orderedList: false,
+  listItem: false,
+  blockquote: false,
+  codeBlock: false,
+  horizontalRule: false,
+  strike: false,
+  underline: false,
+  bold: false,
+  italic: false,
+  code: false,
+  link: false,
+})
+
 const LIST_KIT = StarterKit.configure({
   heading: false,
   blockquote: false,
@@ -84,15 +104,17 @@ export function EditableText({
   onChange,
   className,
   placeholder,
+  plainText = false,
 }: {
   value: RichText
   extRev?: number
   onChange: (rt: RichText) => void
   className?: string
   placeholder?: string
+  plainText?: boolean
 }) {
   const editor = useEditor({
-    extensions: [SingleParagraph, INLINE_KIT, CiteMark],
+    extensions: plainText ? [SingleParagraph, PLAIN_KIT] : [SingleParagraph, INLINE_KIT, CiteMark],
     content: richTextToDoc(value),
     editorProps: { attributes: { class: `editable ${className ?? ''}` } },
   })

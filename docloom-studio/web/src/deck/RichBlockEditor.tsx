@@ -20,16 +20,24 @@ function Btn({ onClick, children, title }: {
   )
 }
 
+// pad a ragged row/header up to n cells so a write past its current end
+// never leaves a hole (holes serialize to JSON null, which docloom rejects)
+export function padded(row: string[], n: number): string[] {
+  const out = [...row]
+  while (out.length < n) out.push('')
+  return out
+}
+
 function TableEditor({ block, onChange }: { block: Block; onChange: (b: Block) => void }) {
   const header = (block.header ?? []).map(asText)
   const rows = (block.rows ?? []).map((r) => r.map(asText))
   const cols = Math.max(header.length, ...rows.map((r) => r.length), 1)
 
   const setHeader = (i: number, v: string) => {
-    const h = [...header]; h[i] = v; onChange({ ...block, header: h })
+    const h = padded(header, cols); h[i] = v; onChange({ ...block, header: h })
   }
   const setCell = (r: number, c: number, v: string) => {
-    const next = rows.map((row) => [...row])
+    const next = rows.map((row) => padded(row, cols))
     next[r][c] = v
     onChange({ ...block, rows: next })
   }
@@ -208,11 +216,29 @@ function ImageEditor({ block, onChange }: { block: Block; onChange: (b: Block) =
   )
 }
 
+function CodeEditor({ block, onChange }: { block: Block; onChange: (b: Block) => void }) {
+  return (
+    <div className="rbe">
+      <textarea
+        className="rbe-caption"
+        style={{ width: '100%', minHeight: 120, fontFamily: 'var(--font-mono, monospace)', resize: 'vertical' }}
+        value={block.code ?? ''}
+        spellCheck={false}
+        placeholder="Code"
+        onChange={(e) => onChange({ ...block, code: e.target.value })}
+      />
+      <input className="rbe-caption" value={block.language ?? ''} placeholder="Language (optional)"
+        onChange={(e) => onChange({ ...block, language: e.target.value || null })} />
+    </div>
+  )
+}
+
 const EDITORS: Record<string, (p: { block: Block; onChange: (b: Block) => void }) => React.ReactElement> = {
   table: TableEditor,
   stats: StatsEditor,
   chart: ChartEditor,
   image: ImageEditor,
+  code: CodeEditor,
 }
 
 export function hasRichEditor(type: string): boolean {

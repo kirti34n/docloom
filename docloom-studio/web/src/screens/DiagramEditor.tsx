@@ -2,8 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { AlertCircle, Check, Download, Loader2, Sparkles } from 'lucide-react'
 import { api } from '../api/client'
+import { toast } from '../ui/toast'
+import { Button } from '../ui'
 import type { ArtifactT } from '../deck/types'
 import { renderD2, svgToPng } from '../diagram/d2'
+
+const RENDER_EXTS = ['svg', 'png'] as const
+type RenderExt = (typeof RENDER_EXTS)[number]
 
 interface DiagramPayload {
   source?: string
@@ -26,44 +31,68 @@ export function DiagramEditor() {
   const [error, setError] = useState<string | null>(null)
   const [state, setState] = useState<'saved' | 'dirty' | 'saving'>('saved')
   const [repairing, setRepairing] = useState(false)
+  const [renders, setRenders] = useState<{ svg: boolean; png: boolean }>({ svg: false, png: false })
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // the first src-triggered render after (re)loading an artifact must not
+  // schedule a save: merely opening a diagram would otherwise rewrite its
+  // payload and bump the artifact version
+  const firstRender = useRef(true)
 
   useEffect(() => {
     if (!artifactId) return
+    firstRender.current = true
     api.get<ArtifactT>(`/api/artifacts/${artifactId}`).then((a) => {
       setArtifact(a)
       const p = a.payload as unknown as DiagramPayload
       setSrc(p.source ?? p.mermaid_src ?? SAMPLE)
     })
+    Promise.all(
+      RENDER_EXTS.map((ext) =>
+        fetch(`/api/artifacts/${artifactId}/render.${ext}`, { method: 'HEAD' })
+          .then((r) => r.ok)
+          .catch(() => false),
+      ),
+    ).then(([svgOk, pngOk]) => setRenders({ svg: svgOk, png: pngOk }))
   }, [artifactId])
 
-  // render D2 -> SVG + persist source/renders (debounced)
-  const rerender = useCallback(async (code: string) => {
+  // render D2 -> SVG for the preview, unconditionally, then persist the
+  // source (debounced). A diagram that fails to compile is still saved: a
+  // render error is a preview concern, not a reason to drop the user's edit.
+  const rerender = useCallback(async (code: string, persist: boolean) => {
     const { svg: out, error: err } = await renderD2(code)
-    if (err) {
-      setError(err)
-      return
-    }
-    setError(null)
-    setSvg(out!)
+    setError(err ?? null)
+    if (out) setSvg(out)
+    if (!persist) return
+
     if (saveTimer.current) clearTimeout(saveTimer.current)
     setState('dirty')
     saveTimer.current = setTimeout(async () => {
       setState('saving')
-      await api.put(`/api/artifacts/${artifactId}/payload`, {
-        payload: { source: code, render: 'svg' },
-      })
-      let png: string | null = null
       try {
-        png = await svgToPng(out!)
-      } catch { /* complex svg — skip png */ }
-      await api.post(`/api/artifacts/${artifactId}/renders`, { svg: out, png_base64: png })
-      setState('saved')
+        await api.put(`/api/artifacts/${artifactId}/payload`, {
+          payload: { source: code, render: 'svg' },
+        })
+        if (out) {
+          let png: string | null = null
+          try {
+            png = await svgToPng(out)
+          } catch { /* complex svg, skip png */ }
+          await api.post(`/api/artifacts/${artifactId}/renders`, { svg: out, png_base64: png })
+          setRenders({ svg: true, png: png !== null })
+        }
+        setState('saved')
+      } catch (e) {
+        setState('dirty')
+        toast.error(`Save failed: ${e instanceof Error ? e.message : e}`)
+      }
     }, 700)
   }, [artifactId])
 
   useEffect(() => {
-    if (src) void rerender(src)
+    if (!src) return
+    const persist = !firstRender.current
+    firstRender.current = false
+    void rerender(src, persist)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src])
 
@@ -74,12 +103,18 @@ export function DiagramEditor() {
       const res = await api.post<{ source?: string; d2?: string; mermaid?: string }>(
         `/api/artifacts/${artifactId}/repair`, { src, error })
       setSrc(res.source ?? res.d2 ?? res.mermaid ?? src)
+    } catch (e) {
+      toast.error(`Fix with AI failed: ${e instanceof Error ? e.message : e}`)
     } finally {
       setRepairing(false)
     }
   }
 
-  const downloadRender = (ext: string) => {
+  const downloadRender = (ext: RenderExt) => {
+    if (!renders[ext]) {
+      toast.error(`No ${ext.toUpperCase()} render yet. Fix the diagram and wait for it to save.`)
+      return
+    }
     const a = document.createElement('a')
     a.href = `/api/artifacts/${artifactId}/render.${ext}`
     a.download = `${artifact?.title ?? 'diagram'}.${ext}`
@@ -99,9 +134,10 @@ export function DiagramEditor() {
             : state === 'dirty' ? 'Unsaved' : <span className="flex items-center gap-1"><Check size={12} /> Saved</span>}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
-          {['svg', 'png'].map((ext) => (
-            <button key={ext} onClick={() => downloadRender(ext)}
-              className="flex items-center gap-1.5 rounded-lg border border-stage-line px-2.5 py-1.5 text-[12px] text-stage-muted hover:text-white">
+          {RENDER_EXTS.map((ext) => (
+            <button key={ext} onClick={() => downloadRender(ext)} disabled={!renders[ext]}
+              title={renders[ext] ? undefined : `No ${ext.toUpperCase()} render yet`}
+              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-2.5 py-1.5 text-[12px] text-stage-muted hover:text-white disabled:opacity-40">
               <Download size={12} /> {ext.toUpperCase()}
             </button>
           ))}
@@ -110,7 +146,7 @@ export function DiagramEditor() {
 
       <div className="flex min-h-0 flex-1">
         <div className="flex w-96 shrink-0 flex-col border-r border-stage-line">
-          <div className="px-4 py-2 text-[12px] text-stage-muted">D2 source</div>
+          <div className="px-4 py-2 font-mono text-[11px] uppercase leading-4 tracking-[0.08em] text-stage-muted">D2 source</div>
           <textarea
             value={src}
             onChange={(e) => setSrc(e.target.value)}
@@ -123,10 +159,9 @@ export function DiagramEditor() {
                 <AlertCircle size={14} className="mt-0.5 shrink-0" />
                 <span className="font-mono">{error.slice(0, 200)}</span>
               </div>
-              <button onClick={fixWithAI} disabled={repairing}
-                className="mt-2 flex items-center gap-1.5 rounded-lg bg-ws-accent px-3 py-1.5 text-[12px] font-medium text-white disabled:opacity-50">
+              <Button variant="accent" onClick={fixWithAI} disabled={repairing} className="mt-2 text-[12px]">
                 {repairing ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Fix with AI
-              </button>
+              </Button>
             </div>
           )}
         </div>

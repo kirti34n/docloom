@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from . import __version__
 from .artifacts import router as artifacts_router
-from .auth import current_user, router as auth_router
+from .auth import current_user, require_notebook, router as auth_router
 from .db import execute, init_db, new_id, now
 from .assets import router as assets_router
 from .jobs import reconcile_jobs
@@ -184,6 +184,16 @@ async def layout() -> dict:
     if constants is None:  # renderer predates 0.2 constants export
         constants = {"slide_w_in": 13.333, "slide_h_in": 7.5}
     return constants
+
+
+@app.get("/api/notebooks/{notebook_id}/suggested-questions")
+async def suggested_questions(
+    notebook_id: str, user: dict = Depends(current_user)
+) -> dict:
+    require_notebook(user["id"], notebook_id)
+    from .generate import suggest_questions
+
+    return {"questions": await suggest_questions(notebook_id, user["id"])}
 
 
 # ---- SPA ------------------------------------------------------------------

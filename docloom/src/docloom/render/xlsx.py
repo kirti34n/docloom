@@ -93,7 +93,11 @@ def _charts_as_sheets(doc: Document) -> list[Sheet]:
 def _sources_sheet(doc: Document) -> Sheet:
     numbers = source_numbers(doc)
     lines: list[list[str | None]] = []
+    seen: set[str] = set()
     for src in doc.sources:
+        if src.id in seen:  # duplicate id: numbers keeps the first, so skip the rest
+            continue
+        seen.add(src.id)
         line = f"{numbers[src.id]}. {src.title}"
         if src.publisher:
             line += " \u2014 " + src.publisher

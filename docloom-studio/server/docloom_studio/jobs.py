@@ -26,6 +26,18 @@ log = logging.getLogger("docloom_studio.jobs")
 _MAX_CONCURRENT = max(1, int(os.environ.get("DOCLOOM_MAX_CONCURRENT_JOBS", "4")))
 _sem: asyncio.Semaphore | None = None
 
+# SSE idle heartbeat: a single slide/section call can be silent for minutes
+# (providers.TIMEOUT=600s) with nothing sent over the wire, which is longer
+# than most proxies'/load balancers' idle timeout and drops the connection,
+# freezing the build UI. A `:` comment line is valid SSE (EventSource ignores
+# it) that just keeps the connection alive.
+_HEARTBEAT_SECONDS = 15.0
+
+# Cap in-memory retention of finished jobs so full per-slide payloads don't
+# leak for the server's lifetime; job_events (the DB) is the durable record
+# job_state()/sse_events() fall back to once a job is no longer in JOBS.
+_MAX_FINISHED_JOBS_KEPT = 200
+
 
 def _semaphore() -> asyncio.Semaphore:
     global _sem
@@ -83,6 +95,10 @@ def reconcile_jobs() -> int:
                       "interrupted by server restart", None)
         execute("UPDATE jobs SET status = 'failed', updated = ? WHERE id = ?",
                 (now(), row["id"]))
+    # Any artifact still 'building' at startup is orphaned (its job cannot be
+    # live), so fail it too. Otherwise it spins forever in the UI and, being
+    # non-terminal, can be neither opened nor deleted.
+    execute("UPDATE artifacts SET status = 'failed' WHERE status = 'building'")
     if rows:
         log.warning("reconciled %d interrupted job(s) on startup", len(rows))
     return len(rows)
@@ -108,12 +124,37 @@ class JobCtx:
             q.put_nowait(event)
 
 
+def _prune_finished_jobs() -> None:
+    """Bound JOBS's lifetime memory. Only terminal jobs with no live SSE
+    subscriber are candidates (an active `sse_events` reader needs the job to
+    stay put); once there are more than _MAX_FINISHED_JOBS_KEPT of those, drop
+    the oldest first (JOBS preserves insertion == creation order)."""
+    finished = [j for j in JOBS.values() if j.status != "running" and not j.queues]
+    excess = len(finished) - _MAX_FINISHED_JOBS_KEPT
+    for job in finished[:max(0, excess)]:
+        JOBS.pop(job.id, None)
+
+
+def _fail_artifact(artifact_id: str) -> None:
+    """Best-effort: mark the artifact a job was building as 'failed' so a
+    broken stub doesn't sit forever in the artifacts list as 'building'.
+    Never raises -- this runs from inside the job runner's own error handling
+    and must not shadow the original failure."""
+    try:
+        from .artifacts import set_artifact_status
+
+        set_artifact_status(artifact_id, "failed")
+    except Exception:
+        log.warning("could not mark artifact %s failed", artifact_id)
+
+
 def start_job(
     kind: str,
     work: Callable[[JobCtx], Awaitable[None]],
     notebook_id: str | None = None,
     artifact_id: str | None = None,
 ) -> str:
+    _prune_finished_jobs()
     job = Job(id=new_id(), kind=kind)
     JOBS[job.id] = job
     execute(
@@ -135,11 +176,15 @@ def start_job(
             job.status = "cancelled"
             ctx.emit("job", "cancelled")
             log.info("job %s cancelled", job.id)
+            if artifact_id:
+                _fail_artifact(artifact_id)
         except Exception as e:
             job.status = "failed"
             ctx.emit("job", "failed", detail=f"{type(e).__name__}: {e}")
             log.error("job %s failed: %s", job.id, e)
             traceback.print_exc()
+            if artifact_id:
+                _fail_artifact(artifact_id)
         finally:
             execute("UPDATE jobs SET status = ?, updated = ? WHERE id = ?",
                     (job.status, now(), job.id))
@@ -200,7 +245,11 @@ async def sse_events(job_id: str) -> AsyncIterator[str]:
         if not was_running:
             return
         while True:
-            event = await queue.get()
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=_HEARTBEAT_SECONDS)
+            except asyncio.TimeoutError:
+                yield ": heartbeat\n\n"  # SSE comment: keeps the connection alive,
+                continue                # ignored by EventSource, no event fires
             if event is _SENTINEL:
                 return
             yield frame(event)

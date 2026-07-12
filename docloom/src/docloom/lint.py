@@ -42,6 +42,22 @@ MAX_TABLE_ROWS_ON_SLIDE = 8
 MAX_TABLE_COLS_ON_SLIDE = 6
 MIN_CONTRAST_BODY = 4.5  # WCAG AA
 
+# Physical-height budgets (inches), mirroring the PPTX renderer's fixed-size
+# blocks (render/pptx.py LAYOUT + _natural_h) so overflow is caught even when
+# a block's character count is tiny: a chart or resolved image is a near-
+# fixed ~4.5-4.6in tall no matter how short its title/caption is, which the
+# char budget above cannot see. Keep these numbers in sync with render/pptx.py.
+SLIDE_BODY_H_IN = 5.48   # slide height 7.5 - margin 0.6 - title band 1.42
+FULL_BODY_W_IN = 12.13   # slide width 13.333 - 2 x margin 0.6
+NARROW_BODY_W_IN = FULL_BODY_W_IN / 2  # two_column column / hero-family pane
+CHART_H_IN = 4.5         # render/pptx.py LAYOUT["chart_max_h_in"]
+IMAGE_H_IN = 4.6         # render/pptx.py _natural_h's resolved image/artifact estimate
+STATS_H_IN = 1.4         # render/pptx.py LAYOUT["stat_card_h_in"]
+STATS_MAX_CARDS = 5      # render/pptx.py LAYOUT["stat_max_cards"]
+TABLE_ROW_H_IN = 0.36    # render/pptx.py _table_block's row height cap
+BLOCK_GAP_IN = 0.14      # render/pptx.py LAYOUT["gap_in"], summed between blocks
+LINE_H_IN = 0.26         # ~ render/pptx.py _line_h(14pt), body text line height
+
 
 def _block_chars(block: Block) -> int:
     if isinstance(block, (Heading, Paragraph, Quote, Callout)):
@@ -63,6 +79,35 @@ def _block_chars(block: Block) -> int:
     return 0
 
 
+def _block_height(block: Block, width_in: float) -> float:
+    """Rough physical height `block` occupies on a rendered slide (inches),
+    mirroring render/pptx.py's fixed-size blocks: a chart, resolved image,
+    stats row, or table takes a near-constant amount of vertical space no
+    matter how few characters it carries, which _block_chars cannot see."""
+    if isinstance(block, Chart):
+        return CHART_H_IN
+    if isinstance(block, (Image, Artifact)):
+        return IMAGE_H_IN if block.path and Path(block.path).is_file() else 0.0
+    if isinstance(block, StatRow):
+        return STATS_H_IN if block.items else 0.0
+    if isinstance(block, Table):
+        return (len(block.rows) + 1) * TABLE_ROW_H_IN
+    per_line = max(8, int(width_in * 144 / 14))
+
+    def lines(text: str) -> int:
+        if not text:
+            return 0
+        return sum(max(1, -(-len(ln) // per_line)) for ln in text.split("\n"))
+
+    if isinstance(block, (BulletList, NumberedList)):
+        return sum(max(1, lines(plain(it.text))) * LINE_H_IN for it in block.items)
+    if isinstance(block, (Heading, Paragraph, Quote, Callout)):
+        return lines(plain(block.text)) * LINE_H_IN
+    if isinstance(block, Code):
+        return lines(block.code) * LINE_H_IN
+    return 0.0  # Divider and anything else: negligible
+
+
 def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
     all_blocks = slide.blocks + slide.right
 
@@ -73,10 +118,19 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
                     f"(max {MAX_TITLE_CHARS}); it will wrap or shrink",
         ))
 
-    if slide.layout in ("content", "two_column") and not all_blocks:
+    if slide.layout in ("content", "two_column", "quote") and not all_blocks:
         out.append(Finding(
             rule="deck/empty-slide", severity="warning", where=where,
-            message="content slide has no blocks",
+            message=f'"{slide.layout}" slide has no blocks',
+        ))
+
+    if (slide.layout == "quote" and all_blocks
+            and not any(isinstance(b, Quote) for b in all_blocks)):
+        out.append(Finding(
+            rule="deck/missing-quote-block", severity="warning", where=where,
+            message='"quote" layout has content but no Quote block; the '
+                    "large pull-quote will be blank. Add a quote block or "
+                    "switch layout",
         ))
 
     if slide.layout in ("title", "section") and all_blocks:
@@ -153,11 +207,53 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
                         "this will overflow the slide — split it",
             ))
 
+    # height budget: fixed-size blocks (chart/image/table/stats) are blind to
+    # the char budget above but not to physical space. Estimate inches and
+    # compare to the slide body's usable height. two_column/hero-family
+    # layouts get a narrower text column (the same "half" approximation the
+    # char budget above makes), but the *vertical* budget does not shrink for
+    # them: only the image or the other column takes width, not height.
+    narrow = slide.layout in ("hero", "image_left", "image_right", "two_column")
+    w_in = NARROW_BODY_W_IN if narrow else FULL_BODY_W_IN
+    if slide.layout == "two_column":
+        height_groups = [
+            (f"{where}.blocks", slide.blocks), (f"{where}.right", slide.right),
+        ]
+    else:
+        height_groups = [(where, all_blocks)]
+    for group_where, blocks in height_groups:
+        total_h = sum(_block_height(b, w_in) for b in blocks)
+        if len(blocks) > 1:
+            total_h += BLOCK_GAP_IN * (len(blocks) - 1)
+        if total_h > SLIDE_BODY_H_IN:
+            # advisory, not blocking: the PPTX renderer shrinks fixed-size
+            # blocks (charts especially) toward the available space, so an
+            # over-budget estimate usually still renders. A warning surfaces
+            # the crowding without hard-failing export on a chart + a few
+            # bullets (the char-budget rule above stays an error: text cannot
+            # shrink indefinitely).
+            out.append(Finding(
+                rule="deck/overflow", severity="warning", where=group_where,
+                message=f"~{total_h:.1f}in of estimated content height "
+                        f"(budget {SLIDE_BODY_H_IN}in); a chart, image, "
+                        "table, or stats row takes a near-fixed amount of "
+                        "space regardless of caption length. Consider "
+                        "splitting the slide or dropping a block",
+            ))
+
 
 def _walk_images(blocks: list[Block]):
     for b in blocks:
         if isinstance(b, Image):
             yield b
+
+
+def _is_numeric(s: str) -> bool:
+    try:
+        float(s)
+    except ValueError:
+        return False
+    return True
 
 
 def _lint_block_refs(b: Block, where: str, out: list[Finding]) -> None:
@@ -170,6 +266,12 @@ def _lint_block_refs(b: Block, where: str, out: list[Finding]) -> None:
                         "short rows are padded with blank cells",
             ))
     elif isinstance(b, Chart):
+        widest = max([len(b.labels)] + [len(s.values) for s in b.series])
+        if not b.series or widest == 0:
+            out.append(Finding(
+                rule="chart/empty", severity="error", where=where,
+                message="chart has no data; fill labels and series",
+            ))
         for s_ix, series in enumerate(b.series):
             if len(series.values) != len(b.labels):
                 out.append(Finding(
@@ -181,10 +283,20 @@ def _lint_block_refs(b: Block, where: str, out: list[Finding]) -> None:
         if b.chart == "pie" and len(b.series) > 1:
             out.append(Finding(
                 rule="chart/pie-multi-series", severity="warning", where=where,
-                message="pie chart has multiple series; the PPTX renderer keeps "
-                        "only the first series while other formats show all of "
-                        "them, so output would diverge across formats",
+                message="pie chart has multiple series; PPTX can only render "
+                        "a native pie chart with one series and will fall "
+                        "back to a plain data table, losing the editable "
+                        "chart. Use one series per pie chart",
             ))
+        if b.chart == "scatter":
+            bad = [lb for lb in b.labels if not _is_numeric(lb)]
+            if bad:
+                out.append(Finding(
+                    rule="chart/scatter-non-numeric", severity="error", where=where,
+                    message="scatter chart labels are plotted as numeric "
+                            f"x-values; non-numeric label(s) {bad[:3]} make "
+                            "the PPTX renderer fall back to a data table",
+                ))
     elif isinstance(b, Artifact):
         if not b.artifact_id:
             out.append(Finding(
@@ -197,6 +309,13 @@ def _lint_block_refs(b: Block, where: str, out: list[Finding]) -> None:
                 where=where,
                 message="artifact has no rendered file yet; export will "
                         "skip it until a render is baked",
+            ))
+    elif isinstance(b, StatRow):
+        if len(b.items) > STATS_MAX_CARDS:
+            out.append(Finding(
+                rule="stats/too-many", severity="warning", where=where,
+                message=f"{len(b.items)} stat cards (PPTX fits at most "
+                        f"{STATS_MAX_CARDS} per row); the rest are dropped",
             ))
 
 

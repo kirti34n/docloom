@@ -29,76 +29,282 @@ function List({ block, ordered, citeNumbers }: BlockProps & { ordered: boolean }
 
 const SERIES_COLORS = ['var(--primary)', 'var(--accent)', 'var(--accent-2)']
 
+const PLOT_W = 480
+const PLOT_H = 220
+
+function BarPreview({ labels, series, max }: { labels: string[]; series: SeriesT[]; max: number }) {
+  return (
+    <>
+      <div className="chart-plot">
+        {labels.map((label, i) => (
+          <div key={i} className="chart-group">
+            <div className="chart-group-bars">
+              {series.map((s, si) => {
+                const v = s.values[i] ?? 0
+                return (
+                  <div
+                    key={si}
+                    className="chart-bar"
+                    style={{
+                      height: `${Math.max(3, (100 * (v ?? 0)) / max)}%`,
+                      background: SERIES_COLORS[si % SERIES_COLORS.length],
+                    }}
+                    title={`${s.name}: ${v}`}
+                  />
+                )
+              })}
+            </div>
+            <span className="chart-label">{label}</span>
+          </div>
+        ))}
+      </div>
+      <ChartLegend series={series} />
+    </>
+  )
+}
+
+/** x positions spread evenly across the plot width, one per label. */
+function evenXs(n: number, w: number): number[] {
+  return Array.from({ length: n }, (_, i) => (n > 1 ? (i / (n - 1)) * w : w / 2))
+}
+
+/** "M x y L x y ..." per unbroken run of non-null values; a null value ends
+ *  a run rather than being bridged, matching chart_svg.py: a gap is a gap. */
+function linePath(xs: number[], values: (number | null)[], max: number, h: number): string {
+  const segs: string[] = []
+  let drawing = false
+  values.forEach((v, i) => {
+    if (v == null) {
+      drawing = false
+      return
+    }
+    const y = h - (Math.max(0, v) / max) * h
+    segs.push(`${drawing ? 'L' : 'M'}${xs[i].toFixed(1)} ${y.toFixed(1)}`)
+    drawing = true
+  })
+  return segs.join(' ')
+}
+
+/** Same run-breaking as linePath, but each run closes down to the baseline
+ *  so it can be filled. */
+function areaPath(xs: number[], values: (number | null)[], max: number, h: number): string {
+  const runs: { x: number; y: number }[][] = []
+  let run: { x: number; y: number }[] = []
+  values.forEach((v, i) => {
+    if (v == null) {
+      if (run.length) runs.push(run)
+      run = []
+      return
+    }
+    run.push({ x: xs[i], y: h - (Math.max(0, v) / max) * h })
+  })
+  if (run.length) runs.push(run)
+  return runs
+    .map((r) => {
+      const top = r.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ')
+      return `${top} L${r[r.length - 1].x.toFixed(1)} ${h} L${r[0].x.toFixed(1)} ${h} Z`
+    })
+    .join(' ')
+}
+
+function LineAreaPreview({
+  labels,
+  series,
+  max,
+  filled,
+}: {
+  labels: string[]
+  series: SeriesT[]
+  max: number
+  filled: boolean
+}) {
+  const n = Math.max(labels.length, ...series.map((s) => s.values.length), 1)
+  const xs = evenXs(n, PLOT_W)
+  return (
+    <>
+      <svg viewBox={`0 0 ${PLOT_W} ${PLOT_H}`} className="chart-svg" preserveAspectRatio="none" role="img">
+        {series.map((s, si) => {
+          const color = SERIES_COLORS[si % SERIES_COLORS.length]
+          return (
+            <g key={si}>
+              {filled && <path d={areaPath(xs, s.values, max, PLOT_H)} fill={color} opacity={0.16} stroke="none" />}
+              <path d={linePath(xs, s.values, max, PLOT_H)} fill="none" stroke={color} strokeWidth={2.5} />
+            </g>
+          )
+        })}
+      </svg>
+      <div className="chart-plot-labels">
+        {labels.map((l, i) => (
+          <span key={i} className="chart-label">
+            {l}
+          </span>
+        ))}
+      </div>
+      <ChartLegend series={series} />
+    </>
+  )
+}
+
+function ScatterPreview({ labels, series, max }: { labels: string[]; series: SeriesT[]; max: number }) {
+  // the IR has no separate x-series (docloom's scatter uses labels parsed as
+  // numeric x, see pptx.py _chart_data); fall back to even spacing when
+  // labels aren't numbers so an editorial scatter still previews sensibly
+  const numericXs = labels.map((l) => Number(l))
+  const useNumeric = labels.length > 1 && numericXs.every((v) => Number.isFinite(v))
+  const xMin = useNumeric ? Math.min(...numericXs) : 0
+  const xMax = useNumeric ? Math.max(...numericXs) : Math.max(labels.length - 1, 1)
+  const xSpan = xMax - xMin || 1
+  const evenly = evenXs(Math.max(labels.length, 1), PLOT_W)
+  return (
+    <>
+      <svg viewBox={`0 0 ${PLOT_W} ${PLOT_H}`} className="chart-svg" preserveAspectRatio="none" role="img">
+        {series.map((s, si) => {
+          const color = SERIES_COLORS[si % SERIES_COLORS.length]
+          return (
+            <g key={si}>
+              {s.values.map((v, i) => {
+                if (v == null) return null
+                const x = useNumeric ? ((numericXs[i] - xMin) / xSpan) * PLOT_W : evenly[i]
+                const y = PLOT_H - (Math.max(0, v) / max) * PLOT_H
+                return (
+                  <circle key={i} cx={x} cy={y} r={4.5} fill={color}>
+                    <title>{`${s.name ? s.name + ': ' : ''}${v}`}</title>
+                  </circle>
+                )
+              })}
+            </g>
+          )
+        })}
+      </svg>
+      <div className="chart-plot-labels">
+        {labels.map((l, i) => (
+          <span key={i} className="chart-label">
+            {l}
+          </span>
+        ))}
+      </div>
+      <ChartLegend series={series} />
+    </>
+  )
+}
+
+function PiePreview({ labels, series }: { labels: string[]; series: SeriesT[] }) {
+  const s = series[0]
+  const values = labels.map((_, i) => Math.max(0, s?.values[i] ?? 0))
+  const total = values.reduce((a, b) => a + b, 0)
+  const r = 68
+  const circumference = 2 * Math.PI * r
+  let drawn = 0
+  return (
+    <>
+      <svg viewBox="0 0 176 176" className="chart-pie" role="img">
+        {total <= 0 ? (
+          <circle cx={88} cy={88} r={r} fill="none" stroke="var(--surface)" strokeWidth={26} />
+        ) : (
+          values.map((v, i) => {
+            if (v <= 0) return null
+            const len = (v / total) * circumference
+            const el = (
+              <circle
+                key={i}
+                cx={88}
+                cy={88}
+                r={r}
+                fill="none"
+                stroke={SERIES_COLORS[i % SERIES_COLORS.length]}
+                strokeWidth={26}
+                strokeDasharray={`${len} ${circumference - len}`}
+                strokeDashoffset={-drawn}
+                transform="rotate(-90 88 88)"
+              >
+                <title>{`${labels[i] ?? ''}: ${v}`}</title>
+              </circle>
+            )
+            drawn += len
+            return el
+          })
+        )}
+      </svg>
+      {total > 0 && (
+        <div className="chart-legend">
+          {labels.map((l, i) => (
+            <span key={i} className="chart-legend-item">
+              <i style={{ background: SERIES_COLORS[i % SERIES_COLORS.length] }} />
+              {l}
+            </span>
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+function ChartLegend({ series }: { series: SeriesT[] }) {
+  if (series.length <= 1) return null
+  return (
+    <div className="chart-legend">
+      {series.map((s, si) => (
+        <span key={si} className="chart-legend-item">
+          <i style={{ background: SERIES_COLORS[si % SERIES_COLORS.length] }} />
+          {s.name}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function ChartTable({ labels, series }: { labels: string[]; series: SeriesT[] }) {
+  return (
+    <table className="blk-table chart-table">
+      <thead>
+        <tr>
+          <th />
+          {labels.map((l, i) => (
+            <th key={i}>{l}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {series.map((s, i) => (
+          <tr key={i}>
+            <td className="chart-series">{s.name}</td>
+            {labels.map((_, j) => (
+              <td key={j}>{s.values[j] ?? ''}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
 function MiniChart({ block }: { block: Block }) {
-  // grouped-bar preview until the gpt-vis block lands (M7); non-bar charts
-  // summarize as a data table
   const labels = block.labels ?? []
   const series = (block.series ?? []) as SeriesT[]
+  const kind = block.chart ?? 'column'
   const allValues = series.flatMap((s) => s.values).filter((v): v is number => v != null)
   const max = Math.max(...allValues, 1)
-  const barLike = ['column', 'bar'].includes(block.chart ?? '') && allValues.length > 0
+  const hasData = allValues.length > 0
+
+  let body: React.ReactNode
+  if (hasData && (kind === 'column' || kind === 'bar')) {
+    body = <BarPreview labels={labels} series={series} max={max} />
+  } else if (hasData && (kind === 'line' || kind === 'area')) {
+    body = <LineAreaPreview labels={labels} series={series} max={max} filled={kind === 'area'} />
+  } else if (hasData && kind === 'scatter') {
+    body = <ScatterPreview labels={labels} series={series} max={max} />
+  } else if (kind === 'pie' && series.length > 0) {
+    body = <PiePreview labels={labels} series={series} />
+  } else {
+    // no data, or a chart kind we don't have a preview for yet: fall back
+    // to the plain data table rather than drawing an empty/misleading plot
+    body = <ChartTable labels={labels} series={series} />
+  }
 
   return (
     <figure className="blk-chart">
       {block.title && <figcaption className="blk-chart-title">{block.title}</figcaption>}
-      {barLike ? (
-        <>
-          <div className="chart-plot">
-            {labels.map((label, i) => (
-              <div key={i} className="chart-group">
-                <div className="chart-group-bars">
-                  {series.map((s, si) => {
-                    const v = s.values[i] ?? 0
-                    return (
-                      <div
-                        key={si}
-                        className="chart-bar"
-                        style={{
-                          height: `${Math.max(3, (100 * (v ?? 0)) / max)}%`,
-                          background: SERIES_COLORS[si % SERIES_COLORS.length],
-                        }}
-                        title={`${s.name}: ${v}`}
-                      />
-                    )
-                  })}
-                </div>
-                <span className="chart-label">{label}</span>
-              </div>
-            ))}
-          </div>
-          {series.length > 1 && (
-            <div className="chart-legend">
-              {series.map((s, si) => (
-                <span key={si} className="chart-legend-item">
-                  <i style={{ background: SERIES_COLORS[si % SERIES_COLORS.length] }} />
-                  {s.name}
-                </span>
-              ))}
-            </div>
-          )}
-        </>
-      ) : (
-        <table className="blk-table chart-table">
-          <thead>
-            <tr>
-              <th />
-              {labels.map((l, i) => (
-                <th key={i}>{l}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {series.map((s, i) => (
-              <tr key={i}>
-                <td className="chart-series">{s.name}</td>
-                {labels.map((_, j) => (
-                  <td key={j}>{s.values[j] ?? ''}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      {body}
       {block.caption && <div className="blk-caption">{block.caption}</div>}
     </figure>
   )

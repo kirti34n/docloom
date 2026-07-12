@@ -150,6 +150,11 @@ MIGRATIONS = [
         PRIMARY KEY (job_id, seq)
     );
     """,
+    # v7, artifact build status, so the UI can show a live building/failed
+    # state instead of inferring it from job polling alone.
+    """
+    ALTER TABLE artifacts ADD COLUMN status TEXT NOT NULL DEFAULT 'ready';
+    """,
 ]
 
 
@@ -183,6 +188,40 @@ def _split_statements(script: str) -> list[str]:
     return [s.strip() for s in script.split(";") if s.strip()]
 
 
+def _backfill_orphan_notebooks(conn: Any, translate: bool) -> None:
+    """Migration v2 follow-up, run in the same transaction right after it adds
+    notebooks.workspace_id. Every notebook that already existed is now an
+    orphan (the column is NULL on it), and every auth query inner-joins
+    notebooks through workspaces to enforce ownership, so an orphan would be
+    permanently invisible and unreachable. Adopt orphans into the oldest
+    existing workspace; if there is none, create a rescue workspace for the
+    oldest existing user; if there is no user either (the common case: a
+    pre-auth install has notebooks but this migration is what creates the
+    users table), create a placeholder rescue user first. The rescue user's
+    password hash is not a valid scrypt record, so nobody can log into it."""
+
+    def run(sql: str, params: tuple = ()):
+        return conn.execute(_to_pg_placeholders(sql) if translate else sql, params)
+
+    if run("SELECT 1 FROM notebooks WHERE workspace_id IS NULL").fetchone() is None:
+        return
+    row = run("SELECT id FROM workspaces ORDER BY created LIMIT 1").fetchone()
+    if row is None:
+        user_row = run("SELECT id FROM users ORDER BY created LIMIT 1").fetchone()
+        if user_row is None:
+            uid = new_id()
+            run("INSERT INTO users (id, email, password_hash, created) "
+                "VALUES (?, ?, ?, ?)", (uid, "rescue@local.invalid", "", now()))
+        else:
+            uid = user_row["id"]
+        wid = new_id()
+        run("INSERT INTO workspaces (id, user_id, name, created) VALUES (?, ?, ?, ?)",
+            (wid, uid, "Recovered workspace", now()))
+    else:
+        wid = row["id"]
+    run("UPDATE notebooks SET workspace_id = ? WHERE workspace_id IS NULL", (wid,))
+
+
 # ---------------------------------------------------------------- SQLite
 
 def _connect_sqlite() -> sqlite3.Connection:
@@ -209,6 +248,8 @@ def _init_sqlite() -> None:
             try:
                 for stmt in _split_statements(script):
                     conn.execute(stmt)
+                if i == 2:
+                    _backfill_orphan_notebooks(conn, translate=False)
                 conn.execute(f"PRAGMA user_version = {i}")
             except Exception:
                 conn.rollback()
@@ -243,6 +284,8 @@ def _init_postgres() -> None:
         for i, script in enumerate(MIGRATIONS[version:], start=version + 1):
             for stmt in _split_statements(_adapt_ddl_pg(script)):
                 conn.execute(stmt)
+            if i == 2:
+                _backfill_orphan_notebooks(conn, translate=True)
             conn.execute("UPDATE schema_version SET version = %s", (i,))
         conn.commit()
 

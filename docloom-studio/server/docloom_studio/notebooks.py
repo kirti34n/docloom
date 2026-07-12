@@ -56,7 +56,7 @@ async def get_notebook(notebook_id: str, user: dict = Depends(current_user)) -> 
     require_notebook(user["id"], notebook_id)
     row = query_one("SELECT * FROM notebooks WHERE id = ?", (notebook_id,))
     artifacts = rows_to_dicts(query_all(
-        "SELECT id, kind, title, version, updated FROM artifacts "
+        "SELECT id, kind, title, version, status, updated FROM artifacts "
         "WHERE notebook_id = ? ORDER BY updated DESC", (notebook_id,)
     ))
     sources = rows_to_dicts(query_all(

@@ -3,6 +3,7 @@ real DeckViewer UI can be screenshotted. Uses DOCLOOM_STUDIO_HOME."""
 
 import json
 
+from _seed_common import seed_workspace
 from docloom import Document, ensure_ids
 from docloom_studio.db import execute, init_db, new_id, now
 
@@ -89,8 +90,8 @@ def main() -> None:
     init_db()
     doc = ensure_ids(DECK)
     nb = new_id()
-    execute("INSERT INTO notebooks (id, name, created, updated) VALUES (?, ?, ?, ?)",
-            (nb, "Showcase", now(), now()))
+    execute("INSERT INTO notebooks (id, name, workspace_id, created, updated) "
+            "VALUES (?, ?, ?, ?, ?)", (nb, "Showcase", seed_workspace(), now(), now()))
     aid = new_id()
     payload = {"ir": doc.model_dump(exclude_none=True),
                "theme_name": "slate", "brand_kit_id": None}

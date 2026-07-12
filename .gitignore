@@ -21,6 +21,7 @@ dist/
 # Build / output artifacts
 out/
 build/
+docloom/examples/out_ui/
 
 # Local data / secrets
 .env

@@ -5,6 +5,7 @@ break; missing images are skipped silently."""
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -90,14 +91,27 @@ def _safe_dest(url: str) -> str | None:
     )
 
 
+def _wrap_flank(out: str, marker: str) -> str:
+    """Wrap `out` in emphasis `marker`, hoisting boundary whitespace outside
+    the markers first: CommonMark's flanking rule means a delimiter run
+    touching whitespace cannot open/close emphasis, so "** x**" would render
+    as literal asterisks instead of bold."""
+    core = out.strip()
+    if not core:
+        return out  # whitespace-only: nothing to emphasize
+    lead = out[: len(out) - len(out.lstrip())]
+    trail = out[len(out.rstrip()):]
+    return f"{lead}{marker}{core}{marker}{trail}"
+
+
 def _span_md(sp: Span, numbers: dict[str, int]) -> str:
     out = _code_span(sp.text) if sp.code else _esc_md(sp.text)
     if sp.bold and sp.italic:
-        out = f"***{out}***"
+        out = _wrap_flank(out, "***")
     elif sp.bold:
-        out = f"**{out}**"
+        out = _wrap_flank(out, "**")
     elif sp.italic:
-        out = f"*{out}*"
+        out = _wrap_flank(out, "*")
     if sp.link:
         dest = _safe_dest(sp.link)
         if dest:  # unsafe scheme: keep the text, drop the link (as html.py)
@@ -132,13 +146,57 @@ def _quoted(text: str) -> str:
     return "\n".join(f"> {ln}" for ln in text.splitlines() or [""])
 
 
-def _image_md(path: str | None, alt: str, caption: str | None) -> str:
-    """Image syntax for a local file; "" if no/missing file (skip silently)."""
+def _unique_name(name: str, used: set[str]) -> str:
+    if name not in used:
+        used.add(name)
+        return name
+    stem, suffix = Path(name).stem, Path(name).suffix
+    n = 2
+    while f"{stem}-{n}{suffix}" in used:
+        n += 1
+    candidate = f"{stem}-{n}{suffix}"
+    used.add(candidate)
+    return candidate
+
+
+class _AssetCopier:
+    """Copies referenced local images into `<out-stem>_files/` next to a
+    rendered .md file and hands back paths relative to it, so a downloaded
+    .md keeps working images instead of pointing at the generating
+    machine's filesystem. Each source path is copied at most once."""
+
+    def __init__(self, out_path: Path) -> None:
+        self._dir_name = out_path.stem + "_files"
+        self._target_dir = out_path.parent / self._dir_name
+        self._copied: dict[str, str] = {}
+        self._used_names: set[str] = set()
+
+    def dest(self, src: str) -> str | None:
+        if src in self._copied:
+            return self._copied[src]
+        name = _unique_name(Path(src).name, self._used_names)
+        try:
+            self._target_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy(src, self._target_dir / name)
+        except OSError:
+            return None  # unreadable/unwritable: leave the caller's fallback in place
+        rel = f"{self._dir_name}/{name}"
+        self._copied[src] = rel
+        return rel
+
+
+def _image_md(
+    path: str | None, alt: str, caption: str | None, copier: _AssetCopier | None = None
+) -> str:
+    """Image syntax for a local file; "" if no/missing file (skip silently).
+    With a copier, the file is copied next to the output and the reference
+    rewritten relative, so a downloaded .md keeps working images."""
     if not path or not Path(path).is_file():
         return ""
-    dest = f"<{path}>" if any(c in path for c in " ()") else path
+    dest = (copier.dest(path) if copier is not None else None) or path
+    dest_ref = f"<{dest}>" if any(c in dest for c in " ()") else dest
     alt = _one_line(alt).replace("[", "\\[").replace("]", "\\]")
-    out = f"![{alt}]({dest})"
+    out = f"![{alt}]({dest_ref})"
     if caption:
         out += f"\n\n*{_esc_md(_one_line(caption))}*"
     return out
@@ -148,8 +206,8 @@ def _cell_md(text: str) -> str:
     return _pipe_safe(_esc_md(_one_line(text)))
 
 
-def _chart_md(b: Chart) -> str:
-    embedded = _image_md(b.path, b.title or "chart", b.caption)
+def _chart_md(b: Chart, copier: _AssetCopier | None = None) -> str:
+    embedded = _image_md(b.path, b.title or "chart", b.caption, copier)
     if embedded:
         return embedded
     # no rendered image: GFM data-table fallback (series x labels)
@@ -164,7 +222,7 @@ def _chart_md(b: Chart) -> str:
         b.caption,
     )
     if b.title:
-        return f"**{_esc_md(_one_line(b.title))}**\n\n{table}"
+        return f"#### {_esc_md(_one_line(b.title))}\n\n{table}"
     return table
 
 
@@ -195,7 +253,7 @@ def _list_md(b: BulletList | NumberedList, numbers: dict[str, int]) -> str:
     return "\n".join(lines)
 
 
-def _block_md(b: Block, numbers: dict[str, int]) -> str:
+def _block_md(b: Block, numbers: dict[str, int], copier: _AssetCopier | None = None) -> str:
     if isinstance(b, Heading):
         return "#" * min(b.level + 1, 6) + " " + _one_line(_rt(b.text, numbers))
     if isinstance(b, Paragraph):
@@ -220,13 +278,13 @@ def _block_md(b: Block, numbers: dict[str, int]) -> str:
             b.caption,
         )
     if isinstance(b, Image):
-        return _image_md(b.path, b.alt, b.caption)
+        return _image_md(b.path, b.alt, b.caption, copier)
     if isinstance(b, Chart):
-        return _chart_md(b)
+        return _chart_md(b, copier)
     if isinstance(b, StatRow):
         return _stats_md(b)
     if isinstance(b, Artifact):
-        return _image_md(b.path, b.alt, b.caption)
+        return _image_md(b.path, b.alt, b.caption, copier)
     if isinstance(b, Callout):
         return f"> [!{_ALERTS[b.style]}]\n" + _quoted(_rt(b.text, numbers))
     if isinstance(b, Divider):
@@ -267,7 +325,7 @@ def _footnotes_md(doc: Document, numbers: dict[str, int]) -> str:
     return "\n".join(defs)
 
 
-def to_markdown(doc: Document) -> str:
+def to_markdown(doc: Document, copier: _AssetCopier | None = None) -> str:
     numbers = source_numbers(doc)
     parts = [f"# {_esc_md(_one_line(doc.title))}"]
     meta = " \u00b7 ".join(
@@ -276,7 +334,7 @@ def to_markdown(doc: Document) -> str:
     if meta:
         parts.append(f"*{_esc_md(_one_line(meta))}*")
     for b in report_blocks(doc):
-        rendered = _block_md(b, numbers)
+        rendered = _block_md(b, numbers, copier)
         if rendered:
             parts.append(rendered)
     parts.extend(_sheet_md(s) for s in doc.sheets)
@@ -285,7 +343,12 @@ def to_markdown(doc: Document) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-def render(doc: Document, theme: Theme, out_path: Path) -> Path:
+def render(doc: Document, theme: Theme, out_path: Path, assets: bool = True) -> Path:
+    """assets=True (default) copies referenced local images into
+    `<out-stem>_files/` next to `out_path` and rewrites their references
+    relative, so a downloaded .md keeps working images instead of pointing
+    at the generating machine's filesystem."""
     out = Path(out_path)
-    out.write_text(to_markdown(doc), encoding="utf-8")
+    copier = _AssetCopier(out) if assets else None
+    out.write_text(to_markdown(doc, copier), encoding="utf-8")
     return out

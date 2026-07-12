@@ -19,6 +19,12 @@
 }
 .doc-block .editable-del {
   left: -48px;
+  /* .editable-del is styled text-white/50 for the dark deck stage; the
+     document canvas is white paper, where that reads as white-on-white */
+  color: var(--ink-soft);
+}
+.doc-block .editable-del:hover {
+  color: var(--madder);
 }
 /* document blocks read a touch larger/tighter than slide blocks */
 .doc-block .blk-para {

@@ -1,0 +1,85 @@
+/* WeaveProgress: the build view's signature. One warp thread per enabled
+   source (woad), one weft line per landed unit (brass), knotted where a unit
+   actually cited that thread. Lives on the dark stage canvas.
+
+   Lines draw themselves in with stroke-dashoffset over --dur-slow, driven
+   purely by CSS animations that autoplay on mount -- WeaveProgress.tsx sets
+   the --weave-len custom property and skips the `animation` declaration
+   entirely under prefers-reduced-motion, so the reduced-motion path renders
+   the finished line with no keyframe involved at all. */
+
+.weave-warp {
+  stroke: color-mix(in srgb, var(--woad) 55%, white);
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.weave-weft {
+  stroke: var(--brass);
+  stroke-width: 2;
+  fill: none;
+}
+.weave-weft-skipped {
+  stroke: var(--madder);
+}
+
+.weave-knot {
+  fill: var(--brass);
+  stroke: var(--stage);
+  stroke-width: 1;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.weave-pulse {
+  fill: var(--brass);
+  animation: weave-pulse 1.1s ease-in-out infinite;
+}
+
+.weave-index {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  fill: var(--stage-muted);
+}
+
+.weave-label {
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  fill: var(--stage-muted);
+  dominant-baseline: middle;
+}
+.weave-label-done {
+  fill: #fff;
+}
+.weave-label-skipped {
+  fill: var(--madder);
+}
+
+@keyframes weave-draw {
+  from {
+    stroke-dashoffset: var(--weave-len);
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes weave-knot-in {
+  from {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes weave-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}

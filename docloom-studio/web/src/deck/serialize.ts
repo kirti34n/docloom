@@ -34,14 +34,20 @@ function spansOf(rt: RichText): Span[] {
   return rt
 }
 
-/** RichText → inline PM text nodes (empty array for empty text). */
-export function richTextToInline(rt: RichText): PMText[] {
-  return spansOf(rt)
-    .filter((s) => s.text.length > 0)
-    .map((s) => {
-      const marks = spanToMarks(s)
-      return marks.length ? { type: 'text', text: s.text, marks } : { type: 'text', text: s.text }
+/** RichText → inline PM nodes (empty array for empty text). An embedded
+ *  '\n' (a Shift+Enter break read back by inlineToRichText) becomes a
+ *  hardBreak node so the visual break survives a reload, not just the data. */
+export function richTextToInline(rt: RichText): (PMText | PMNode)[] {
+  const out: (PMText | PMNode)[] = []
+  for (const s of spansOf(rt)) {
+    const marks = spanToMarks(s)
+    const lines = s.text.split('\n')
+    lines.forEach((line, i) => {
+      if (i > 0) out.push({ type: 'hardBreak' })
+      if (line.length > 0) out.push(marks.length ? { type: 'text', text: line, marks } : { type: 'text', text: line })
     })
+  }
+  return out
 }
 
 /** RichText → a single-paragraph PM document (for a text region). */
@@ -74,17 +80,21 @@ function sameFormat(a: Span, b: Span): boolean {
 
 /** Collect PM text nodes (from a paragraph or inline array) into canonical
  *  RichText: merge adjacent same-format spans, collapse a lone plain span to
- *  a string (matches how LLMs and hand-authored IR look). */
+ *  a string (matches how LLMs and hand-authored IR look). A hardBreak node
+ *  (Shift+Enter) becomes a literal newline instead of being dropped, which
+ *  would otherwise silently merge the words on either side of it. */
 export function inlineToRichText(nodes: (PMText | PMNode)[]): RichText {
   const spans: Span[] = []
-  for (const node of nodes) {
-    if (node.type !== 'text') continue
-    const t = node as PMText
-    if (!t.text) continue
-    const span: Span = { text: t.text, ...markToSpanFields(t.marks) }
+  const push = (text: string, marks?: PMMark[]) => {
+    if (!text) return
+    const span: Span = { text, ...markToSpanFields(marks) }
     const last = spans[spans.length - 1]
     if (last && sameFormat(last, span)) last.text += span.text
     else spans.push(span)
+  }
+  for (const node of nodes) {
+    if (node.type === 'hardBreak') push('\n')
+    else if (node.type === 'text') push((node as PMText).text, (node as PMText).marks)
   }
   if (spans.length === 0) return ''
   if (spans.length === 1) {

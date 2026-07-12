@@ -4,6 +4,7 @@ All scoped to the current user's notebooks/artifacts."""
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from docloom import FORMATS, lint, render
@@ -64,14 +65,31 @@ def _artifact_row(artifact_id: str):
     return row
 
 
+def set_artifact_status(artifact_id: str, status: str) -> None:
+    """Update an artifact's build status ('building' | 'ready' | 'failed').
+    Called by the generation pipeline, not a route."""
+    execute("UPDATE artifacts SET status = ? WHERE id = ?", (status, artifact_id))
+
+
 @router.get("/artifacts/{artifact_id}")
 async def get_artifact(artifact_id: str, user: dict = Depends(current_user)) -> dict:
     require_artifact(user["id"], artifact_id)
     row = _artifact_row(artifact_id)
     return {"id": row["id"], "notebook_id": row["notebook_id"],
             "kind": row["kind"], "title": row["title"],
-            "version": row["version"],
+            "version": row["version"], "status": row["status"],
             "payload": json.loads(row["payload_json"])}
+
+
+@router.delete("/artifacts/{artifact_id}")
+async def delete_artifact(artifact_id: str, user: dict = Depends(current_user)) -> dict:
+    require_artifact(user["id"], artifact_id)
+    execute("DELETE FROM artifact_versions WHERE artifact_id = ?", (artifact_id,))
+    execute("DELETE FROM artifacts WHERE id = ?", (artifact_id,))
+    for d in (data_dir() / "artifacts" / artifact_id, data_dir() / "exports" / artifact_id):
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+    return {"ok": True}
 
 
 class IrUpdate(BaseModel):
@@ -142,8 +160,14 @@ async def export_artifact(
         logo = brand_logo_image(user["id"])
         if logo:
             doc.logo = IRImage(**logo)
-    theme = to_docloom_theme(
-        apply_brand(studio_theme(payload.get("theme_name", "paper")), user["id"]))
+    try:
+        theme = to_docloom_theme(
+            apply_brand(studio_theme(payload.get("theme_name", "paper")), user["id"]))
+    except (ValueError, TypeError) as e:
+        # a malformed brand color/font saved via PUT /brand-kit would otherwise
+        # 500 every export; surface it as an actionable client error instead.
+        raise HTTPException(422, detail="brand kit has an invalid color or "
+                            "font; fix it in the brand kit and try again") from e
     findings = lint(doc, theme)
     errors = [f.model_dump() for f in findings if f.severity == "error"]
     if errors:
@@ -173,10 +197,19 @@ async def download_export(
     return FileResponse(path, filename=filename)
 
 
-@router.get("/files")
-async def serve_file(path: str, user: dict = Depends(current_user)) -> FileResponse:
-    """Serve a local file, confined to the app data directory."""
-    root = data_dir().resolve()
+@router.get("/artifacts/{artifact_id}/media")
+async def artifact_media(
+    artifact_id: str, path: str, user: dict = Depends(current_user)
+) -> FileResponse:
+    """Serve a file referenced by this artifact's own IR (e.g. a diagram or
+    infographic render), confined strictly to the artifact's own directory.
+
+    Replaces the old /api/files?path=... route, which resolved a client-
+    supplied path against the whole shared data directory with no per-
+    resource or per-tenant scoping at all: any logged-in user could pass
+    path=studio.db (or another user's source/export path) and get it back."""
+    require_artifact(user["id"], artifact_id)
+    root = (data_dir() / "artifacts" / artifact_id).resolve()
     candidate = Path(path)
     resolved = (candidate if candidate.is_absolute() else root / candidate).resolve()
     if root not in resolved.parents or not resolved.is_file():
@@ -242,7 +275,9 @@ async def save_renders(
     return {"ok": True}
 
 
-@router.get("/artifacts/{artifact_id}/render.{ext}")
+# GET serves the render; HEAD lets the editor probe whether one exists yet
+# (to enable/disable the download buttons) without transferring the bytes.
+@router.api_route("/artifacts/{artifact_id}/render.{ext}", methods=["GET", "HEAD"])
 async def get_render(
     artifact_id: str, ext: str, user: dict = Depends(current_user)
 ) -> FileResponse:
@@ -264,6 +299,38 @@ async def get_audio(
     if not path.is_file():
         raise HTTPException(404, "no audio yet")
     return FileResponse(path, media_type=f"audio/{ext}")
+
+
+class AudioRequest(BaseModel):
+    script: dict
+
+
+@router.post("/artifacts/{artifact_id}/audio")
+async def regenerate_audio(
+    artifact_id: str, body: AudioRequest, user: dict = Depends(current_user)
+) -> dict:
+    """(Re)synthesize a podcast's audio from the (possibly edited) script and
+    persist it. TTS is optional: if no backend is installed we return 503 with
+    an actionable message, and the transcript is unaffected."""
+    from .settings import get_setting
+    from .tts import TtsError, synthesize_podcast
+
+    require_artifact(user["id"], artifact_id)
+    row = _artifact_row(artifact_id)
+    out = data_dir() / "artifacts" / artifact_id / "audio.wav"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        duration = await synthesize_podcast(
+            body.script, out, get_setting("provider.tts", user["id"])
+        )
+    except TtsError as e:
+        raise HTTPException(503, str(e)) from e
+    payload = json.loads(row["payload_json"])
+    payload["script"] = body.script
+    payload["audio_path"] = f"artifacts/{artifact_id}/audio.wav"
+    payload["duration_s"] = duration
+    save_artifact(artifact_id, row["title"], payload)
+    return {"audio_path": payload["audio_path"], "duration_s": duration}
 
 
 def _require_job(user_id: str, job_id: str) -> dict:

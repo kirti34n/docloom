@@ -1,14 +1,157 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { Plus } from 'lucide-react'
+import { MoreVertical, Plus } from 'lucide-react'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { toast } from '../ui/toast'
+import { Button, Empty, Eyebrow } from '../ui'
 
 interface Notebook {
   id: string
   name: string
   updated: number
+}
+
+function NotebookCard({
+  nb,
+  onNavigate,
+  onRenamed,
+  onDeleted,
+}: {
+  nb: Notebook
+  onNavigate: () => void
+  onRenamed: (name: string) => void
+  onDeleted: () => void
+}) {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [draft, setDraft] = useState(nb.name)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false)
+        setConfirmingDelete(false)
+      }
+    }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [menuOpen])
+
+  const saveRename = async () => {
+    const name = draft.trim()
+    setRenaming(false)
+    if (!name || name === nb.name) {
+      setDraft(nb.name)
+      return
+    }
+    try {
+      await api.patch(`/api/notebooks/${nb.id}`, { name })
+      onRenamed(name)
+    } catch (e) {
+      setDraft(nb.name)
+      toast.error(`Couldn't rename notebook: ${e instanceof Error ? e.message : e}`)
+    }
+  }
+
+  const del = async () => {
+    try {
+      await api.del(`/api/notebooks/${nb.id}`)
+      onDeleted()
+      toast.success('Notebook deleted')
+    } catch (e) {
+      toast.error(`Couldn't delete notebook: ${e instanceof Error ? e.message : e}`)
+    }
+  }
+
+  return (
+    <div className="group relative rounded-[var(--radius)] border border-ws-line bg-ws-panel p-5 transition-colors hover:border-woad">
+      {renaming ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={saveRename}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+            if (e.key === 'Escape') {
+              setDraft(nb.name)
+              setRenaming(false)
+            }
+          }}
+          className="block w-full truncate rounded-[var(--radius-sm)] border border-woad bg-ws-bg px-2 py-1 pr-6 text-[14px] font-semibold text-ws-ink outline-none"
+        />
+      ) : (
+        <button onClick={onNavigate} className="block w-full text-left">
+          <span className="block truncate pr-6 text-[14px] font-semibold text-ws-ink">{nb.name}</span>
+          <span className="mt-1 block text-[12px] text-ws-muted">
+            {new Date(nb.updated * 1000).toLocaleString()}
+          </span>
+        </button>
+      )}
+
+      <div ref={menuRef} className="absolute right-3 top-3">
+        <button
+          aria-label="Notebook options"
+          onClick={() => {
+            setMenuOpen((v) => !v)
+            setConfirmingDelete(false)
+          }}
+          className={`rounded-[var(--radius-sm)] p-1 text-ws-muted hover:bg-ws-bg hover:text-ws-ink group-hover:opacity-100 focus-visible:opacity-100 ${menuOpen ? 'opacity-100' : 'opacity-0'}`}
+        >
+          <MoreVertical size={15} />
+        </button>
+        {menuOpen && (
+          <div className="absolute right-0 top-full z-10 mt-1 w-40 rounded-[var(--radius)] border border-ws-line bg-ws-panel py-1 shadow-[var(--shadow-float)]">
+            {!confirmingDelete ? (
+              <>
+                <button
+                  onClick={() => {
+                    setMenuOpen(false)
+                    setRenaming(true)
+                  }}
+                  className="block w-full px-3 py-1.5 text-left text-[13px] text-ws-ink hover:bg-ws-bg"
+                >
+                  Rename
+                </button>
+                <button
+                  onClick={() => setConfirmingDelete(true)}
+                  className="block w-full px-3 py-1.5 text-left text-[13px] text-madder hover:bg-ws-bg"
+                >
+                  Delete
+                </button>
+              </>
+            ) : (
+              <div className="px-3 py-1.5">
+                <p className="text-[12px] text-ws-muted">Delete this notebook?</p>
+                <div className="mt-1.5 flex gap-1.5">
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false)
+                      setConfirmingDelete(false)
+                      del()
+                    }}
+                    className="rounded-[var(--radius-sm)] bg-madder px-2 py-1 text-[12px] font-medium text-ws-bg"
+                  >
+                    Delete
+                  </button>
+                  <button
+                    onClick={() => setConfirmingDelete(false)}
+                    className="rounded-[var(--radius-sm)] border border-ws-line px-2 py-1 text-[12px] text-ws-ink"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 export function NotebooksList() {
@@ -48,25 +191,18 @@ export function NotebooksList() {
   return (
     <div className="mx-auto max-w-3xl px-8 py-10">
       <div className="flex items-baseline justify-between">
-        <h1 className="font-display text-xl font-semibold">Notebooks</h1>
-        <button
-          onClick={create}
-          className="ds-btn ds-btn-primary px-3.5 py-2 text-[13px]"
-        >
+        <div>
+          <Eyebrow>Workbench</Eyebrow>
+          <h1 className="mt-1 font-display text-2xl font-semibold text-ws-ink">Notebooks</h1>
+        </div>
+        <Button variant="primary" onClick={create}>
           <Plus size={14} /> New notebook
-        </button>
+        </Button>
       </div>
 
       {error ? (
-        <div className="mt-16 rounded-xl border border-ws-danger/30 bg-ws-panel p-8 text-center">
-          <p className="text-[14px] font-medium text-ws-ink">Couldn’t load notebooks</p>
-          <p className="mx-auto mt-1 max-w-sm text-[13px] text-ws-muted">{error}</p>
-          <button
-            onClick={load}
-            className="mt-4 rounded-lg border border-ws-line px-3 py-1.5 text-[13px] hover:bg-ws-bg"
-          >
-            Retry
-          </button>
+        <div className="mt-16">
+          <Empty title="Couldn't load notebooks" body={error} action={<Button variant="quiet" onClick={load}>Retry</Button>} />
         </div>
       ) : notebooks === null ? (
         <ul className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -75,26 +211,29 @@ export function NotebooksList() {
           ))}
         </ul>
       ) : notebooks.length === 0 ? (
-        <div className="mt-16 rounded-xl border border-dashed border-ws-line p-12 text-center">
-          <p className="font-display text-[15px] font-medium">Start your first notebook</p>
-          <p className="mx-auto mt-2 max-w-sm text-[13px] text-ws-muted">
-            Add your documents or let the agent research a topic, then generate decks, reports,
-            diagrams, and infographics you can edit.
-          </p>
+        <div className="mt-16">
+          <Empty
+            title="Start your first notebook"
+            body="Add your documents or let the agent research a topic, then generate decks, reports, diagrams, and infographics you can edit."
+            action={
+              <Button variant="accent" onClick={create}>
+                <Plus size={14} /> New notebook
+              </Button>
+            }
+          />
         </div>
       ) : (
         <ul className="stagger mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
           {notebooks.map((nb, i) => (
             <li key={nb.id} style={{ ['--i' as string]: i }}>
-              <button
-                onClick={() => navigate(`/n/${nb.id}`)}
-                className="ds-card ds-card-hover w-full p-5 text-left"
-              >
-                <span className="block truncate font-display text-[14px] font-medium">{nb.name}</span>
-                <span className="mt-1 block text-[12px] text-ws-muted">
-                  {new Date(nb.updated * 1000).toLocaleString()}
-                </span>
-              </button>
+              <NotebookCard
+                nb={nb}
+                onNavigate={() => navigate(`/n/${nb.id}`)}
+                onRenamed={(name) =>
+                  setNotebooks((list) => list?.map((n) => (n.id === nb.id ? { ...n, name } : n)) ?? null)
+                }
+                onDeleted={() => setNotebooks((list) => list?.filter((n) => n.id !== nb.id) ?? null)}
+              />
             </li>
           ))}
         </ul>

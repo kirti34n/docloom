@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2, X } from 'lucide-react'
 import { api } from '../api/client'
+import { Eyebrow } from '../ui'
 
 interface Chunk {
   chunk_ix: number | null
@@ -17,10 +18,12 @@ interface Content {
 export function SourceReader({
   sourceId,
   highlight,
+  index,
   onClose,
 }: {
   sourceId: string
   highlight?: string
+  index?: number
   onClose: () => void
 }) {
   const [content, setContent] = useState<Content | null>(null)
@@ -48,21 +51,24 @@ export function SourceReader({
 
   return (
     <div className="flex w-96 shrink-0 flex-col border-l border-ws-line bg-ws-panel">
-      <div className="flex items-center justify-between border-b border-ws-line px-4 py-2.5">
-        <span className="truncate text-[13px] font-medium" title={content?.title}>
-          {content?.title ?? 'Source'}
-        </span>
+      <div className="flex items-center justify-between gap-3 border-b border-ws-line px-4 py-2.5">
+        <div className="min-w-0">
+          {typeof index === 'number' && <Eyebrow>Source {String(index).padStart(2, '0')}</Eyebrow>}
+          <span className="block truncate text-[13px] font-medium" title={content?.title}>
+            {content?.title ?? 'Source'}
+          </span>
+        </div>
         <button
           onClick={onClose}
           aria-label="Close reader"
-          className="text-ws-muted hover:text-ws-ink"
+          className="shrink-0 text-ws-muted hover:text-ws-ink"
         >
           <X size={15} />
         </button>
       </div>
       <div className="flex-1 space-y-3 overflow-auto px-4 py-4 text-[13px] leading-relaxed">
         {error ? (
-          <p className="text-ws-danger">{error}</p>
+          <p className="text-madder">{error}</p>
         ) : !content ? (
           <div className="flex justify-center pt-8">
             <Loader2 className="animate-spin text-ws-muted" />
@@ -74,8 +80,8 @@ export function SourceReader({
             <div
               key={i}
               ref={i === hlIndex ? hlRef : undefined}
-              className={`rounded-lg px-3 py-2 ${
-                i === hlIndex ? 'bg-ws-accent/10 ring-1 ring-ws-accent/40' : ''
+              className={`rounded-[var(--radius)] px-3 py-2 ${
+                i === hlIndex ? 'bg-woad/10 ring-1 ring-woad/40' : ''
               }`}
             >
               {(c.page || c.section) && (

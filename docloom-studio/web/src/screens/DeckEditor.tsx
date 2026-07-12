@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
-import { Check, Download, Loader2, Redo2, Undo2 } from 'lucide-react'
+import { Check, Download, Loader2, Play, Redo2, Undo2 } from 'lucide-react'
 import { api } from '../api/client'
 import { toast } from '../ui/toast'
 import type { ArtifactT, StudioTheme } from '../deck/types'
@@ -36,7 +36,7 @@ function EditableCanvas({ theme }: { theme: StudioTheme }) {
     <div className="flex min-w-0 flex-1 items-start justify-center overflow-auto p-8">
       <div ref={wrap} className="w-full max-w-4xl">
         <div
-          className="deck-scale-wrap shadow-2xl"
+          className="deck-scale-wrap border border-stage-line"
           style={{ aspectRatio: '1280 / 720', width: '100%' }}
         >
           <div style={{ width: 1280, height: 720, transform: `scale(${scale})`, transformOrigin: 'top left', ...vars }}>
@@ -126,14 +126,14 @@ export function DeckEditor() {
         <div className="ml-2 flex items-center gap-1">
           <button
             onClick={deckHistory.undo}
-            className="rounded p-1.5 text-stage-muted hover:text-white"
+            className="rounded-[var(--radius-sm)] p-1.5 text-stage-muted hover:text-white"
             title="Undo"
           >
             <Undo2 size={15} />
           </button>
           <button
             onClick={deckHistory.redo}
-            className="rounded p-1.5 text-stage-muted hover:text-white"
+            className="rounded-[var(--radius-sm)] p-1.5 text-stage-muted hover:text-white"
             title="Redo"
           >
             <Redo2 size={15} />
@@ -151,7 +151,7 @@ export function DeckEditor() {
         </span>
 
         {errorCount > 0 && (
-          <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-[11px] text-red-300">
+          <span className="rounded-[var(--radius-sm)] border border-madder px-2 py-0.5 text-[11px] text-madder">
             {errorCount} issue{errorCount > 1 ? 's' : ''}
           </span>
         )}
@@ -162,12 +162,18 @@ export function DeckEditor() {
               key={fmt}
               onClick={() => exportAs(fmt)}
               disabled={exporting !== null}
-              className="flex items-center gap-1.5 rounded-lg border border-stage-line px-2.5 py-1.5 text-[12px] text-stage-muted hover:text-white disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-2.5 py-1.5 text-[12px] text-stage-muted hover:text-white disabled:opacity-40"
             >
               {exporting === fmt ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
               {fmt.toUpperCase()}
             </button>
           ))}
+          <button
+            onClick={() => navigate(`/n/${notebookId}/deck/${artifactId}/present`)}
+            className="ml-1 flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-brass bg-brass px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90"
+          >
+            <Play size={12} /> Present
+          </button>
         </div>
       </div>
 

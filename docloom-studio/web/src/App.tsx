@@ -37,7 +37,7 @@ function WorkspaceSwitcher() {
           const w = workspaces.find((x) => x.id === e.target.value)
           if (w) setCurrentWorkspace(w)
         }}
-        className="min-w-0 flex-1 truncate rounded-lg border border-ws-line bg-ws-bg px-2.5 py-1.5 text-[13px] font-medium outline-none focus:border-ws-accent"
+        className="min-w-0 flex-1 truncate rounded-[var(--radius-sm)] border border-ws-line bg-ws-bg px-2.5 py-1.5 text-[13px] font-medium outline-none focus:border-ws-accent"
       >
         {workspaces.map((w) => (
           <option key={w.id} value={w.id}>
@@ -49,7 +49,7 @@ function WorkspaceSwitcher() {
         onClick={create}
         aria-label="New workspace"
         title="New workspace"
-        className="shrink-0 rounded-lg border border-ws-line p-1.5 text-ws-muted hover:bg-ws-bg hover:text-ws-ink"
+        className="shrink-0 rounded-[var(--radius-sm)] border border-ws-line p-1.5 text-ws-muted hover:bg-ws-bg hover:text-ws-ink"
       >
         <Plus size={15} />
       </button>
@@ -70,11 +70,11 @@ export function Shell() {
       {/* mobile top bar with a menu toggle — only below md */}
       <div className="absolute inset-x-0 top-0 z-30 flex h-12 items-center gap-2 border-b border-ws-line bg-ws-panel px-3 md:hidden">
         <button aria-label="Open menu" onClick={() => setNavOpen(true)}
-          className="rounded-lg p-1.5 text-ws-muted hover:bg-ws-bg hover:text-ws-ink">
+          className="rounded-[var(--radius-sm)] p-1.5 text-ws-muted hover:bg-ws-bg hover:text-ws-ink">
           <Menu size={18} />
         </button>
-        <span className="font-display text-[15px] font-semibold tracking-tight">
-          docloom<span className="text-ws-accent"> studio</span>
+        <span className="font-display text-[20px] font-semibold tracking-tight text-ws-ink">
+          docloom<span className="text-woad"> studio</span>
         </span>
       </div>
       {/* scrim behind the drawer */}
@@ -82,14 +82,14 @@ export function Shell() {
         <div className="fixed inset-0 z-30 bg-black/30 md:hidden" onClick={() => setNavOpen(false)} />
       )}
       <aside className={`z-40 flex w-52 shrink-0 flex-col border-r border-ws-line bg-ws-panel
-        max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:shadow-lg max-md:transition-transform
+        max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:shadow-[var(--shadow-float)] max-md:transition-transform
         ${navOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full'}`}>
         <div className="flex items-center justify-between px-5 pt-5 pb-3">
-          <span className="font-display text-[17px] font-semibold tracking-tight">
-            docloom<span className="text-ws-accent"> studio</span>
+          <span className="font-display text-[20px] font-semibold tracking-tight text-ws-ink">
+            docloom<span className="text-woad"> studio</span>
           </span>
           <button aria-label="Close menu" onClick={() => setNavOpen(false)}
-            className="rounded-lg p-1 text-ws-muted hover:text-ws-ink md:hidden">
+            className="rounded-[var(--radius-sm)] p-1 text-ws-muted hover:text-ws-ink md:hidden">
             <X size={16} />
           </button>
         </div>
@@ -103,9 +103,9 @@ export function Shell() {
               to={to}
               end={end}
               className={({ isActive }) =>
-                `relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
+                `relative flex items-center gap-2.5 rounded-[var(--radius-sm)] px-3 py-2 text-[13px] font-medium transition-colors ${
                   isActive
-                    ? 'bg-ws-bg text-ws-ink before:absolute before:left-0 before:top-1/2 before:h-4 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-ws-accent'
+                    ? 'bg-ws-bg text-ws-ink before:absolute before:left-0 before:top-1/2 before:h-4 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-woad'
                     : 'text-ws-muted hover:bg-ws-bg hover:text-ws-ink'
                 }`
               }
@@ -121,7 +121,7 @@ export function Shell() {
           </div>
           <button
             onClick={logout}
-            className="mt-1 flex w-full items-center gap-2 rounded-lg px-1 py-1.5 text-[12px] text-ws-muted hover:text-ws-ink"
+            className="mt-1 flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-1 py-1.5 text-[12px] text-ws-muted hover:text-ws-ink"
           >
             <LogOut size={13} /> Sign out
           </button>

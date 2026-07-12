@@ -1,0 +1,20 @@
+# docloom-studio/Dockerfile builds from this (repository root) context. Keep
+# it to source only: the image runs its own npm ci / pip install and never
+# needs these on disk already, some of them (.venv, node_modules) are
+# hundreds of MB, and shipping .git defeats layer caching on every commit.
+.git/
+**/_git_backup/
+**/__pycache__/
+**/*.py[cod]
+**/.venv/
+**/venv/
+**/.pytest_cache/
+**/*.egg-info/
+**/.mypy_cache/
+**/.ruff_cache/
+**/node_modules/
+**/web/dist/
+**/.vite/
+docloom/examples/output/
+docloom/examples/out_ui/
+examples/output/

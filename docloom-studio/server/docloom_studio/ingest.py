@@ -7,14 +7,17 @@ treated as data, never instructions."""
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import re
+import socket
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from .db import execute, query_one
-from .settings import data_dir
+from .db import execute, owner_of_source, query_one
+from .settings import data_dir, get_setting
 
 # control chars (minus tab/newline/CR), zero-width chars, bidi overrides, BOM
 _UNSAFE = re.compile(
@@ -184,19 +187,32 @@ _YT = re.compile(
     r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|embed/)|youtu\.be/)"
     r"([A-Za-z0-9_-]{11})"
 )
+_YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
 
 
 def youtube_id(url: str) -> str | None:
+    # Only treat this as a YouTube link when the URL's actual HOST is YouTube.
+    # Matching the pattern anywhere in the string would let a URL like
+    # http://169.254.169.254/x/youtube.com/watch?v=ID take the (unguarded)
+    # transcript path against an internal host: an SSRF bypass.
+    host = (urlparse(url).hostname or "").lower()
+    if host not in _YT_HOSTS:
+        return None
     m = _YT.search(url)
     return m.group(1) if m else None
 
 
 def fetch_youtube(url: str, video_id: str) -> tuple[str, str]:
-    """(title, transcript) for a YouTube link. Needs youtube-transcript-api."""
+    """(title, transcript) for a YouTube link. Needs youtube-transcript-api.
+
+    youtube-transcript-api 1.0 replaced the static
+    YouTubeTranscriptApi.get_transcript(video_id) with an instance API:
+    YouTubeTranscriptApi().fetch(video_id) returns a FetchedTranscript of
+    FetchedTranscriptSnippet objects (attribute access, not dict indexing)."""
     from youtube_transcript_api import YouTubeTranscriptApi
 
-    segments = YouTubeTranscriptApi.get_transcript(video_id)
-    text = " ".join(s["text"].strip() for s in segments if s.get("text", "").strip())
+    snippets = YouTubeTranscriptApi().fetch(video_id)
+    text = " ".join(s.text.strip() for s in snippets if s.text.strip())
     if not text:
         raise ValueError("no transcript available for this video")
     # cheap title: the page <title>, falling back to the id
@@ -213,19 +229,75 @@ def fetch_youtube(url: str, video_id: str) -> tuple[str, str]:
     return title, text
 
 
+_ALLOWED_SCHEMES = {"http", "https"}
+_MAX_REDIRECTS = 5
+
+
+def _is_public_host(host: str) -> bool:
+    """True only if every address `host` resolves to is a public, routable
+    address. Rejects loopback (127.0.0.1), private ranges (10/8, 172.16/12,
+    192.168/16), link-local (169.254.0.0/16, the AWS/GCP/Azure metadata
+    endpoint lives at 169.254.169.254), and other reserved/multicast ranges.
+    Fails closed: an unresolvable host is not public."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        raw = info[4][0].split("%", 1)[0]  # strip an IPv6 zone id if present
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            return False
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+    return True
+
+
+def _guard_url(url: str) -> None:
+    """SSRF guard for a URL this server is about to fetch on a user's behalf:
+    reject non-http(s) schemes and any host that doesn't resolve exclusively
+    to public addresses. Callers must re-run this on every redirect hop too:
+    a URL that looks public can still 302 to localhost or a cloud metadata
+    address."""
+    parsed = urlparse(url)
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        raise ValueError(f"refusing to fetch URL scheme {parsed.scheme!r}")
+    host = parsed.hostname
+    if not host or not _is_public_host(host):
+        raise ValueError(f"refusing to fetch a non-public address ({host!r})")
+
+
 def fetch_url(url: str) -> tuple[str, str]:
-    """Return (title, main-text) for a web page — or a transcript for YouTube."""
+    """Return (title, main-text) for a web page, or a transcript for YouTube.
+
+    Redirects are followed by hand (not httpx's follow_redirects=True) so the
+    SSRF guard re-validates every hop: a URL that looks public but redirects
+    to localhost, an RFC1918 range, or the cloud metadata address must be
+    refused exactly as if it had been given directly."""
     vid = youtube_id(url)
     if vid:
         return fetch_youtube(url, vid)
 
     import trafilatura
 
-    with httpx.Client(timeout=20, follow_redirects=True,
+    html = ""
+    with httpx.Client(timeout=20, follow_redirects=False,
                       headers={"User-Agent": "docloom-studio/0.1"}) as client:
-        resp = client.get(url)
-        resp.raise_for_status()  # 404/403/500 must fail ingestion, not feed error HTML
-        html = resp.text
+        for _ in range(_MAX_REDIRECTS + 1):
+            _guard_url(url)
+            resp = client.get(url)
+            if resp.has_redirect_location:
+                url = urljoin(url, resp.headers["location"])
+                continue
+            resp.raise_for_status()  # 404/403/500 must fail ingestion, not feed error HTML
+            html = resp.text
+            break
+        else:
+            raise ValueError("too many redirects")
     text = trafilatura.extract(html, include_comments=False,
                                include_tables=True) or ""
     meta = trafilatura.extract_metadata(html)
@@ -279,6 +351,36 @@ def chunk_text(text: str, source_id: str, page: int | None = None) -> list[dict]
 
 
 # ------------------------------------------------------------------ pipeline
+
+INSIGHT_SYSTEM = (
+    "Summarize the following source in 3-5 sentences: the key facts, figures, "
+    "and claims someone would need to answer questions about it. Plain prose, "
+    "no preamble, no markdown."
+)
+
+
+async def _summarize_source(source_id: str, chunks: list[dict]) -> str:
+    """A short standing summary of a source, used when its context_mode is
+    'insights' (feed the gist instead of every chunk at retrieval time).
+    Best-effort: never raises, returns '' on any failure so a source without
+    a provider configured (or a flaky one) still ingests normally and just
+    falls back to 'full' chunk retrieval."""
+    from .providers import ProviderConfig, complete
+
+    text = "\n\n".join(c["text"] for c in chunks[:12])[:8000]
+    if not text.strip():
+        return ""
+    try:
+        cfg = ProviderConfig(**get_setting("provider.generation", owner_of_source(source_id)))
+        summary = await complete(
+            cfg,
+            [{"role": "system", "content": INSIGHT_SYSTEM},
+             {"role": "user", "content": text}],
+            temperature=0.2, max_tokens=400,
+        )
+        return summary.strip()
+    except Exception:
+        return ""
 
 
 async def ingest_source(source_id: str, ctx=None) -> None:
@@ -337,6 +439,17 @@ async def ingest_source(source_id: str, ctx=None) -> None:
         from .embeddings import embed_source
 
         await embed_source(source_id, [c["text"] for c in chunks])
+        # the chunks just written to chunks.jsonl are now the durable copy of
+        # this text; stop also carrying it in meta_json, which is re-parsed on
+        # every sources-list poll and would otherwise bloat that forever
+        meta.pop("text", None)
+        try:
+            summary = await _summarize_source(source_id, chunks)
+            if summary:
+                meta["insight_summary"] = summary
+                await embed_source(source_id, [summary], name="summary")
+        except Exception:
+            pass  # best-effort enrichment: 'insights' mode falls back to 'full'
         execute("UPDATE sources SET status = 'ready', meta_json = ? WHERE id = ?",
                 (json.dumps(meta), source_id))
         if ctx:

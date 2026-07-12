@@ -2,9 +2,10 @@
 
 import json
 
-from docloom_studio.db import execute, new_id, now, query_one
+from _seed_common import newest_notebook
+from docloom_studio.db import execute, new_id, now
 
-nb = query_one("SELECT id FROM notebooks ORDER BY created DESC LIMIT 1")["id"]
+nb = newest_notebook("Sources demo")
 rows = [
     ("Async work study",
      "Teams that default to async report 24 percent more deep-work hours."),

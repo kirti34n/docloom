@@ -30,10 +30,36 @@ const EXPORTS = ['docx', 'pdf', 'html', 'md'] as const
 const ADD = [['paragraph', 'Text'], ['heading', 'Heading'], ['bullets', 'Bullets'],
   ['numbered', 'Numbered'], ['quote', 'Quote'], ['callout', 'Callout']] as const
 
+const SEVERITY_CLASS: Record<string, string> = {
+  error: 'text-madder',
+  warning: 'text-ws-warn',
+  info: 'text-ws-muted',
+}
+
+// The export route 422s with detail: { findings: [...] } when the document
+// has blocking lint errors. api/client.ts only knows how to flatten a string
+// or array `detail`, so that object shape falls through to the RAW response
+// text: without unpacking it here, the user sees the literal JSON body.
+function exportErrorMessage(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e)
+  try {
+    const parsed = JSON.parse(raw) as { detail?: { findings?: { message: string }[] } }
+    const findings = parsed.detail?.findings
+    if (findings?.length) {
+      const n = findings.length
+      return `Export failed: fix ${n} issue${n > 1 ? 's' : ''} first: ${findings.map((f) => f.message).join('; ')}`
+    }
+  } catch {
+    // not a findings payload: raw is already a clean message from the API client
+  }
+  return `Export failed: ${raw}`
+}
+
 function SortableBlock({ id }: { id: string }) {
   const block = useDoc((s) => s.blocks[id])
   const update = useDoc((s) => s.updateBlock)
   const remove = useDoc((s) => s.removeBlock)
+  const editorRev = useDoc((s) => s.editorRev)
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id })
   if (!block) return null
@@ -47,7 +73,7 @@ function SortableBlock({ id }: { id: string }) {
         <GripVertical size={15} />
       </span>
       <div className="min-w-0 flex-1">
-        <EditableBlock block={block} onChange={(b) => update(id, b)} onDelete={() => remove(id)} />
+        <EditableBlock block={block} extRev={editorRev} onChange={(b) => update(id, b)} onDelete={() => remove(id)} />
       </div>
     </div>
   )
@@ -69,6 +95,7 @@ export function DocEditor() {
   const themeName = useDoc((s) => s.themeName)
   const saving = useDoc((s) => s.saving)
   const dirty = useDoc((s) => s.dirty)
+  const findings = useDoc((s) => s.findings)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
   useEffect(() => {
@@ -84,6 +111,7 @@ export function DocEditor() {
 
   const theme = themeByName(themes, themeName === 'slate' || themeName === 'pulse' ? 'paper' : themeName)!
   const vars = themeVars(theme) as React.CSSProperties
+  const errorCount = findings.filter((f) => f.severity === 'error').length
 
   const onDragEnd = (e: DragEndEvent) => {
     const { active, over } = e
@@ -102,7 +130,7 @@ export function DocEditor() {
       a.download = res.filename
       a.click()
     } catch (e) {
-      toast.error(`Export failed: ${e instanceof Error ? e.message : e}`)
+      toast.error(exportErrorMessage(e))
     } finally {
       setExporting(null)
     }
@@ -113,17 +141,22 @@ export function DocEditor() {
       <div className="flex items-center gap-3 border-b border-ws-line px-5 py-2.5">
         <button onClick={() => navigate(`/n/${notebookId}`)} className="text-[12px] text-ws-muted hover:text-ws-ink">← Notebook</button>
         <div className="flex items-center gap-1">
-          <button onClick={docHistory.undo} className="rounded p-1.5 text-ws-muted hover:text-ws-ink" title="Undo"><Undo2 size={15} /></button>
-          <button onClick={docHistory.redo} className="rounded p-1.5 text-ws-muted hover:text-ws-ink" title="Redo"><Redo2 size={15} /></button>
+          <button onClick={docHistory.undo} className="rounded-[var(--radius-sm)] p-1.5 text-ws-muted hover:text-ws-ink" title="Undo"><Undo2 size={15} /></button>
+          <button onClick={docHistory.redo} className="rounded-[var(--radius-sm)] p-1.5 text-ws-muted hover:text-ws-ink" title="Redo"><Redo2 size={15} /></button>
         </div>
         <span className="text-[12px] text-ws-muted">
           {saving ? <span className="flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Saving…</span>
             : dirty ? 'Unsaved' : <span className="flex items-center gap-1"><Check size={12} /> Saved</span>}
         </span>
+        {errorCount > 0 && (
+          <span className="rounded-[var(--radius-sm)] bg-madder/10 px-2 py-0.5 text-[11px] font-medium text-madder">
+            {errorCount} issue{errorCount > 1 ? 's' : ''}
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-1.5">
           {EXPORTS.map((fmt) => (
             <button key={fmt} onClick={() => exportAs(fmt)} disabled={exporting !== null}
-              className="flex items-center gap-1.5 rounded-lg border border-ws-line px-2.5 py-1.5 text-[12px] text-ws-muted hover:text-ws-ink disabled:opacity-40">
+              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-ws-line px-2.5 py-1.5 text-[12px] text-ws-muted hover:text-ws-ink disabled:opacity-40">
               {exporting === fmt ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
               {fmt.toUpperCase()}
             </button>
@@ -131,8 +164,18 @@ export function DocEditor() {
         </div>
       </div>
 
+      {findings.length > 0 && (
+        <ul className="flex flex-col gap-1 border-b border-ws-line bg-ws-panel px-5 py-2">
+          {findings.map((f, i) => (
+            <li key={i} className={`text-[12px] ${SEVERITY_CLASS[f.severity] ?? 'text-ws-muted'}`}>
+              {f.message}
+            </li>
+          ))}
+        </ul>
+      )}
+
       <div className="flex-1 overflow-auto bg-ws-bg py-10">
-        <div className="mx-auto max-w-3xl rounded-xl bg-white px-14 py-12 shadow-[var(--shadow-panel)]" style={vars}>
+        <div className="mx-auto max-w-3xl rounded-[var(--radius)] bg-white px-14 py-12 shadow-[var(--shadow-panel)]" style={vars}>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}

@@ -21,6 +21,7 @@ interface DeckState {
   sources: SourceT[]
   themeName: string
   rev: number
+  editorRev: number // bumped on external content changes (load/undo/redo) so Tiptap regions resync
   findings: Finding[]
   selected: string | null
   saving: boolean
@@ -55,6 +56,19 @@ export function newBlock(type: string): Block {
       return { type: 'quote', id, text: 'A memorable line.' }
     case 'callout':
       return { type: 'callout', id, style: 'info', text: 'Note.' }
+    case 'table':
+      return { type: 'table', id, header: ['', ''], rows: [['', '']] }
+    case 'stats':
+      return { type: 'stats', id, items: [{ label: 'Metric', value: '0' }] }
+    case 'chart':
+      return {
+        type: 'chart', id, chart: 'column',
+        labels: ['P1', 'P2'], series: [{ name: 'Series 1', values: [0, 0] }],
+      }
+    case 'image':
+      return { type: 'image', id }
+    case 'code':
+      return { type: 'code', id, code: '' }
     default:
       return { type: 'paragraph', id, text: 'New paragraph.' }
   }
@@ -81,6 +95,7 @@ export const useDeck = create<DeckState>()(
       sources: [],
       themeName: 'paper',
       rev: 0,
+      editorRev: 0,
       findings: [],
       selected: null,
       saving: false,
@@ -95,20 +110,33 @@ export const useDeck = create<DeckState>()(
           slides[s.id!] = s
           order.push(s.id!)
         }
-        set({
-          artifactId: a.id,
-          title: doc.title,
-          subtitle: doc.subtitle ?? null,
-          authors: doc.authors ?? [],
-          date: doc.date ?? null,
-          slides,
-          order,
-          sources: doc.sources ?? [],
-          themeName: a.payload.theme_name,
-          rev: a.version,
-          selected: order[0] ?? null,
-          dirty: false,
-        })
+        // load() is not a user edit: pause temporal recording so the pre-load
+        // state (title '', slides {}) never lands on pastStates, then clear
+        // any history left over from a previously loaded artifact. The
+        // try/finally keeps recording from getting stuck paused if set()
+        // ever throws on malformed data.
+        const hist = useDeck.temporal.getState()
+        hist.pause()
+        try {
+          set({
+            artifactId: a.id,
+            title: doc.title,
+            subtitle: doc.subtitle ?? null,
+            authors: doc.authors ?? [],
+            date: doc.date ?? null,
+            slides,
+            order,
+            sources: doc.sources ?? [],
+            themeName: a.payload.theme_name,
+            rev: a.version,
+            editorRev: get().editorRev + 1,
+            selected: order[0] ?? null,
+            dirty: false,
+          })
+          hist.clear()
+        } finally {
+          hist.resume()
+        }
       },
 
       select: (slideId) => set({ selected: slideId }),
@@ -239,6 +267,10 @@ export const useDeck = create<DeckState>()(
         order: s.order,
         themeName: s.themeName,
       }),
+      // without this, zundo pushes a history entry on every set() even when
+      // the partialized slice did not change (select(), the autosave
+      // callback), filling the undo stack with no-op steps
+      equality: (a, b) => JSON.stringify(a) === JSON.stringify(b),
     },
   ),
 )
@@ -246,8 +278,10 @@ export const useDeck = create<DeckState>()(
 // ---- debounced autosave (full-IR PUT; the deck is small) ------------------
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+let saveSeq = 0
 
 function save(): void {
+  const mySeq = ++saveSeq
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(async () => {
     const s = useDeck.getState()
@@ -263,7 +297,16 @@ function save(): void {
         `/api/artifacts/${s.artifactId}/ir`,
         { payload },
       )
-      useDeck.setState({ rev: res.version, findings: res.findings, dirty: false, saving: false })
+      // another save() ran while this PUT was in flight (saveSeq moved on):
+      // its edits are not in this payload, so leave dirty alone and let its
+      // own already-scheduled timer send them
+      const clean = saveSeq === mySeq
+      useDeck.setState({
+        rev: res.version,
+        findings: res.findings,
+        saving: false,
+        ...(clean ? { dirty: false } : {}),
+      })
     } catch {
       useDeck.setState({ saving: false })
     }
@@ -274,12 +317,12 @@ function save(): void {
 export const deckHistory = {
   undo: () => {
     useDeck.temporal.getState().undo()
-    useDeck.setState({ dirty: true })
+    useDeck.setState({ dirty: true, editorRev: useDeck.getState().editorRev + 1 })
     save()
   },
   redo: () => {
     useDeck.temporal.getState().redo()
-    useDeck.setState({ dirty: true })
+    useDeck.setState({ dirty: true, editorRev: useDeck.getState().editorRev + 1 })
     save()
   },
   canUndo: () => useDeck.temporal.getState().pastStates.length > 0,

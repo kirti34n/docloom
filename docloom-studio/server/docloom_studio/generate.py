@@ -5,11 +5,13 @@ slide_ready events) → lint + fix → save."""
 from __future__ import annotations
 
 import json
+import re
 from typing import Literal
 
+import httpx
 from docloom import (
-    AUTHORING_GUIDE, Document, Sheet, Slide, Source, Span, ensure_ids, lint,
-    llm_schema,
+    AUTHORING_GUIDE, Column, Document, Sheet, Slide, Source, Span, ensure_ids,
+    lint, llm_schema,
 )
 from docloom.ir import Block, Heading, Image, Table
 from docloom.llm import parse_llm_output
@@ -17,8 +19,15 @@ from pydantic import BaseModel, Field
 
 from .db import execute, new_id, now, owner_of_notebook, query_one
 from .jobs import JobCtx
-from .providers import GenerationFailed, ProviderConfig, generate_validated
+from .providers import (
+    GenerationFailed, ProviderConfig, ProviderError, TruncatedOutput,
+    generate_validated,
+)
 from .settings import data_dir, get_setting
+
+# One flaky HTTP call (a timeout, a 5xx, a truncated response) must not sink
+# a whole deck/doc/sheet job and discard every unit already generated.
+_UNIT_FAILURES = (GenerationFailed, ProviderError, httpx.HTTPError)
 
 OutlineLayout = Literal["section", "content", "two_column", "quote",
                         "hero", "image_left", "image_right"]
@@ -95,13 +104,27 @@ def _citation_gate(doc: Document, known_ids: set[str]) -> None:
     walk_blocks(doc.blocks)
 
 
-def _slide_errors(deck_title: str, slide: Slide, source_ids: set[str]) -> list[str]:
-    # lint the slide with the notebook's real source ids so cites the model was
-    # asked to emit are not flagged as cite/unknown-source
+# Layout-only findings are advisory during generation: discarding an
+# otherwise-correct, fully parsed slide/section over a soft overflow would
+# trade real content for a blank skeleton. They still surface in the editor
+# (the unfiltered lint(doc) call below emits every finding) and still block
+# export (export_artifact lints again, unfiltered) -- only the "should
+# generate_validated retry-or-discard this unit" decision ignores them.
+_ADVISORY_RULES = {"deck/overflow"}
+
+
+def _lint_errors(source_ids: set[str], **doc_kwargs) -> list[str]:
+    """Error-severity lint findings for one generated unit (a slide or a doc
+    section), linted against the notebook's real source ids so a cite the
+    model was asked to emit isn't flagged as cite/unknown-source."""
     sources = [Source(id=i, title=i) for i in sorted(source_ids)]
-    findings = lint(Document(title=deck_title, slides=[slide], sources=sources))
-    return [f"{f.severity} [{f.rule}] {f.message}"
-            for f in findings if f.severity == "error"]
+    findings = lint(Document(sources=sources, **doc_kwargs))
+    return [f"{f.severity} [{f.rule}] {f.message}" for f in findings
+            if f.severity == "error" and f.rule not in _ADVISORY_RULES]
+
+
+def _slide_errors(deck_title: str, slide: Slide, source_ids: set[str]) -> list[str]:
+    return _lint_errors(source_ids, title=deck_title, slides=[slide])
 
 
 def _resolve_deck_images(doc: Document, user_id: str | None) -> None:
@@ -189,8 +212,13 @@ async def run_deck_pipeline(
                 lint_fn=lambda s: _slide_errors(
                     outline.deck_title, s, {so["id"] for so in sources}),
             )
-        except GenerationFailed:
-            # keep the deck moving: a skeleton slide the user can fill in
+        except _UNIT_FAILURES as e:
+            # one flaky call (a timeout, a 5xx, an exhausted retry budget)
+            # must not sink the whole deck: keep a skeleton slide the user
+            # can fill in and move on to the next one
+            ctx.emit("slide", "skipped", detail=item.title, data={
+                "index": index + 1, "total": len(outline.slides),
+                "error": str(e)[:200]})
             slide = Slide(layout=item.layout, title=item.title,
                           notes=f"(generation failed) intent: {item.intent}")
         if slide.layout == "title":
@@ -255,6 +283,10 @@ Keep paragraphs tight; prefer bullets and a small table or chart where it
 helps. Ground every claim in the provided evidence and cite it."""
 
 
+def _section_errors(doc_title: str, section: DocSection, source_ids: set[str]) -> list[str]:
+    return _lint_errors(source_ids, title=doc_title, blocks=section.blocks)
+
+
 async def run_doc_pipeline(
     ctx: JobCtx, notebook_id: str, artifact_id: str, prompt: str,
     context_lines: list[str] | None = None, sources: list[dict] | None = None,
@@ -294,9 +326,15 @@ async def run_doc_pipeline(
                     f"Intent: {item.intent}{sec_block}"}],
                 schema=llm_schema(DocSection),
                 parse=lambda t: parse_llm_output(t, DocSection),
+                lint_fn=lambda s: _section_errors(
+                    outline.doc_title, s, {so["id"] for so in sources}),
             )
             blocks.extend(section.blocks)
-        except GenerationFailed:
+        except _UNIT_FAILURES as e:
+            # one flaky call must not sink the whole report: keep a plain
+            # paragraph placeholder for this section and move on
+            ctx.emit("section", "skipped", detail=item.heading, data={
+                "index": i + 1, "total": len(outline.sections), "error": str(e)[:200]})
             blocks.append({"type": "paragraph", "text": item.intent})
         ctx.emit("section", "done", detail=item.heading,
                  data={"index": i + 1, "total": len(outline.sections)})
@@ -329,6 +367,29 @@ strings). Use a {"formula": "=SUM(B2:B10)"} cell for totals. Ground figures
 in the evidence when provided."""
 
 
+class SheetOutlineItem(BaseModel):
+    name: str = Field(description="sheet tab name")
+    intent: str = Field(description="one sentence: what data this sheet holds")
+
+
+class SheetOutline(BaseModel):
+    title: str
+    sheets: list[SheetOutlineItem]
+
+
+SHEET_OUTLINE_SYSTEM = """\
+You plan spreadsheet workbooks. Return JSON: a workbook `title` plus 1-6
+sheets, each {name, intent}. One sheet per distinct table; do not split one
+table across sheets."""
+
+SHEET_SECTION_SYSTEM = AUTHORING_GUIDE + """
+You produce ONE sheet of a workbook as a JSON object matching the provided
+schema (a docloom Sheet): a name, columns (header + optional Excel number
+format like "$#,##0" or "0.0%"), and rows of typed cells (numbers as numbers,
+not strings). Use a {"formula": "=SUM(B2:B10)"} cell for totals. Ground
+figures in the evidence when provided."""
+
+
 async def run_sheet_pipeline(
     ctx: JobCtx, notebook_id: str, artifact_id: str, prompt: str,
     context_lines: list[str] | None = None, sources: list[dict] | None = None,
@@ -336,16 +397,62 @@ async def run_sheet_pipeline(
     owner = owner_of_notebook(notebook_id)
     cfg = ProviderConfig(**get_setting("provider.generation", owner))
     ctx.emit("context", "done")
+    context_block = _context_block(context_lines, cite=False)  # SheetDoc has no Span type
+
     ctx.emit("sheet", "running")
-    result: SheetDoc = await generate_validated(
-        cfg,
-        [{"role": "system", "content": SHEET_SYSTEM},
-         {"role": "user", "content": prompt + _context_block(context_lines)}],
-        schema=llm_schema(SheetDoc),
-        parse=lambda t: parse_llm_output(t, SheetDoc),
-        lint_fn=lambda d: ([] if d.sheets else ["produce at least one sheet"]),
-    )
-    doc = ensure_ids(Document(title=result.title, sheets=result.sheets))
+    try:
+        result: SheetDoc = await generate_validated(
+            cfg,
+            [{"role": "system", "content": SHEET_SYSTEM},
+             {"role": "user", "content": prompt + context_block}],
+            schema=llm_schema(SheetDoc),
+            parse=lambda t: parse_llm_output(t, SheetDoc),
+            lint_fn=lambda d: ([] if d.sheets else ["produce at least one sheet"]),
+        )
+        title, sheets = result.title, result.sheets
+    except TruncatedOutput:
+        # the whole workbook doesn't fit one call (a big multi-sheet request
+        # easily exceeds the token cap in one shot): plan sheet names first,
+        # then fill each sheet with its own bounded call, same shape as the
+        # deck/doc pipelines, so a big workbook still produces something
+        # instead of failing 3 retries against the same cap and shipping
+        # nothing
+        ctx.emit("outline", "running",
+                 detail="workbook too large for one call; splitting by sheet")
+        outline: SheetOutline = await generate_validated(
+            cfg,
+            [{"role": "system", "content": SHEET_OUTLINE_SYSTEM},
+             {"role": "user", "content": prompt + context_block}],
+            schema=llm_schema(SheetOutline),
+            parse=lambda t: parse_llm_output(t, SheetOutline),
+            lint_fn=lambda o: ([] if 1 <= len(o.sheets) <= 8 else ["need 1-8 sheets"]),
+        )
+        ctx.emit("outline", "done", data={"title": outline.title,
+                 "sheets": [s.name for s in outline.sheets]})
+        title, sheets = outline.title, []
+        for i, item in enumerate(outline.sheets):
+            ctx.emit("sheet", "running", detail=item.name,
+                     data={"index": i + 1, "total": len(outline.sheets)})
+            try:
+                sheet: Sheet = await generate_validated(
+                    cfg,
+                    [{"role": "system", "content": SHEET_SECTION_SYSTEM},
+                     {"role": "user", "content":
+                        f'Workbook: "{outline.title}"\nSheet: "{item.name}"\n'
+                        f"Intent: {item.intent}{context_block}"}],
+                    schema=llm_schema(Sheet),
+                    parse=lambda t: parse_llm_output(t, Sheet),
+                    lint_fn=lambda s: [] if s.columns else ["a sheet needs at least one column"],
+                )
+            except _UNIT_FAILURES as e:
+                ctx.emit("sheet", "skipped", detail=item.name, data={
+                    "index": i + 1, "total": len(outline.sheets), "error": str(e)[:200]})
+                sheet = Sheet(name=item.name, columns=[Column(header=item.intent)], rows=[])
+            sheets.append(sheet)
+            ctx.emit("sheet", "done", detail=item.name,
+                     data={"index": i + 1, "total": len(outline.sheets)})
+
+    doc = ensure_ids(Document(title=title, sheets=sheets))
     findings = lint(doc)
     ctx.emit("lint", "done", data={"findings": [f.model_dump() for f in findings]})
     save_artifact(artifact_id, doc.title,
@@ -385,10 +492,28 @@ api -> db
 Output ONLY valid D2 source in the `d2` field, nothing else."""
 
 
+_MERMAID_PREFIX = re.compile(
+    r"^\s*(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram)\b",
+    re.IGNORECASE,
+)
+_MERMAID_NODE_BRACKETS = re.compile(r"[A-Za-z0-9_]\s*\[[^\[\]]+\]")
+
+
 def _looks_like_d2(src: str) -> list[str]:
     s = src.strip()
     if not s:
         return ["empty diagram"]
+    # Mermaid is the exact failure the prompt warns against: "A --> B" passes
+    # a bare "'->' in s" check because "-->" contains "->" as a substring, and
+    # Mermaid's own bracket node syntax ("a[Label]") isn't D2 either.
+    if _MERMAID_PREFIX.search(s):
+        return ["this is Mermaid syntax (flowchart/graph/sequenceDiagram/...), "
+                "not D2 -- start with `direction: right` and use `a -> b`"]
+    if "-->" in s:
+        return ["this is a Mermaid arrow (-->); a D2 connection uses a single `->`"]
+    if _MERMAID_NODE_BRACKETS.search(s):
+        return ["this is Mermaid node bracket syntax (e.g. `a[Label]`); "
+                "a D2 node is `id: Label`"]
     if "->" not in s and "--" not in s:
         return ["a D2 diagram needs at least one connection, e.g. `a -> b`"]
     if s.count("{") != s.count("}"):
@@ -407,7 +532,7 @@ async def run_diagram_pipeline(
     result: DiagramGen = await generate_validated(
         cfg,
         [{"role": "system", "content": DIAGRAM_SYSTEM},
-         {"role": "user", "content": prompt + _context_block(context_lines)}],
+         {"role": "user", "content": prompt + _context_block(context_lines, cite=False)}],
         schema=llm_schema(DiagramGen),
         parse=lambda t: parse_llm_output(t, DiagramGen),
         lint_fn=lambda d: _looks_like_d2(d.d2),
@@ -460,7 +585,7 @@ async def run_infographic_pipeline(
     spec: InfographicSpec = await generate_validated(
         cfg,
         [{"role": "system", "content": IG_SYSTEM},
-         {"role": "user", "content": prompt + _context_block(context_lines)}],
+         {"role": "user", "content": prompt + _context_block(context_lines, cite=False)}],
         schema=llm_schema(InfographicSpec),
         parse=lambda t: parse_llm_output(t, InfographicSpec),
         lint_fn=lambda s: ([] if 2 <= len(s.items) <= 8 else ["need 2-8 items"]),
@@ -513,7 +638,7 @@ async def run_podcast_pipeline(
     script: PodcastScript = await generate_validated(
         cfg,
         [{"role": "system", "content": PODCAST_SYSTEM},
-         {"role": "user", "content": prompt + _context_block(context_lines)}],
+         {"role": "user", "content": prompt + _context_block(context_lines, cite=False)}],
         schema=llm_schema(PodcastScript),
         parse=lambda t: parse_llm_output(t, PodcastScript),
         lint_fn=lambda s: ([] if 6 <= len(s.turns) <= 40
@@ -560,11 +685,16 @@ async def repair_diagram(src: str, error: str, user_id: str | None) -> str:
     return out.d2
 
 
-def _context_block(context_lines: list[str] | None) -> str:
+def _context_block(context_lines: list[str] | None, cite: bool = True) -> str:
+    """`cite=False` for schemas with no Span type to set a `cite` on (SheetDoc
+    cells, DiagramGen.d2, InfographicSpec labels, PodcastScript) -- appending
+    the citation instruction there just invites cite-shaped garbage in a D2
+    source string or a spreadsheet cell."""
     if not context_lines:
         return ""
-    return ("\n\nGround every factual claim in this evidence and set the span's "
-            '`cite` to the given source id.\nEvidence:\n' + "\n".join(context_lines))
+    instruction = "Ground every factual claim in this evidence" + (
+        " and set the span's `cite` to the given source id." if cite else ".")
+    return f"\n\n{instruction}\nEvidence:\n" + "\n".join(context_lines)
 
 
 async def _section_block(
@@ -591,6 +721,15 @@ async def _section_block(
     return base_block + "\n\nMost relevant to THIS section:\n" + "\n".join(lines)
 
 
+def _set_artifact_status(artifact_id: str, status: str) -> None:
+    # local import: artifacts.py imports create_artifact/save_artifact/the
+    # pipelines from this module at its top level, so importing artifacts.py
+    # back at OUR top level would be a circular import
+    from .artifacts import set_artifact_status
+
+    set_artifact_status(artifact_id, status)
+
+
 def create_artifact(notebook_id: str, kind: str, title: str = "") -> str:
     artifact_id = new_id()
     t = now()
@@ -599,6 +738,10 @@ def create_artifact(notebook_id: str, kind: str, title: str = "") -> str:
         "payload_json, created, updated) VALUES (?, ?, ?, ?, 0, '{}', ?, ?)",
         (artifact_id, notebook_id, kind, title, t, t),
     )
+    # the row exists but generation hasn't produced anything yet: 'building'
+    # (not the column's 'ready' default) so the artifacts list and the
+    # editor can tell a fresh stub apart from a finished artifact
+    _set_artifact_status(artifact_id, "building")
     return artifact_id
 
 
@@ -612,4 +755,45 @@ def save_artifact(artifact_id: str, title: str, payload: dict) -> int:
     execute("INSERT INTO artifact_versions (artifact_id, version, payload_json, "
             "created) VALUES (?, ?, ?, ?)",
             (artifact_id, version, text, now()))
+    # a payload just landed (first generation, a manual edit, or a revert):
+    # the artifact is viewable/exportable, so it's 'ready' regardless of
+    # which caller reached this point
+    _set_artifact_status(artifact_id, "ready")
     return version
+
+
+SUGGESTED_QUESTIONS_SYSTEM = """\
+Given evidence from a notebook's sources, suggest short, specific questions a
+reader could ask that these sources can actually answer. Return JSON: a
+`questions` array of exactly 3 short questions (one sentence each, no
+preamble, no numbering)."""
+
+
+class SuggestedQuestions(BaseModel):
+    questions: list[str]
+
+
+async def suggest_questions(notebook_id: str, user_id: str) -> list[str]:
+    """3 short grounded questions the notebook's enabled sources can answer,
+    for an empty-state "ask something" prompt. Best-effort: any failure
+    (no sources yet, provider down, ...) returns an empty list rather than
+    surfacing an error for what is a minor UI nicety."""
+    from .embeddings import retrieve
+
+    try:
+        chunks = await retrieve(notebook_id, "key facts and topics", k=8)
+        if not chunks:
+            return []
+        evidence = "\n\n".join(f"({c.source_title}) {c.text[:400]}" for c in chunks)
+        cfg = ProviderConfig(**get_setting("provider.generation", user_id))
+        result: SuggestedQuestions = await generate_validated(
+            cfg,
+            [{"role": "system", "content": SUGGESTED_QUESTIONS_SYSTEM},
+             {"role": "user", "content": f"Evidence:\n{evidence}"}],
+            schema=llm_schema(SuggestedQuestions),
+            parse=lambda t: parse_llm_output(t, SuggestedQuestions),
+            lint_fn=lambda r: [] if r.questions else ["produce at least one question"],
+        )
+    except Exception:
+        return []
+    return [q.strip() for q in result.questions if q.strip()][:3]

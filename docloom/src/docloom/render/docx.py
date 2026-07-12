@@ -7,6 +7,7 @@ reference numbers resolved against doc.sources.
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -18,6 +19,7 @@ from docx.oxml.ns import qn
 from docx.shared import Emu, Inches, Pt, RGBColor
 from docx.text.run import Run
 
+from . import chart_svg
 from ..ir import (
     Artifact,
     Block,
@@ -85,7 +87,7 @@ def _bottom_border(paragraph, color: str, sz: int = 6) -> None:
     paragraph._p.get_or_add_pPr().append(pbdr)
 
 
-def _add_hyperlink(paragraph, span: Span, theme: Theme) -> None:
+def _add_hyperlink(paragraph, span: Span, theme: Theme, color: str | None = None) -> None:
     r_id = paragraph.part.relate_to(
         span.link, RELATIONSHIP_TYPE.HYPERLINK, is_external=True
     )
@@ -102,9 +104,9 @@ def _add_hyperlink(paragraph, span: Span, theme: Theme) -> None:
         rpr.append(OxmlElement("w:b"))
     if span.italic:
         rpr.append(OxmlElement("w:i"))
-    color = OxmlElement("w:color")
-    color.set(qn("w:val"), theme.primary.lstrip("#"))
-    rpr.append(color)
+    color_el = OxmlElement("w:color")
+    color_el.set(qn("w:val"), (color or theme.primary).lstrip("#"))
+    rpr.append(color_el)
     underline = OxmlElement("w:u")
     underline.set(qn("w:val"), "single")
     rpr.append(underline)
@@ -118,11 +120,12 @@ def _add_hyperlink(paragraph, span: Span, theme: Theme) -> None:
 
 
 def _add_spans(
-    paragraph, rt: RichText, theme: Theme, numbers: dict[str, int]
+    paragraph, rt: RichText, theme: Theme, numbers: dict[str, int],
+    link_color: str | None = None,
 ) -> None:
     for span in spans(rt):
         if span.link and _safe_href(span.link):
-            _add_hyperlink(paragraph, span, theme)
+            _add_hyperlink(paragraph, span, theme, link_color)
         else:
             run = paragraph.add_run(span.text)
             if span.bold:
@@ -256,7 +259,9 @@ def _render_table(
         cell = table.cell(0, j)
         _shade_cell(cell, theme.primary)
         par = cell.paragraphs[0]
-        _add_spans(par, cell_rt, theme, numbers)
+        # header cells shade theme.primary, so a link there must recolor to
+        # theme.background too or it renders primary-on-primary (invisible)
+        _add_spans(par, cell_rt, theme, numbers, link_color=theme.background)
         for run in par.runs:
             run.bold = True
             run.font.color.rgb = _rgb(theme.background)
@@ -300,16 +305,68 @@ def _render_image(docx_doc, block: Image, theme: Theme) -> bool:
     return True
 
 
+def _render_image_or_placeholder(docx_doc, block: Image, theme: Theme) -> None:
+    """Like _render_image, but a file that exists and yet cannot be embedded
+    (python-docx has no SVG decoder, so this is the common case for a
+    diagram) leaves a labeled placeholder paragraph instead of nothing, so
+    the figure never just vanishes. A genuinely missing path is still
+    skipped silently, matching every other renderer."""
+    if _render_image(docx_doc, block, theme):
+        return
+    if not block.path or not Path(block.path).is_file():
+        return
+    par = docx_doc.add_paragraph()
+    par.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = par.add_run(f"[image: {block.alt}]" if block.alt else "[image]")
+    run.italic = True
+    run.font.color.rgb = _rgb(theme.muted)
+    if block.caption:
+        cap = docx_doc.add_paragraph()
+        cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        cap_run = cap.add_run(block.caption)
+        cap_run.italic = True
+        cap_run.font.size = Pt(9)
+        cap_run.font.color.rgb = _rgb(theme.muted)
+
+
+def _rasterize_chart_svg(svg: str) -> bytes | None:
+    """Upgrade path for a future PNG embed: python-docx cannot embed SVG
+    directly, and no rasterizer (e.g. cairosvg) is bundled here, so this is
+    a no-op today. Wire one in and _render_chart below embeds the result
+    automatically instead of falling back to a data table."""
+    return None
+
+
 def _render_chart(
     docx_doc, block: Chart, theme: Theme, numbers: dict[str, int]
 ) -> None:
+    # figure-style title: larger and on-brand, distinct from body paragraphs,
+    # so the fallback below reads as a chart's data rather than a stray table
     if block.title:
         run = docx_doc.add_paragraph().add_run(block.title)
         run.bold = True
+        run.font.size = Pt(12)
+        run.font.color.rgb = _rgb(theme.primary)
     if block.path and Path(block.path).is_file():
         if _render_image(docx_doc, Image(path=block.path, caption=block.caption), theme):
             return
-        # image present but unembeddable (SVG/corrupt): fall through to a data table
+        # image present but unembeddable (SVG/corrupt): fall through
+    raster = _rasterize_chart_svg(chart_svg.render_svg(block, theme))
+    if raster is not None:  # dead until a rasterizer is wired into the hook above
+        par = docx_doc.add_paragraph()
+        par.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        par.add_run().add_picture(io.BytesIO(raster))
+        if block.caption:
+            cap = docx_doc.add_paragraph()
+            cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            cap_run = cap.add_run(block.caption)
+            cap_run.italic = True
+            cap_run.font.size = Pt(9)
+            cap_run.font.color.rgb = _rgb(theme.muted)
+        return
+    # python-docx cannot embed the chart_svg SVG directly and no rasterizer
+    # is wired in: a titled, captioned data table stands in for the chart
+    # instead of a bare, unlabeled one.
     rows = [
         [s.name] + ["" if v is None else f"{v:g}" for v in s.values]
         for s in block.series
@@ -377,7 +434,7 @@ def _render_block(
     elif isinstance(block, Table):
         _render_table(docx_doc, block, theme, numbers)
     elif isinstance(block, Image):
-        _render_image(docx_doc, block, theme)
+        _render_image_or_placeholder(docx_doc, block, theme)
     elif isinstance(block, Callout):
         _render_callout(docx_doc, block, theme, numbers)
     elif isinstance(block, Chart):
@@ -385,8 +442,9 @@ def _render_block(
     elif isinstance(block, StatRow):
         _render_stats(docx_doc, block, theme)
     elif isinstance(block, Artifact):
-        # picture embed if the render path exists; otherwise skip silently
-        _render_image(
+        # picture embed if the render path exists; a labeled placeholder if
+        # it exists but cannot be embedded (e.g. SVG); skip if there is none
+        _render_image_or_placeholder(
             docx_doc, Image(path=block.path, alt=block.alt, caption=block.caption), theme
         )
     elif isinstance(block, Divider):

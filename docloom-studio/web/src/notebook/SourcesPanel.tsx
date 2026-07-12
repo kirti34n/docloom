@@ -11,8 +11,10 @@ import {
   Type,
 } from 'lucide-react'
 import { api, jobEvents } from '../api/client'
+import { Button, Empty, Eyebrow } from '../ui'
+import { toast } from '../ui/toast'
 
-interface Source {
+export interface Source {
   id: string
   kind: string
   title: string
@@ -35,7 +37,24 @@ const KIND_ICON: Record<string, typeof FileText> = {
   research: Globe,
 }
 
-export function SourcesPanel({ notebookId }: { notebookId: string }) {
+const RESEARCH_LABELS: Record<string, string> = {
+  plan: 'Planning searches…',
+  search: 'Searching the web…',
+  read: 'Reading pages…',
+  ingest: 'Adding sources…',
+}
+
+export function SourcesPanel({
+  notebookId,
+  activeSourceId,
+  onOpenSource,
+  onSourcesChange,
+}: {
+  notebookId: string
+  activeSourceId?: string
+  onOpenSource: (sourceId: string) => void
+  onSourcesChange?: (sources: Source[]) => void
+}) {
   const [sources, setSources] = useState<Source[]>([])
   const [adding, setAdding] = useState<null | 'url' | 'text'>(null)
   const [urlVal, setUrlVal] = useState('')
@@ -45,7 +64,10 @@ export function SourcesPanel({ notebookId }: { notebookId: string }) {
   const fileInput = useRef<HTMLInputElement>(null)
 
   const load = () =>
-    api.get<Source[]>(`/api/notebooks/${notebookId}/sources`).then(setSources)
+    api.get<Source[]>(`/api/notebooks/${notebookId}/sources`).then((list) => {
+      setSources(list)
+      onSourcesChange?.(list)
+    })
 
   useEffect(() => {
     load()
@@ -61,7 +83,19 @@ export function SourcesPanel({ notebookId }: { notebookId: string }) {
   const uploadFile = async (file: File) => {
     const fd = new FormData()
     fd.append('file', file)
-    await fetch(`/api/notebooks/${notebookId}/sources/file`, { method: 'POST', body: fd })
+    const res = await fetch(`/api/notebooks/${notebookId}/sources/file`, { method: 'POST', body: fd })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      let message = text || res.statusText
+      try {
+        const body = JSON.parse(text) as { detail?: unknown }
+        if (typeof body.detail === 'string') message = body.detail
+      } catch {
+        // not JSON: message already falls back to the raw response text
+      }
+      toast.error(`Couldn't add ${file.name}: ${message}`)
+      return
+    }
     load()
   }
 
@@ -100,31 +134,34 @@ export function SourcesPanel({ notebookId }: { notebookId: string }) {
     load()
   }
 
-  const RESEARCH_LABELS: Record<string, string> = {
-    plan: 'Planning searches…',
-    search: 'Searching the web…',
-    read: 'Reading pages…',
-    ingest: 'Adding sources…',
-  }
-
   const runResearch = async () => {
     const q = researchVal.trim()
     if (!q || researchStage) return
     setResearchVal('')
     setResearchStage('plan')
-    const res = await api.post<{ job_id: string }>(
-      `/api/notebooks/${notebookId}/research`, { query: q })
-    jobEvents(
-      res.job_id,
-      (e) => {
-        if (RESEARCH_LABELS[e.stage]) setResearchStage(e.stage)
-        if (e.stage === 'ingest' && e.status === 'done') load()
-      },
-      () => {
-        setResearchStage(null)
-        load()
-      },
-    )
+    try {
+      const res = await api.post<{ job_id: string }>(`/api/notebooks/${notebookId}/research`, { query: q })
+      jobEvents(
+        res.job_id,
+        (e) => {
+          if (RESEARCH_LABELS[e.stage]) setResearchStage(e.stage)
+          if (e.stage === 'ingest' && e.status === 'done') load()
+          if (e.stage === 'research' && e.status === 'failed') {
+            toast.error(e.detail || 'No readable pages were found for that topic.')
+          }
+          if (e.stage === 'job' && e.status === 'failed') {
+            toast.error(`Research failed: ${e.detail || 'unknown error'}`)
+          }
+        },
+        () => {
+          setResearchStage(null)
+          load()
+        },
+      )
+    } catch (e) {
+      setResearchStage(null)
+      toast.error(`Couldn't start research: ${e instanceof Error ? e.message : e}`)
+    }
   }
 
   return (
@@ -133,7 +170,7 @@ export function SourcesPanel({ notebookId }: { notebookId: string }) {
         <h2 className="text-[13px] font-semibold">Sources</h2>
         <div className="flex gap-1">
           <button title="Upload file" onClick={() => fileInput.current?.click()}
-            className="rounded p-1 text-ws-muted hover:text-ws-ink">
+            className="rounded-[var(--radius-sm)] p-1 text-ws-muted hover:text-ws-ink">
             <Plus size={15} />
           </button>
         </div>
@@ -145,12 +182,12 @@ export function SourcesPanel({ notebookId }: { notebookId: string }) {
       {/* research the web */}
       <div className="px-3 pb-2">
         {researchStage ? (
-          <div className="flex items-center gap-2 rounded-lg border border-ws-accent/40 bg-ws-accent/5 px-3 py-2 text-[12px] text-ws-ink">
-            <Loader2 size={13} className="animate-spin text-ws-accent" />
+          <div className="flex items-center gap-2 rounded-[var(--radius)] border border-woad/40 bg-woad/5 px-3 py-2 text-[12px] text-ws-ink">
+            <Loader2 size={13} className="animate-spin text-woad" />
             {RESEARCH_LABELS[researchStage] ?? 'Researching…'}
           </div>
         ) : (
-          <div className="flex items-center gap-1.5 rounded-lg border border-ws-line px-2.5 py-1.5">
+          <div className="ds-focusable flex items-center gap-1.5 rounded-[var(--radius)] border border-ws-line px-2.5 py-1.5">
             <Search size={13} className="text-ws-muted" />
             <input value={researchVal} onChange={(e) => setResearchVal(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && runResearch()}
@@ -160,20 +197,18 @@ export function SourcesPanel({ notebookId }: { notebookId: string }) {
         )}
       </div>
 
-      <div className="px-3 pb-1 text-[10px] font-medium uppercase tracking-wide text-ws-muted">
-        or add your own
-      </div>
+      <Eyebrow className="px-3 pb-1">Add a source</Eyebrow>
       <div className="flex gap-1 px-3 pb-2">
         <button onClick={() => fileInput.current?.click()}
-          className="flex-1 rounded-md border border-ws-line py-1.5 text-[11px] text-ws-muted hover:text-ws-ink">
+          className="flex-1 rounded-[var(--radius-sm)] border border-ws-line py-1.5 text-[11px] text-ws-muted hover:text-ws-ink">
           File
         </button>
         <button onClick={() => setAdding(adding === 'url' ? null : 'url')}
-          className="flex-1 rounded-md border border-ws-line py-1.5 text-[11px] text-ws-muted hover:text-ws-ink">
+          className="flex-1 rounded-[var(--radius-sm)] border border-ws-line py-1.5 text-[11px] text-ws-muted hover:text-ws-ink">
           URL
         </button>
         <button onClick={() => setAdding(adding === 'text' ? null : 'text')}
-          className="flex-1 rounded-md border border-ws-line py-1.5 text-[11px] text-ws-muted hover:text-ws-ink">
+          className="flex-1 rounded-[var(--radius-sm)] border border-ws-line py-1.5 text-[11px] text-ws-muted hover:text-ws-ink">
           Text
         </button>
       </div>
@@ -183,57 +218,69 @@ export function SourcesPanel({ notebookId }: { notebookId: string }) {
           <input value={urlVal} onChange={(e) => setUrlVal(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && addUrl()}
             placeholder="Web page or YouTube link…" autoFocus
-            className="w-full rounded-md border border-ws-line px-2 py-1.5 text-[12px]" />
+            className="w-full rounded-[var(--radius-sm)] border border-ws-line px-2 py-1.5 text-[12px]" />
         </div>
       )}
       {adding === 'text' && (
         <div className="px-3 pb-2">
           <textarea value={textVal} onChange={(e) => setTextVal(e.target.value)}
             placeholder="Paste text…" rows={3} autoFocus
-            className="w-full resize-none rounded-md border border-ws-line px-2 py-1.5 text-[12px]" />
+            className="w-full resize-none rounded-[var(--radius-sm)] border border-ws-line px-2 py-1.5 text-[12px]" />
           <button onClick={addText}
-            className="mt-1 w-full rounded-md bg-ws-ink py-1.5 text-[11px] text-white">Add</button>
+            className="mt-1 w-full rounded-[var(--radius-sm)] bg-ws-ink py-1.5 text-[11px] text-ws-bg">Add</button>
         </div>
       )}
 
       <div className="flex-1 overflow-auto px-3 pb-3">
         {sources.length === 0 ? (
-          <p className="mt-6 text-center text-[12px] text-ws-muted">
-            Add documents, links, or text. The agent grounds its work in them.
-          </p>
+          <Empty
+            title="No sources yet"
+            body="Add documents, links, or text. The agent grounds every answer in them."
+            action={<Button variant="quiet" onClick={() => fileInput.current?.click()}>Upload a file</Button>}
+          />
         ) : (
           <ul className="space-y-2">
-            {sources.map((s) => {
+            {sources.map((s, idx) => {
               const Icon = KIND_ICON[s.kind] ?? FileText
+              const enabled = s.context_mode !== 'excluded'
               return (
-                <li key={s.id} className="group rounded-lg border border-ws-line p-2.5">
+                <li key={s.id} data-warp-id={s.id}
+                  className={`group relative overflow-hidden rounded-[var(--radius)] border py-2.5 pl-3 pr-2.5 ${
+                    s.id === activeSourceId ? 'border-woad' : 'border-ws-line'
+                  }`}>
+                  <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[2px]"
+                    style={{ background: enabled ? 'var(--woad)' : 'var(--rule)' }} />
                   <div className="flex items-start gap-2">
-                    {s.status === 'pending' ? (
-                      <Loader2 size={14} className="mt-0.5 animate-spin text-ws-accent" />
-                    ) : s.status === 'failed' ? (
-                      <AlertCircle size={14} className="mt-0.5 text-ws-danger" />
-                    ) : s.status === 'stale' ? (
-                      <AlertTriangle size={14} className="mt-0.5 text-ws-warn" />
-                    ) : (
-                      <Icon size={14} className="mt-0.5 text-ws-muted" />
-                    )}
-                    <span className="flex-1 truncate text-[12.5px]" title={s.title}>
-                      {s.title}
+                    <span className="mt-0.5 shrink-0 font-mono text-[10.5px] leading-4 text-ws-muted">
+                      {String(idx + 1).padStart(2, '0')}
                     </span>
+                    {s.status === 'pending' ? (
+                      <Loader2 size={14} className="mt-0.5 shrink-0 animate-spin text-woad" />
+                    ) : s.status === 'failed' ? (
+                      <AlertCircle size={14} className="mt-0.5 shrink-0 text-madder" />
+                    ) : s.status === 'stale' ? (
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0 text-ws-warn" />
+                    ) : (
+                      <Icon size={14} className="mt-0.5 shrink-0 text-ws-muted" />
+                    )}
+                    <button onClick={() => onOpenSource(s.id)} title={s.title}
+                      className="min-w-0 flex-1 truncate text-left text-[12.5px] text-ws-ink hover:text-woad hover:underline underline-offset-2">
+                      {s.title}
+                    </button>
                     <button onClick={() => remove(s.id)}
                       aria-label="Remove source"
-                      className="hidden text-ws-muted hover:text-ws-danger group-hover:block">
+                      className="hidden shrink-0 text-ws-muted hover:text-madder group-hover:block">
                       <Trash2 size={13} />
                     </button>
                   </div>
-                  {s.error && <p className="mt-1 text-[11px] text-ws-danger">{s.error}</p>}
+                  {s.error && <p className="mt-1 text-[11px] text-madder">{s.error}</p>}
                   {s.status === 'stale' && (
                     <div className="mt-1 flex items-center justify-between gap-2">
                       <span className="text-[11px] text-ws-warn">
-                        Index out of date — re-embed to make it searchable.
+                        Index out of date. Re-embed to make it searchable.
                       </span>
                       <button onClick={() => reingest(s.id)}
-                        className="shrink-0 rounded border border-ws-line px-1.5 py-0.5 text-[10.5px] hover:bg-ws-bg">
+                        className="shrink-0 rounded-[var(--radius-sm)] border border-ws-line px-1.5 py-0.5 text-[10.5px] hover:bg-ws-bg">
                         Re-ingest
                       </button>
                     </div>
@@ -242,9 +289,9 @@ export function SourcesPanel({ notebookId }: { notebookId: string }) {
                     <div className="mt-2 flex gap-1">
                       {MODES.map(([m, label]) => (
                         <button key={m} onClick={() => setMode(s.id, m)}
-                          className={`flex-1 rounded py-0.5 text-[10.5px] ${
+                          className={`flex-1 rounded-[var(--radius-sm)] py-0.5 text-[10.5px] ${
                             s.context_mode === m
-                              ? 'bg-ws-ink text-white'
+                              ? 'bg-ws-ink text-ws-bg'
                               : 'bg-ws-bg text-ws-muted hover:text-ws-ink'
                           }`}>
                           {label}

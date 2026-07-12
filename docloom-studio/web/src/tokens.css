@@ -1,46 +1,52 @@
-/* docloom studio UI tokens — "instrument, not admin panel".
-   Light workspace chrome; editors sit on a dark canvas so artifacts glow.
-   The full design pass (M8) refines these; components must only use tokens. */
+/* docloom studio UI tokens: "the loom". An instrument on a workbench, not an
+   admin panel. Sources are the warp (fixed, indexed); a generation is the
+   weft (one pass crossing them); a citation is a crossing. Defined once
+   here, consumed everywhere. Never hardcode a hex in a component. */
 
 :root {
-  /* workspace chrome (light) */
-  --ws-bg: #f6f5f2;
-  --ws-panel: #ffffff;
-  --ws-line: #e4e2dc;
-  --ws-ink: #191817;
-  --ws-muted: #77736b;
-  --ws-accent: #2f5af5;
-  --ws-accent-ink: #ffffff;
-  --ws-danger: #c2410c;
-  --ws-warn: #b45309;
-  --ws-ok: #0e9f6e;
+  /* -- the loom palette --------------------------------------------------- */
+  --paper: #FBFAF7;   /* app ground: a cool bond white, not cream */
+  --vellum: #F2F1EC;  /* panels, rails, inset surfaces */
+  --rule: #E3E1DA;    /* every hairline, 1px, never 2 */
+  --ink: #14161A;     /* body text, headings, primary buttons */
+  --ink-soft: #6A6E76;/* secondary text, labels */
+  --woad: #1F3D63;    /* structure: active nav, links, focus rings, warp threads */
+  --brass: #A9722C;   /* the signature: citations, the weft, one primary action per screen */
+  --madder: #9E3A26;  /* lint errors, destructive actions, failures */
 
-  /* editor canvas (dark stage) */
-  --stage-bg: #17181c;
-  --stage-line: #2a2c33;
+  /* dark editor canvas */
+  --stage: #101319;
+  --stage-rule: #262B34;
   --stage-muted: #8e93a1;
 
-  --font-display: 'Sora', system-ui, sans-serif;
-  --font-ui: 'Inter', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', Consolas, ui-monospace, monospace;
+  /* status colors outside the loom's own vocabulary; unchanged by the pass */
+  --ws-ok: #0e9f6e;
+  --ws-warn: #b45309;
 
-  --radius: 10px;
-  --radius-sm: 7px;
-  --radius-lg: 14px;
-  --shadow-panel: 0 1px 2px rgb(25 24 23 / 0.05), 0 8px 24px rgb(25 24 23 / 0.06);
-  --shadow-sm: 0 1px 2px rgb(25 24 23 / 0.06);
-  --shadow-md: 0 2px 8px rgb(25 24 23 / 0.08), 0 1px 2px rgb(25 24 23 / 0.05);
-  --shadow-lg: 0 12px 32px rgb(25 24 23 / 0.12), 0 2px 8px rgb(25 24 23 / 0.06);
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', Consolas, ui-monospace, monospace;
 
-  /* editorial type scale (1.25 minor-third), in rem */
-  --text-2xs: 0.6875rem; /* 11px */
+  --radius: 6px;    /* cards, inputs */
+  --radius-sm: 4px; /* controls */
+
+  /* one shadow, for genuinely floating things: menus, toasts, the command palette */
+  --shadow-float: 0 4px 16px rgb(20 22 26 / 0.12), 0 1px 3px rgb(20 22 26 / 0.08);
+
+  /* legacy raw aliases: a couple of pre-redesign screens still read these
+     two names directly rather than through the ws-* utility classes */
+  --ws-danger: var(--madder);
+  --shadow-panel: var(--shadow-float);
+
+  /* editorial type scale, in rem, matching DESIGN.md's display/h2/body/small/mono-label */
+  --text-2xs: 0.6875rem; /* 11px, mono-label */
   --text-xs: 0.75rem;    /* 12px */
   --text-sm: 0.8125rem;  /* 13px */
-  --text-base: 0.875rem; /* 14px */
+  --text-base: 0.875rem; /* 14px, body */
   --text-md: 1rem;       /* 16px */
-  --text-lg: 1.25rem;    /* 20px */
+  --text-lg: 1.25rem;    /* 20px, h2 */
   --text-xl: 1.5rem;     /* 24px */
-  --text-2xl: 1.875rem;  /* 30px */
+  --text-2xl: 1.75rem;   /* 28px, display */
 
   /* motion */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);

@@ -12,6 +12,11 @@ const ADD_TYPES = [
   ['bullets', 'Bullets'],
   ['quote', 'Quote'],
   ['callout', 'Callout'],
+  ['table', 'Table'],
+  ['chart', 'Chart'],
+  ['stats', 'Stats'],
+  ['image', 'Image'],
+  ['code', 'Code'],
 ] as const
 
 function citeMap(doc: Pick<DocumentT, 'sources'>): Map<string, number> {
@@ -56,6 +61,7 @@ function AddBlock({ onAdd }: { onAdd: (type: string) => void }) {
 export function EditableSlide({ slideId }: { slideId: string }) {
   const slide = useDeck((s) => s.slides[slideId])
   const sources = useDeck((s) => s.sources)
+  const editorRev = useDeck((s) => s.editorRev)
   const updateSlide = useDeck((s) => s.updateSlide)
   const updateBlock = useDeck((s) => s.updateBlock)
   const addBlock = useDeck((s) => s.addBlock)
@@ -65,10 +71,15 @@ export function EditableSlide({ slideId }: { slideId: string }) {
   if (!slide) return null
   const acc = slide.accent ? ({ '--slide-accent': slide.accent } as React.CSSProperties) : {}
 
+  // Slide.title/subtitle are plain strings in the IR (no spans), so their
+  // regions use the plain-text kit: the affordance then matches what commit
+  // actually keeps instead of silently dropping any formatting applied.
   const titleField = (
     <EditableText
       className="edit-title"
       value={slide.title ?? ''}
+      extRev={editorRev}
+      plainText
       placeholder="Slide title"
       onChange={(rt) => updateSlide(slideId, { title: asString(rt) })}
     />
@@ -81,6 +92,7 @@ export function EditableSlide({ slideId }: { slideId: string }) {
           key={b.id}
           block={b}
           citeNumbers={cites}
+          extRev={editorRev}
           onChange={(nb) => updateBlock(slideId, b.id!, nb)}
           onDelete={() => removeBlock(slideId, b.id!)}
         />
@@ -94,9 +106,9 @@ export function EditableSlide({ slideId }: { slideId: string }) {
       return (
         <div className="deck-stage layout-title" style={acc}>
           <div className="edge-bar" />
-          <h1><EditableText className="edit-h1" value={slide.title ?? ''}
+          <h1><EditableText className="edit-h1" value={slide.title ?? ''} extRev={editorRev} plainText
             onChange={(rt) => updateSlide(slideId, { title: asString(rt) })} /></h1>
-          <div className="subtitle"><EditableText value={slide.subtitle ?? ''}
+          <div className="subtitle"><EditableText value={slide.subtitle ?? ''} extRev={editorRev} plainText
             placeholder="Subtitle"
             onChange={(rt) => updateSlide(slideId, { subtitle: asString(rt) })} /></div>
         </div>
@@ -104,11 +116,57 @@ export function EditableSlide({ slideId }: { slideId: string }) {
     case 'section':
       return (
         <div className="deck-stage layout-section" style={acc}>
-          <h1><EditableText className="edit-h1" value={slide.title ?? ''}
+          <h1><EditableText className="edit-h1" value={slide.title ?? ''} extRev={editorRev} plainText
             onChange={(rt) => updateSlide(slideId, { title: asString(rt) })} /></h1>
-          <div className="subtitle"><EditableText value={slide.subtitle ?? ''}
+          <div className="subtitle"><EditableText value={slide.subtitle ?? ''} extRev={editorRev} plainText
             placeholder="Subtitle"
             onChange={(rt) => updateSlide(slideId, { subtitle: asString(rt) })} /></div>
+        </div>
+      )
+    case 'quote': {
+      const q = (slide.blocks ?? []).find((b) => b.type === 'quote')
+      return (
+        <div className="deck-stage layout-quote" style={acc}>
+          <div className="accent-bar" />
+          {q ? (
+            <>
+              <div className="quote-text">
+                <EditableText value={q.text ?? ''} extRev={editorRev}
+                  onChange={(text) => updateBlock(slideId, q.id!, { ...q, text })} />
+              </div>
+              <cite>
+                <EditableText value={q.attribution ?? ''} extRev={editorRev} plainText
+                  placeholder="Attribution"
+                  onChange={(rt) => updateBlock(slideId, q.id!, { ...q, attribution: asString(rt) })} />
+              </cite>
+            </>
+          ) : (
+            <div className="quote-text">
+              <EditableText value={slide.title ?? ''} extRev={editorRev} plainText
+                placeholder="Quote"
+                onChange={(rt) => updateSlide(slideId, { title: asString(rt) })} />
+            </div>
+          )}
+        </div>
+      )
+    }
+    case 'hero':
+      return (
+        <div className="deck-stage layout-hero" style={acc}>
+          {assetSrc(slide.image) ? (
+            <img className="hero-img" src={assetSrc(slide.image)!} alt={slide.image?.alt ?? ''} />
+          ) : (
+            <div
+              className="slot-empty"
+              style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              {slide.image?.query ? `image: ${slide.image.query}` : 'image slot'}
+            </div>
+          )}
+          <div className="hero-band">
+            <h1><EditableText className="edit-h1" value={slide.title ?? ''} extRev={editorRev} plainText
+              onChange={(rt) => updateSlide(slideId, { title: asString(rt) })} /></h1>
+          </div>
         </div>
       )
     case 'two_column':

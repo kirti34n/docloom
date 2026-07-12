@@ -18,6 +18,7 @@ const LAYOUTS = [
   ['section', 'Section'],
   ['title', 'Title'],
   ['quote', 'Quote'],
+  ['hero', 'Hero'],
   ['image_left', 'Image left'],
   ['image_right', 'Image right'],
 ] as const
@@ -67,7 +68,7 @@ export function Inspector({ themes }: { themes: StudioTheme[] }) {
     <aside className="flex w-64 shrink-0 flex-col gap-6 overflow-auto border-l border-stage-line p-4 text-white">
       {/* theme */}
       <section>
-        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stage-muted">
+        <h3 className="font-mono text-[11px] uppercase tracking-[0.08em] text-stage-muted">
           Theme
         </h3>
         <div className="mt-2 grid grid-cols-1 gap-1.5">
@@ -75,7 +76,7 @@ export function Inspector({ themes }: { themes: StudioTheme[] }) {
             <button
               key={t.name}
               onClick={() => setTheme(t.name)}
-              className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[13px] ${
+              className={`flex items-center gap-2 rounded-[var(--radius)] border px-2.5 py-2 text-left text-[13px] ${
                 t.name === themeName ? 'border-ws-accent' : 'border-stage-line'
               }`}
             >
@@ -93,13 +94,13 @@ export function Inspector({ themes }: { themes: StudioTheme[] }) {
       {slide && (
         <>
           <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stage-muted">
+            <h3 className="font-mono text-[11px] uppercase tracking-[0.08em] text-stage-muted">
               Layout
             </h3>
             <select
               value={slide.layout}
               onChange={(e) => updateSlide(slideId!, { layout: e.target.value })}
-              className="mt-2 w-full rounded-lg border border-stage-line bg-stage-bg px-2.5 py-2 text-[13px]"
+              className="mt-2 w-full rounded-[var(--radius)] border border-stage-line bg-stage-bg px-2.5 py-2 text-[13px]"
             >
               {LAYOUTS.map(([v, l]) => (
                 <option key={v} value={v}>
@@ -110,14 +111,14 @@ export function Inspector({ themes }: { themes: StudioTheme[] }) {
           </section>
 
           <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stage-muted">
+            <h3 className="font-mono text-[11px] uppercase tracking-[0.08em] text-stage-muted">
               Image
             </h3>
             <div className="mt-2 grid grid-cols-3 gap-1.5">
               <button
                 onClick={() => setImage(null)}
                 title="No image"
-                className={`flex h-12 items-center justify-center rounded border ${
+                className={`flex h-12 items-center justify-center rounded-[var(--radius-sm)] border ${
                   !currentAssetId ? 'border-ws-accent' : 'border-stage-line'
                 }`}
               >
@@ -128,7 +129,7 @@ export function Inspector({ themes }: { themes: StudioTheme[] }) {
                   key={a.id}
                   onClick={() => setImage(a.id)}
                   title={a.filename}
-                  className={`overflow-hidden rounded border-2 ${
+                  className={`overflow-hidden rounded-[var(--radius-sm)] border-2 ${
                     currentAssetId === a.id ? 'border-ws-accent' : 'border-transparent'
                   }`}
                 >
@@ -148,7 +149,7 @@ export function Inspector({ themes }: { themes: StudioTheme[] }) {
           </section>
 
           <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stage-muted">
+            <h3 className="font-mono text-[11px] uppercase tracking-[0.08em] text-stage-muted">
               Accent
             </h3>
             <div className="mt-2 flex gap-2">
@@ -175,7 +176,7 @@ export function Inspector({ themes }: { themes: StudioTheme[] }) {
           </section>
 
           <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stage-muted">
+            <h3 className="font-mono text-[11px] uppercase tracking-[0.08em] text-stage-muted">
               Speaker notes
             </h3>
             <textarea
@@ -183,23 +184,23 @@ export function Inspector({ themes }: { themes: StudioTheme[] }) {
               onChange={(e) => updateSlide(slideId!, { notes: e.target.value })}
               rows={4}
               placeholder="Only you see these…"
-              className="mt-2 w-full resize-none rounded-lg border border-stage-line bg-stage-bg px-2.5 py-2 text-[13px]"
+              className="mt-2 w-full resize-none rounded-[var(--radius)] border border-stage-line bg-stage-bg px-2.5 py-2 text-[13px]"
             />
           </section>
 
           {slideFindings.length > 0 && (
             <section>
-              <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stage-muted">
+              <h3 className="font-mono text-[11px] uppercase tracking-[0.08em] text-stage-muted">
                 Checks
               </h3>
               <ul className="mt-2 space-y-1.5">
                 {slideFindings.map((f, i) => (
                   <li
                     key={i}
-                    className={`rounded px-2 py-1.5 text-[12px] ${
+                    className={`rounded-[var(--radius-sm)] px-2 py-1.5 text-[12px] ${
                       f.severity === 'error'
-                        ? 'bg-red-500/15 text-red-300'
-                        : 'bg-amber-500/15 text-amber-300'
+                        ? 'bg-madder/15 text-[color-mix(in_srgb,var(--madder)_65%,white)]'
+                        : 'bg-ws-warn/15 text-[color-mix(in_srgb,var(--ws-warn)_65%,white)]'
                     }`}
                   >
                     {f.message}

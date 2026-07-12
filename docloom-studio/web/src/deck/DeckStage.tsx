@@ -56,15 +56,24 @@ function Body({ blocks, cites }: { blocks: Block[]; cites: Map<string, number> }
   )
 }
 
-export function SlideView({ slide, doc }: { slide: SlideT; doc: DocumentT }) {
+export function SlideView({
+  slide,
+  doc,
+  className = '',
+}: {
+  slide: SlideT
+  doc: DocumentT
+  className?: string
+}) {
   const cites = citeMap(doc)
   const blocks = slide.blocks ?? []
   const acc = accentStyle(slide.accent)
+  const stage = (extra = '') => ['deck-stage', extra, className].filter(Boolean).join(' ')
 
   switch (slide.layout) {
     case 'title':
       return (
-        <div className="deck-stage layout-title" style={acc}>
+        <div className={stage('layout-title')} style={acc}>
           <div className="edge-bar" />
           <h1>{slide.title ?? doc.title}</h1>
           {slide.subtitle && <div className="subtitle">{slide.subtitle}</div>}
@@ -77,7 +86,7 @@ export function SlideView({ slide, doc }: { slide: SlideT; doc: DocumentT }) {
       )
     case 'section':
       return (
-        <div className="deck-stage layout-section">
+        <div className={stage('layout-section')}>
           <h1>{slide.title}</h1>
           {slide.subtitle && <div className="subtitle">{slide.subtitle}</div>}
         </div>
@@ -85,7 +94,7 @@ export function SlideView({ slide, doc }: { slide: SlideT; doc: DocumentT }) {
     case 'quote': {
       const q = blocks.find((b) => b.type === 'quote')
       return (
-        <div className="deck-stage layout-quote" style={acc}>
+        <div className={stage('layout-quote')} style={acc}>
           <div className="accent-bar" />
           <div className="quote-text">{q ? plain(q.text) : slide.title}</div>
           {q?.attribution && <cite>— {q.attribution}</cite>}
@@ -94,7 +103,7 @@ export function SlideView({ slide, doc }: { slide: SlideT; doc: DocumentT }) {
     }
     case 'hero':
       return (
-        <div className="deck-stage layout-hero" style={acc}>
+        <div className={stage('layout-hero')} style={acc}>
           {usableImage(slide.image) && (
             <img className="hero-img" src={imageUrl(slide.image!.path!)} alt="" />
           )}
@@ -111,7 +120,7 @@ export function SlideView({ slide, doc }: { slide: SlideT; doc: DocumentT }) {
           ? { left: 'calc(45% + 40px)', right: '56px' }
           : { left: '56px', right: 'calc(45% + 40px)' }
       return (
-        <div className="deck-stage" style={acc}>
+        <div className={stage()} style={acc}>
           <div className={`image-pane ${side}`}>
             {usableImage(slide.image) ? (
               <img src={imageUrl(slide.image!.path!)} alt={slide.image!.alt ?? ''} />
@@ -134,7 +143,7 @@ export function SlideView({ slide, doc }: { slide: SlideT; doc: DocumentT }) {
     }
     case 'two_column':
       return (
-        <div className="deck-stage" style={acc}>
+        <div className={stage()} style={acc}>
           <TitleBand title={slide.title} accent={slide.accent} />
           <div className="slot body-flow">
             <div className="two-cols">
@@ -154,7 +163,7 @@ export function SlideView({ slide, doc }: { slide: SlideT; doc: DocumentT }) {
       )
     default:
       return (
-        <div className="deck-stage" style={acc}>
+        <div className={stage()} style={acc}>
           <TitleBand title={slide.title} accent={slide.accent} />
           <Body blocks={blocks} cites={cites} />
         </div>
@@ -188,7 +197,7 @@ export function ScaledSlide({
     return () => ro.disconnect()
   }, [])
 
-  const vars = { ...themeVars(theme), bgStyle: theme.bg_style } as React.CSSProperties
+  const vars = themeVars(theme) as React.CSSProperties
   return (
     <div
       ref={wrap}
@@ -204,9 +213,7 @@ export function ScaledSlide({
           ...vars,
         }}
       >
-        <div className={theme.bg_style === 'gradient' ? 'stage-gradient-root' : ''}>
-          <SlideView slide={slide} doc={doc} />
-        </div>
+        <SlideView slide={slide} doc={doc} className={theme.bg_style === 'gradient' ? 'bg-gradient' : ''} />
       </div>
     </div>
   )

@@ -6,12 +6,13 @@ Fetched pages are data, never instructions."""
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 
 from docloom import llm_schema, parse_llm_output
 from pydantic import BaseModel, Field
 
-from .db import execute, new_id, now
+from .db import execute, new_id, now, owner_of_notebook
 from .ingest import fetch_url, ingest_source
 from .jobs import JobCtx
 from .providers import ProviderConfig, generate_validated
@@ -34,11 +35,14 @@ Each query is what you would type into a search engine."""
 
 
 async def _search(queries: list[str]) -> list[dict]:
-    """Run ddgs for each query (in threads); dedupe by URL."""
-    from ddgs import DDGS
+    """Run ddgs for each query (concurrently, in threads); dedupe by URL.
 
-    seen: set[str] = set()
-    hits: list[dict] = []
+    Round-robins across queries instead of exhausting each in turn: appending
+    query 1's results, then query 2's, ... and only THEN truncating to
+    MAX_PAGES let the first few queries fill the whole cap, so a plan's later,
+    distinct-angle queries (the reason a plan asks for several) never
+    contributed anything at all."""
+    from ddgs import DDGS
 
     def one(q: str) -> list[dict]:
         try:
@@ -46,17 +50,28 @@ async def _search(queries: list[str]) -> list[dict]:
         except Exception:
             return []
 
-    for q in queries:
-        for r in await asyncio.to_thread(one, q):
-            url = r.get("href") or r.get("url") or ""
-            if url and url not in seen:
-                seen.add(url)
-                hits.append({"url": url, "title": r.get("title", url)[:200]})
-    return hits[:MAX_PAGES]
+    per_query = await asyncio.gather(*(asyncio.to_thread(one, q) for q in queries))
+    interleaved = (r for round_results in itertools.zip_longest(*per_query)
+                  for r in round_results if r is not None)
+
+    seen: set[str] = set()
+    hits: list[dict] = []
+    for r in interleaved:
+        if len(hits) >= MAX_PAGES:
+            break
+        url = r.get("href") or r.get("url") or ""
+        if url and url not in seen:
+            seen.add(url)
+            hits.append({"url": url, "title": r.get("title", url)[:200]})
+    return hits
 
 
 async def run_research(ctx: JobCtx, notebook_id: str, query: str) -> None:
-    cfg = ProviderConfig(**get_setting("provider.generation"))
+    # provider config is per-user (Settings saves it under the caller's
+    # user_id); without the owner, research always ran on the global
+    # default and ignored whatever the user configured
+    owner = owner_of_notebook(notebook_id)
+    cfg = ProviderConfig(**get_setting("provider.generation", owner))
 
     ctx.emit("plan", "running")
     plan: ResearchPlan = await generate_validated(

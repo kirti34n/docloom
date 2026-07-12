@@ -1,8 +1,10 @@
 import {
-  BarChart3, Clock, FileSpreadsheet, FileText, GraduationCap, HelpCircle,
-  Mic, Network, Newspaper, Presentation, Share2, Sparkles,
+  AlertCircle, BarChart3, Clock, FileSpreadsheet, FileText, GraduationCap, HelpCircle,
+  Loader2, Mic, Network, Newspaper, Presentation, Share2, Sparkles,
 } from 'lucide-react'
 import { useState } from 'react'
+import { api } from '../api/client'
+import { toast } from '../ui/toast'
 
 // NotebookLM-style one-click guides: each is a grounded generation with a
 // preset prompt (docs) or a mind map (D2 diagram).
@@ -24,6 +26,7 @@ interface ArtifactSummary {
   kind: string
   title: string
   version: number
+  status: 'building' | 'ready' | 'failed'
 }
 
 const KINDS = [
@@ -48,14 +51,30 @@ export function ArtifactsPanel({
   artifacts,
   onGenerate,
   onOpen,
+  onDeleted,
 }: {
   artifacts: ArtifactSummary[]
   onGenerate: (kind: string, prompt: string) => void
   onOpen: (a: ArtifactSummary) => void
+  onDeleted: (id: string) => void
 }) {
   const [kind, setKind] = useState<string>('deck')
   const [prompt, setPrompt] = useState('')
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const active = KINDS.find((k) => k.kind === kind)!
+
+  const deleteArtifact = async (a: ArtifactSummary) => {
+    setDeletingId(a.id)
+    try {
+      await api.del(`/api/artifacts/${a.id}`)
+      onDeleted(a.id)
+      toast.success('Artifact deleted')
+    } catch (e) {
+      toast.error(`Couldn't delete artifact: ${e instanceof Error ? e.message : e}`)
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   return (
     <div className="flex h-full w-80 shrink-0 flex-col border-l border-ws-line bg-ws-panel">
@@ -136,14 +155,40 @@ export function ArtifactsPanel({
                 const Icon = KIND_ICON[a.kind] ?? FileText
                 return (
                   <li key={a.id} style={{ ['--i' as string]: i }}>
-                    <button
-                      onClick={() => onOpen(a)}
-                      className="ds-card ds-card-hover flex w-full items-center gap-2.5 px-3 py-2.5 text-left"
-                    >
-                      <Icon size={15} className="text-ws-accent" />
-                      <span className="flex-1 truncate text-[13px]">{a.title || 'Untitled'}</span>
-                      <span className="text-[11px] text-ws-muted">v{a.version}</span>
-                    </button>
+                    {a.status === 'ready' ? (
+                      <button
+                        onClick={() => onOpen(a)}
+                        className="ds-card ds-card-hover flex w-full items-center gap-2.5 px-3 py-2.5 text-left"
+                      >
+                        <Icon size={15} className="shrink-0 text-woad" />
+                        <span className="min-w-0 flex-1 truncate text-[13px]">{a.title || 'Untitled'}</span>
+                        <span className="shrink-0 text-[11px] text-ws-muted">v{a.version}</span>
+                      </button>
+                    ) : (
+                      <div
+                        className={`ds-card flex w-full items-center gap-2.5 px-3 py-2.5 ${
+                          a.status === 'failed' ? 'border-madder/40' : ''
+                        }`}
+                      >
+                        {a.status === 'building' ? (
+                          <Loader2 size={15} className="shrink-0 animate-spin text-ws-muted" />
+                        ) : (
+                          <AlertCircle size={15} className="shrink-0 text-madder" />
+                        )}
+                        <span className="min-w-0 flex-1 truncate text-[13px] text-ws-muted">
+                          {a.status === 'building' ? 'Generating…' : a.title || 'Generation failed'}
+                        </span>
+                        {a.status === 'failed' && (
+                          <button
+                            onClick={() => deleteArtifact(a)}
+                            disabled={deletingId === a.id}
+                            className="shrink-0 rounded-[var(--radius-sm)] border border-ws-line px-1.5 py-0.5 text-[10.5px] text-madder hover:bg-ws-bg disabled:opacity-50"
+                          >
+                            {deletingId === a.id ? 'Deleting…' : 'Delete'}
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </li>
                 )
               })}

@@ -9,10 +9,29 @@ other engines can slot in later."""
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
+from typing import Any
 
 SAMPLE_RATE = 24000  # Kokoro native rate
 _GAP_SECONDS = 0.35  # pause between speakers
+
+# KPipeline construction loads model weights (a real load, not just a cheap
+# object); cache one pipeline per language so repeat synthesis -- and
+# concurrent podcast jobs -- don't reload them every call. Built lazily (only
+# once kokoro is actually available) and guarded by a lock since synthesis
+# runs off the event loop in worker threads.
+_pipelines: dict[str, Any] = {}
+_pipelines_lock = threading.Lock()
+
+
+def _get_pipeline(lang: str, KPipeline: Any) -> Any:
+    with _pipelines_lock:
+        pipeline = _pipelines.get(lang)
+        if pipeline is None:
+            pipeline = KPipeline(lang_code=lang)
+            _pipelines[lang] = pipeline
+        return pipeline
 
 
 class TtsError(RuntimeError):
@@ -44,7 +63,7 @@ def _kokoro_synthesize(script: dict, out_path: Path, cfg: dict) -> float:
     lang = cfg.get("lang", "a")  # 'a' = American English
     voices = {"A": cfg.get("voice_a", "af_heart"),
               "B": cfg.get("voice_b", "am_michael")}
-    pipeline = KPipeline(lang_code=lang)
+    pipeline = _get_pipeline(lang, KPipeline)
     gap = np.zeros(int(SAMPLE_RATE * _GAP_SECONDS), dtype=np.float32)
 
     parts: list = []

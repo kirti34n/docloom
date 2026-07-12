@@ -4,11 +4,12 @@ import json
 
 from PIL import Image, ImageDraw
 
+from _seed_common import newest_notebook
 from docloom import Document, ensure_ids
-from docloom_studio.db import execute, new_id, now, query_one
+from docloom_studio.db import execute, new_id, now
 from docloom_studio.settings import data_dir, set_setting
 
-nb = query_one("SELECT id FROM notebooks ORDER BY created DESC LIMIT 1")["id"]
+nb = newest_notebook("Assets demo")
 
 # a real gradient image so the thumbnail + slide look like a photo
 aid = new_id()

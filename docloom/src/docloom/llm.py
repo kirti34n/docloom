@@ -57,11 +57,15 @@ def _normalize_types(
         if in_blocks:
             tag = node.get("type")
             if isinstance(tag, str) and tag not in _VALID_TYPES:
-                alias = _TYPE_ALIASES.get(tag.strip().lower().replace("-", "_"))
-                if alias:
-                    node["type"] = alias
+                norm = tag.strip().lower().replace("-", "_")
+                if norm in _VALID_TYPES:
+                    node["type"] = norm
                 else:
-                    problems.append(f'{path}: unknown block type "{tag}"')
+                    alias = _TYPE_ALIASES.get(norm)
+                    if alias:
+                        node["type"] = alias
+                    else:
+                        problems.append(f'{path}: unknown block type "{tag}"')
         for key, value in node.items():
             _normalize_types(
                 value, f"{path}.{key}", problems, key in _BLOCK_LIST_KEYS
@@ -71,25 +75,9 @@ def _normalize_types(
             _normalize_types(value, f"{path}[{i}]", problems, in_blocks)
 
 
-def parse_llm_output(text: str, model: type[BaseModel] = Document) -> Any:
-    """Parse an LLM's response leniently into `model` (default Document).
-
-    Providers with enforced structured output return bare JSON, but smaller
-    or local models (and providers that silently drop the schema, as Ollama
-    does for some model families) wrap it in markdown fences or prose, add a
-    {"document": ...} envelope, or misname block type tags ("bulletlist").
-    This normalizes all of that before validating; validation itself stays
-    strict, and an unknown block type raises one clear, self-correctable
-    error instead of a cascade of union mismatches.
-    """
-    t = text.strip()
-    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", t, re.DOTALL)
-    if fenced:
-        t = fenced.group(1)
-    else:
-        start, end = t.find("{"), t.rfind("}")
-        if start != -1 and end > start:
-            t = t[start:end + 1]
+def _parse_one(t: str, model: type[BaseModel]) -> Any:
+    """Parse+validate a single JSON candidate string. Raises ValueError (or
+    lets a validation Exception through) if this candidate is not `model`."""
     try:
         data = json.loads(t)
     except json.JSONDecodeError as e:
@@ -118,6 +106,40 @@ def parse_llm_output(text: str, model: type[BaseModel] = Document) -> Any:
                 "document validation failed: " + "; ".join(filtered[:8])
             ) from e
         raise
+
+
+def parse_llm_output(text: str, model: type[BaseModel] = Document) -> Any:
+    """Parse an LLM's response leniently into `model` (default Document).
+
+    Providers with enforced structured output return bare JSON, but smaller
+    or local models (and providers that silently drop the schema, as Ollama
+    does for some model families) wrap it in markdown fences or prose, add a
+    {"document": ...} envelope, or misname block type tags ("bulletlist").
+    This normalizes all of that before validating; validation itself stays
+    strict, and an unknown block type raises one clear, self-correctable
+    error instead of a cascade of union mismatches.
+
+    A model that emits an example fence followed by the real document fence
+    (common with local models) is handled by collecting every fenced JSON
+    candidate (matched non-greedily, so each fence is isolated instead of
+    spanning from the first candidate's { to the last candidate's }) and
+    returning the first one that actually validates.
+    """
+    t = text.strip()
+    candidates = [
+        m.group(1)
+        for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", t, re.DOTALL)
+    ]
+    if not candidates:
+        start, end = t.find("{"), t.rfind("}")
+        candidates = [t[start:end + 1]] if start != -1 and end > start else [t]
+
+    for candidate in candidates[:-1]:
+        try:
+            return _parse_one(candidate, model)
+        except Exception:
+            continue  # try the next candidate; the last one's error wins
+    return _parse_one(candidates[-1], model)
 
 
 def _filter_union_errors(data: Any, exc: Exception) -> list[str]:

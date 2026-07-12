@@ -28,16 +28,25 @@ def _load():
     global _fernet, _loaded
     if _loaded:
         return _fernet
-    _loaded = True
     try:
         from cryptography.fernet import Fernet
     except ImportError:  # pragma: no cover - cryptography is a core dep
         _fernet = None
+        _loaded = True
         return None
 
     key = os.environ.get("DOCLOOM_SECRET_KEY", "").strip()
     if key:
-        _fernet = Fernet(key.encode())
+        try:
+            _fernet = Fernet(key.encode())
+        except Exception as e:
+            # _loaded stays False: raise again on every call instead of
+            # marking loaded here and silently falling back to plaintext
+            # storage (encrypt()/decrypt() treat "_load() returns None" as
+            # "no key backend available", which downgrades every secret to
+            # plaintext) the very next time _load() is called.
+            raise ValueError(f"DOCLOOM_SECRET_KEY is not a valid Fernet key: {e}") from e
+        _loaded = True
         return _fernet
 
     key_path = data_dir() / "secret.key"
@@ -51,6 +60,7 @@ def _load():
         except OSError:  # pragma: no cover - non-POSIX filesystems
             pass
         _fernet = Fernet(new_key)
+    _loaded = True
     return _fernet
 
 

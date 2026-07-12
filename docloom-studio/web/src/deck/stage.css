@@ -441,6 +441,28 @@
   color: var(--text);
 }
 
+/* line / area / scatter previews (chart-plot/chart-bar above are column/bar) */
+.chart-svg {
+  width: 100%;
+  height: 240px;
+  display: block;
+  overflow: visible;
+}
+.chart-plot-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  padding: 0 4px;
+}
+
+/* pie / donut preview: a ring built from stacked circle strokes */
+.chart-pie {
+  display: block;
+  width: 200px;
+  height: 200px;
+  margin: 0 auto;
+}
+
 /* inline richtext */
 .rt-code {
   font-family: var(--font-mono, monospace);

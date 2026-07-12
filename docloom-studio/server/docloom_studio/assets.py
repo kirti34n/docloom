@@ -23,6 +23,7 @@ router = APIRouter(prefix="/api", tags=["assets"])
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
 FONT_EXT = {".ttf", ".otf", ".woff", ".woff2"}
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
 def _asset_dir(asset_id: str):
@@ -55,7 +56,11 @@ async def upload_asset(
     file: UploadFile, type: str = Form("image"), tags: str = Form(""),
     user: dict = Depends(current_user),
 ) -> dict:
-    name = file.filename or "asset"
+    # basename only: strip any directory components (both separators) so a
+    # crafted filename like "../../evil" cannot escape the asset directory
+    name = (file.filename or "asset").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not name or name in (".", ".."):
+        name = "asset"
     ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
     if type == "font" and ext not in FONT_EXT:
         raise HTTPException(400, "not a font file")
@@ -64,8 +69,24 @@ async def upload_asset(
 
     aid = new_id()
     dest = _asset_dir(aid) / name
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    # stream to disk with a hard size cap so an oversized upload is rejected
+    # without buffering the whole file in memory
+    written = 0
+    try:
+        with dest.open("wb") as f:
+            while True:
+                block = await file.read(1024 * 1024)
+                if not block:
+                    break
+                written += len(block)
+                if written > MAX_UPLOAD_BYTES:
+                    f.close()
+                    shutil.rmtree(_asset_dir(aid), ignore_errors=True)
+                    raise HTTPException(
+                        413, f"file exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit")
+                f.write(block)
+    except HTTPException:
+        raise
     execute(
         "INSERT INTO assets (id, type, filename, tags, user_id, created) "
         "VALUES (?, ?, ?, ?, ?, ?)", (aid, type, name, tags, user["id"], now()),
@@ -139,6 +160,7 @@ def resolve_image(query: str, user_id: str | None) -> str | None:
 # ----------------------------------------------------------------- brand kit
 
 class BrandKit(BaseModel):
+    primary: str | None = None
     accent: str | None = None
     logo_asset_id: str | None = None
     # Optional brand fonts. *_family is the font's name (what renderers set on
@@ -185,15 +207,21 @@ async def put_brand(body: BrandKit, user: dict = Depends(current_user)) -> dict:
 
 
 def apply_brand(theme_json: dict, user_id: str | None) -> dict:
-    """Overlay the user's active brand (accent + fonts) onto a theme's tokens.
+    """Overlay the user's active brand (primary, accent, fonts) onto a theme's
+    tokens. Each token is only overridden if the user actually set it, so an
+    unset primary keeps the theme's own (a brand accent must never also stand
+    in for primary, or every theme collapses to one flat color).
 
     Font families set the renderer-facing name; a matching uploaded font file
     is threaded through as *_src so self-contained/font-path renderers embed
     the real font (HTML @font-face, PDF font path)."""
     brand = active_brand(user_id)
+    primary = brand.get("primary")
+    if primary:
+        theme_json = {**theme_json, "primary": primary}
     accent = brand.get("accent")
     if accent:
-        theme_json = {**theme_json, "primary": accent, "accent": accent}
+        theme_json = {**theme_json, "accent": accent}
     heading_family = brand.get("heading_family")
     if heading_family:
         theme_json = {**theme_json, "font_heading": heading_family}

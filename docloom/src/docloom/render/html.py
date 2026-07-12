@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import chart_svg
 from ..ir import (
     Artifact,
     Block,
@@ -77,6 +78,7 @@ figure img{max-width:100%;height:auto}
 figcaption{color:var(--muted);font-size:.85rem;margin-top:.35rem}
 hr{border:none;border-top:1px solid var(--surface);margin:2rem 0}
 .chart-title{font-weight:600;margin:1.25rem 0 .25rem}
+svg.docloom-chart{max-width:100%;height:auto;display:block;margin:0 auto}
 .stats{display:flex;flex-wrap:wrap;gap:1rem;margin:1.25rem 0}
 .stat{flex:1 1 10rem;background:var(--surface);border-radius:6px;padding:.85rem 1.1rem}
 .stat .value{font-size:1.5rem;font-weight:700;color:var(--primary);line-height:1.2}
@@ -258,11 +260,17 @@ def _figure_html(path: str | None, alt: str, caption: str | None) -> str:
     return out + "</figure>"
 
 
-def _chart_html(b: Chart, numbers: dict[str, int]) -> str:
+def _chart_html(b: Chart, numbers: dict[str, int], theme: Theme) -> str:
     embedded = _figure_html(b.path, b.title or "chart", b.caption)
     if embedded:
         return embedded
-    # no rendered image: accessible data-table fallback (series x labels)
+    svg = chart_svg.render_svg(b, theme)  # self-contained: inline it directly
+    if svg:
+        out = f"<figure>{svg}"
+        if b.caption:
+            out += f"<figcaption>{_esc(b.caption)}</figcaption>"
+        return out + "</figure>"
+    # no data to paint: accessible data-table fallback (series x labels)
     header, rows = normalize_table(
         [""] + list(b.labels),
         [[s.name] + ["" if v is None else f"{v:g}" for v in s.values]
@@ -287,7 +295,7 @@ def _stats_html(b: StatRow) -> str:
     return f'<div class="stats">{"".join(cards)}</div>'
 
 
-def _block_html(b: Block, numbers: dict[str, int]) -> str:
+def _block_html(b: Block, numbers: dict[str, int], theme: Theme) -> str:
     if isinstance(b, Heading):
         tag = f"h{min(b.level + 1, 5)}"
         return f"<{tag}>{_rt(b.text, numbers)}</{tag}>"
@@ -310,7 +318,7 @@ def _block_html(b: Block, numbers: dict[str, int]) -> str:
     if isinstance(b, Image):
         return _figure_html(b.path, b.alt, b.caption)
     if isinstance(b, Chart):
-        return _chart_html(b, numbers)
+        return _chart_html(b, numbers, theme)
     if isinstance(b, StatRow):
         return _stats_html(b)
     if isinstance(b, Artifact):
@@ -353,7 +361,11 @@ def _sheet_html(sheet: Sheet) -> str:
 def _sources_html(doc: Document) -> str:
     numbers = source_numbers(doc)
     parts = ['<section><h2>Sources</h2><ol class="sources">']
+    seen: set[str] = set()
     for src in doc.sources:
+        if src.id in seen:  # duplicate id: numbers keeps the first, so skip the rest
+            continue
+        seen.add(src.id)
         line = _esc(src.title)
         if src.publisher:
             line += f", {_esc(src.publisher)}"
@@ -380,7 +392,7 @@ def to_html(doc: Document, theme: Theme) -> str:
         parts.append(f'<p class="meta">{_esc(meta)}</p>')
     parts.append("</header>")
     for b in report_blocks(doc):
-        rendered = _block_html(b, numbers)
+        rendered = _block_html(b, numbers, theme)
         if rendered:
             parts.append(rendered)
     if doc.sheets:

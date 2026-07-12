@@ -9,9 +9,11 @@ from urllib.parse import urlsplit
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData, XyChartData
 from pptx.dml.color import RGBColor
-from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION
+from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION, XL_LEGEND_POSITION
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
+from pptx.oxml import parse_xml
+from pptx.oxml.ns import nsdecls, qn
 from pptx.util import Inches, Pt
 
 from ..ir import (
@@ -38,7 +40,7 @@ from ..ir import (
     source_numbers,
     spans,
 )
-from ..theme import Theme, hex_to_rgb
+from ..theme import Theme, contrast_ratio, hex_to_rgb
 from . import RenderError
 
 # Geometry/typography constants, exported as plain data for the web app.
@@ -46,7 +48,7 @@ LAYOUT = {
     "slide_w_in": 13.333,
     "slide_h_in": 7.5,
     "margin_in": 0.6,
-    "gap_in": 0.14,
+    "gap_in": 0.16,
     "title_pt": 26,
     "body_pt": 14,
     "hero_title_pt": 36,
@@ -63,18 +65,22 @@ MARGIN = LAYOUT["margin_in"]
 GAP = LAYOUT["gap_in"]
 MONO = "Consolas"
 BODY_PT = LAYOUT["body_pt"]
-HEAD_PT = {1: 20, 2: 18, 3: 16, 4: 14}
-# Set by _body for the duration of one slide's body render: a >1.0 factor grows
-# text on an underfull slide so it fills the space instead of floating small.
-_BODY_SCALE = 1.0
+HEAD_PT = {1: 22, 2: 19, 3: 17, 4: 15}
+LIST_ITEM_GAP_PT = 6  # space_after below each bullet/numbered item
 GROW_CAP = 1.7
+# Block types whose font size the underfull-slide grow pass in _body scales;
+# everything else (quotes, tables, charts, ...) keeps its natural size.
+_GROWABLE_BLOCKS = (Heading, Paragraph, BulletList, NumberedList, Callout)
+TABLE_PT = 12  # preferred row font size, shrunk toward TABLE_MIN_PT to fit
+TABLE_MIN_PT = 9
+TABLE_VPAD = 0.06  # matches the cell.margin_top + cell.margin_bottom set below
 CHART_TYPE = {
     "bar": XL_CHART_TYPE.BAR_CLUSTERED,
     "column": XL_CHART_TYPE.COLUMN_CLUSTERED,
     "line": XL_CHART_TYPE.LINE_MARKERS,
     "area": XL_CHART_TYPE.AREA,
     "pie": XL_CHART_TYPE.PIE,
-    "scatter": XL_CHART_TYPE.XY_SCATTER_LINES,
+    "scatter": XL_CHART_TYPE.XY_SCATTER,
 }
 CALLOUT_EDGE = {"info": "primary", "success": "accent", "warning": "muted", "danger": "text"}
 _SAFE_SCHEMES = {"http", "https", "mailto"}  # matches html.py
@@ -117,16 +123,59 @@ def _series_palette(theme: Theme) -> list[str]:
     ]
 
 
+def _label_fg(fill: str, theme: Theme) -> str:
+    """theme.background or theme.text, whichever contrasts more with `fill`,
+    so a data label stays legible on light and dark slice colors alike."""
+    if contrast_ratio(theme.background, fill) >= contrast_ratio(theme.text, fill):
+        return theme.background
+    return theme.text
+
+
+def _hide_chart_border(chart) -> None:
+    """No python-pptx API exposes the chart-area outline; drop to the
+    underlying chartSpace XML, the same technique the citation superscript in
+    _runs uses. A styling hiccup here must never skip the rest of the theme
+    styling, so failures are swallowed locally."""
+    try:
+        chartSpace = chart._chartSpace
+        if chartSpace.find(qn("c:spPr")) is not None:
+            return
+        spPr = parse_xml(
+            "<c:spPr %s><a:ln><a:noFill/></a:ln></c:spPr>" % nsdecls("c", "a")
+        )
+        chartSpace.find(qn("c:chart")).addnext(spPr)
+    except Exception:
+        pass
+
+
+def _style_axes(chart, theme: Theme) -> None:
+    """Recolor axis lines, gridlines, and tick labels on-brand instead of
+    Office's default gray. Callers only reach this for chart types that have
+    axes (pie does not)."""
+    for axis in (chart.category_axis, chart.value_axis):
+        axis.format.line.fill.background()  # no axis line, just tick labels
+        axis.tick_labels.font.size = Pt(10)
+        axis.tick_labels.font.name = theme.font_body
+        axis.tick_labels.font.color.rgb = _rgb(theme.muted)
+    if chart.value_axis.has_major_gridlines:
+        gl = chart.value_axis.major_gridlines.format.line
+        gl.color.rgb = _rgb(_tint(theme.muted, 0.65))
+        gl.width = Pt(0.75)
+
+
 def _style_chart(chart, b: Chart, theme: Theme) -> None:
-    """Recolor a native chart from the theme palette and add tidy data labels.
+    """Recolor a native chart from the theme palette and add tidy data
+    labels, on-brand gridlines/legend, and no default Office chrome.
     Best-effort: callers wrap this so a styling hiccup never drops the chart."""
     palette = _series_palette(theme)
     plot = chart.plots[0]
+    _hide_chart_border(chart)
     if b.chart == "pie":
         ser = plot.series[0]
+        fills = [palette[i % len(palette)] for i in range(len(ser.points))]
         for i, pt in enumerate(ser.points):
             pt.format.fill.solid()
-            pt.format.fill.fore_color.rgb = _rgb(palette[i % len(palette)])
+            pt.format.fill.fore_color.rgb = _rgb(fills[i])
         plot.has_data_labels = True
         dl = plot.data_labels
         dl.show_percentage = True
@@ -135,33 +184,43 @@ def _style_chart(chart, b: Chart, theme: Theme) -> None:
         dl.number_format_is_linked = False
         dl.font.size = Pt(10)
         dl.font.bold = True
-        dl.font.color.rgb = _rgb(theme.background)
-        return
-    for i, ser in enumerate(plot.series):
-        color = _rgb(palette[i % len(palette)])
-        if b.chart == "line":
-            ser.format.line.color.rgb = color
-            ser.format.line.width = Pt(2.25)
-        elif b.chart == "scatter":
-            ser.marker.format.fill.solid()
-            ser.marker.format.fill.fore_color.rgb = color
-            ser.format.line.color.rgb = color
-        else:  # column, bar, area
-            ser.format.fill.solid()
-            ser.format.fill.fore_color.rgb = color
-    # value labels only when uncluttered (<=2 series of bars/columns)
-    if b.chart in ("column", "bar") and len(b.series) <= 2:
-        plot.has_data_labels = True
-        dl = plot.data_labels
-        dl.number_format = "General"  # 58 not "58." (a trailing-dot glitch)
-        dl.number_format_is_linked = False
-        dl.font.size = Pt(11)
-        dl.font.bold = True
-        dl.font.color.rgb = _rgb(theme.text)
-        try:
-            dl.position = XL_LABEL_POSITION.OUTSIDE_END
-        except (ValueError, NotImplementedError):
-            pass
+        for i, pt in enumerate(ser.points):
+            lf = pt.data_label.font
+            lf.size = Pt(10)
+            lf.bold = True
+            lf.color.rgb = _rgb(_label_fg(fills[i], theme))
+    else:
+        for i, ser in enumerate(plot.series):
+            color = _rgb(palette[i % len(palette)])
+            if b.chart == "line":
+                ser.format.line.color.rgb = color
+                ser.format.line.width = Pt(2.25)
+            elif b.chart == "scatter":
+                ser.marker.format.fill.solid()
+                ser.marker.format.fill.fore_color.rgb = color
+            else:  # column, bar, area
+                ser.format.fill.solid()
+                ser.format.fill.fore_color.rgb = color
+        # value labels only when uncluttered (<=2 series of bars/columns)
+        if b.chart in ("column", "bar") and len(b.series) <= 2:
+            plot.has_data_labels = True
+            dl = plot.data_labels
+            dl.number_format = "General"  # 58 not "58." (a trailing-dot glitch)
+            dl.number_format_is_linked = False
+            dl.font.size = Pt(11)
+            dl.font.bold = True
+            dl.font.color.rgb = _rgb(theme.text)
+            try:
+                dl.position = XL_LABEL_POSITION.OUTSIDE_END
+            except (ValueError, NotImplementedError):
+                pass
+        _style_axes(chart, theme)
+    if chart.has_legend:
+        leg = chart.legend
+        leg.position = XL_LEGEND_POSITION.BOTTOM
+        leg.font.size = Pt(11)
+        leg.font.name = theme.font_body
+        leg.font.color.rgb = _rgb(theme.text)
 
 
 def _box(slide, x: float, y: float, w: float, h: float):
@@ -230,22 +289,25 @@ def _line_h(size: float) -> float:
 def _text_block(
     slide, rt, theme, numbers, x, y, w, max_h,
     size=BODY_PT, color=None, font=None, bold=False, italic=False, indent=0.0,
+    scale=1.0,
 ) -> float:
     color = color or theme.text
     font = font or theme.font_body
-    size = size * _BODY_SCALE
+    size = size * scale
     h = min(max_h, _est_lines(plain(rt), size, w - indent) * _line_h(size))
     tf = _box(slide, x + indent, y, w - indent, h)
     _runs(tf.paragraphs[0], rt, theme, numbers, size, color, font, bold, italic)
     return h
 
 
-def _list_block(slide, b, theme, numbers, x, y, w, max_h, ordered: bool) -> float:
-    bp = BODY_PT * _BODY_SCALE
+def _list_block(slide, b, theme, numbers, x, y, w, max_h, ordered: bool,
+                scale: float = 1.0) -> float:
+    bp = BODY_PT * scale
+    item_gap = LIST_ITEM_GAP_PT / 72 * scale
     est = sum(
         _est_lines(plain(it.text), bp, w - 0.35 * (it.level + 1))
         * _line_h(bp)
-        + 0.05 * _BODY_SCALE
+        + item_gap
         for it in b.items
     )
     h = min(max_h, est)
@@ -253,7 +315,7 @@ def _list_block(slide, b, theme, numbers, x, y, w, max_h, ordered: bool) -> floa
     counters: dict[int, int] = {}
     for i, it in enumerate(b.items):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-        p.space_after = Pt(4)
+        p.space_after = Pt(LIST_ITEM_GAP_PT)
         pPr = p._p.get_or_add_pPr()
         pPr.set("marL", str(Inches(0.35 * (it.level + 1))))
         pPr.set("indent", str(-Inches(0.25)))
@@ -303,12 +365,37 @@ def _code_block(slide, b, theme, x, y, w, max_h) -> float:
     return h
 
 
+def _table_row_h(size: float) -> float:
+    """The real minimum row height PowerPoint will honor for a run at `size`
+    with the cell top/bottom margins set below: text height plus padding."""
+    return _line_h(size) + TABLE_VPAD
+
+
 def _table_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
     header, rows = normalize_table(b.header, b.rows)
     cols = max(len(header), 1)
-    n_rows = len(rows) + 1
     tw = min(w, max(3.0, cols * 2.5))
-    row_h = min(0.36, max_h / n_rows)
+    cap_h = 0.26 if b.caption else 0.0
+    budget = max(_table_row_h(TABLE_MIN_PT), max_h - cap_h)
+
+    # shrink the font (down to a floor) until every row fits at that size,
+    # since row height is tied to what the font actually needs, not an
+    # independent division PowerPoint won't honor
+    size = TABLE_PT
+    while size > TABLE_MIN_PT and _table_row_h(size) * (len(rows) + 1) > budget:
+        size -= 1
+    row_h = _table_row_h(size)
+
+    # still too many rows at the floor size: cap the count and add a visible
+    # "+N more rows" notice instead of silently overflowing the slide
+    room = max(1, int(budget / row_h))
+    more = 0
+    if len(rows) + 1 > room:
+        keep = max(0, room - 2)  # header row + the notice row both cost a slot
+        more = len(rows) - keep
+        rows = rows[:keep]
+
+    n_rows = len(rows) + 1 + (1 if more else 0)
     th = n_rows * row_h
     frame = slide.shapes.add_table(
         n_rows, cols, Inches(x), Inches(y), Inches(tw), Inches(th)
@@ -320,7 +407,7 @@ def _table_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
         tbl.columns[c].width = Inches(tw / cols)
     for r in range(n_rows):
         tbl.rows[r].height = Inches(row_h)
-    for r in range(n_rows):
+    for r in range(len(rows) + 1):
         cells = header if r == 0 else rows[r - 1]
         fill = theme.primary if r == 0 else (theme.background if r % 2 else theme.surface)
         color = theme.background if r == 0 else theme.text
@@ -334,8 +421,23 @@ def _table_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
             if c < len(cells):
                 _runs(
                     cell.text_frame.paragraphs[0], cells[c], theme, numbers,
-                    12, color, theme.font_body, bold=(r == 0),
+                    size, color, theme.font_body, bold=(r == 0),
                 )
+    if more:
+        r = n_rows - 1
+        note = tbl.cell(r, 0)
+        if cols > 1:
+            note.merge(tbl.cell(r, cols - 1))
+        note.fill.solid()
+        note.fill.fore_color.rgb = _rgb(theme.surface)
+        note.vertical_anchor = MSO_ANCHOR.MIDDLE
+        note.margin_left = note.margin_right = Inches(0.08)
+        note.margin_top = note.margin_bottom = Inches(0.03)
+        _runs(
+            note.text_frame.paragraphs[0],
+            f"+ {more} more row{'s' if more != 1 else ''}",
+            theme, numbers, size, theme.muted, theme.font_body, italic=True,
+        )
     h = th
     if b.caption and h + 0.26 <= max_h:
         tf = _box(slide, x, y + h + 0.04, tw, 0.22)
@@ -347,8 +449,9 @@ def _table_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
     return h
 
 
-def _callout_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
-    size, pad, edge_w = 13 * _BODY_SCALE, 0.14, 0.08
+def _callout_block(slide, b, theme, numbers, x, y, w, max_h,
+                   scale: float = 1.0) -> float:
+    size, pad, edge_w = 13 * scale, 0.14, 0.08
     est = _est_lines(plain(b.text), size, w - edge_w - 2 * pad) * _line_h(size) + 2 * pad
     h = min(max_h, est)
     _rect(slide, x, y, w, h, theme.surface)
@@ -455,6 +558,8 @@ def _chart_block(slide, b: Chart, theme, numbers, x, y, w, max_h) -> float:
         if b.chart == "pie" or len(b.series) > 1:
             chart.has_legend = True
             chart.legend.include_in_layout = False
+        else:
+            chart.has_legend = False
         try:
             _style_chart(chart, b, theme)
         except Exception:
@@ -513,21 +618,24 @@ def _stats_block(slide, b: StatRow, theme, x, y, w, max_h) -> float:
             ty += 0.28
         if st.delta and ty + 0.2 <= y + h:
             tf = _box(slide, cx + pad, ty, cw - 2 * pad, 0.2)
-            _runs(tf.paragraphs[0], st.delta, theme, {}, 10, theme.accent, theme.font_body)
+            delta_color = theme.muted if st.delta.strip().startswith("-") else theme.accent
+            _runs(tf.paragraphs[0], st.delta, theme, {}, 10, delta_color, theme.font_body)
     return h
 
 
-def _block(slide, b: Block, theme, numbers, x, y, w, max_h) -> float:
+def _block(slide, b: Block, theme, numbers, x, y, w, max_h,
+          scale: float = 1.0) -> float:
     if isinstance(b, Heading):
         return _text_block(
             slide, b.text, theme, numbers, x, y, w, max_h,
-            size=HEAD_PT[b.level], font=theme.font_heading, bold=True,
+            size=HEAD_PT[b.level], font=theme.font_heading, bold=True, scale=scale,
         )
     if isinstance(b, Paragraph):
-        return _text_block(slide, b.text, theme, numbers, x, y, w, max_h)
+        return _text_block(slide, b.text, theme, numbers, x, y, w, max_h, scale=scale)
     if isinstance(b, (BulletList, NumberedList)):
         return _list_block(
-            slide, b, theme, numbers, x, y, w, max_h, isinstance(b, NumberedList)
+            slide, b, theme, numbers, x, y, w, max_h, isinstance(b, NumberedList),
+            scale=scale,
         )
     if isinstance(b, Quote):
         return _quote_block(slide, b, theme, numbers, x, y, w, max_h)
@@ -536,7 +644,7 @@ def _block(slide, b: Block, theme, numbers, x, y, w, max_h) -> float:
     if isinstance(b, Table):
         return _table_block(slide, b, theme, numbers, x, y, w, max_h)
     if isinstance(b, Callout):
-        return _callout_block(slide, b, theme, numbers, x, y, w, max_h)
+        return _callout_block(slide, b, theme, numbers, x, y, w, max_h, scale=scale)
     if isinstance(b, Image):
         return _image_block(slide, b, theme, x, y, w, max_h)
     if isinstance(b, Chart):
@@ -556,18 +664,23 @@ def _block(slide, b: Block, theme, numbers, x, y, w, max_h) -> float:
     raise RenderError(f"unhandled block type {type(b).__name__}")
 
 
-def _natural_h(b: Block, w: float) -> float:
+def _natural_h(b: Block, w: float, scale: float = 1.0) -> float:
     """Estimate a block's natural (unclamped) height in inches, so _body can
-    tell when a slide is underfull and rebalance the whitespace."""
+    tell when a slide is underfull and rebalance the whitespace. `scale`
+    mirrors the font-size growth _block applies for the same block types, so
+    the grow pass can verify a candidate scale against this same formula."""
     if isinstance(b, Heading):
-        s = HEAD_PT[b.level]
+        s = HEAD_PT[b.level] * scale
         return _est_lines(plain(b.text), s, w) * _line_h(s)
     if isinstance(b, Paragraph):
-        return _est_lines(plain(b.text), BODY_PT, w) * _line_h(BODY_PT)
+        s = BODY_PT * scale
+        return _est_lines(plain(b.text), s, w) * _line_h(s)
     if isinstance(b, (BulletList, NumberedList)):
+        s = BODY_PT * scale
+        item_gap = LIST_ITEM_GAP_PT / 72 * scale
         return sum(
-            _est_lines(plain(it.text), BODY_PT, w - 0.35 * (it.level + 1))
-            * _line_h(BODY_PT) + 0.05
+            _est_lines(plain(it.text), s, w - 0.35 * (it.level + 1))
+            * _line_h(s) + item_gap
             for it in b.items
         )
     if isinstance(b, Quote):
@@ -577,9 +690,10 @@ def _natural_h(b: Block, w: float) -> float:
         return len(b.code.split("\n")) * _line_h(12) + 0.24
     if isinstance(b, Table):
         _, rows = normalize_table(b.header, b.rows)
-        return (len(rows) + 1) * 0.36 + (0.26 if b.caption else 0.0)
+        return (len(rows) + 1) * _table_row_h(TABLE_PT) + (0.26 if b.caption else 0.0)
     if isinstance(b, Callout):
-        return _est_lines(plain(b.text), 13, w - 0.08 - 0.28) * _line_h(13) + 0.28
+        s = 13 * scale
+        return _est_lines(plain(b.text), s, w - 0.08 - 0.28) * _line_h(s) + 0.28
     if isinstance(b, StatRow):
         return LAYOUT["stat_card_h_in"] if b.items else 0.0
     if isinstance(b, Chart):
@@ -590,31 +704,64 @@ def _natural_h(b: Block, w: float) -> float:
         return 4.6 if (b.path and Path(b.path).is_file()) else 0.0
     if isinstance(b, Divider):
         return 0.14
-    return _line_h(BODY_PT)
+    return _line_h(BODY_PT * scale)
 
 
-def _body(slide, blocks: list[Block], theme, numbers, x, y, w) -> float:
+def _grow_scale(blocks: list[Block], w: float, avail: float) -> float:
+    """The underfull-slide grow factor for laying `blocks` out in `avail`
+    inches: how much to scale up text-block font sizes so sparse content
+    fills the space instead of floating small in the top third.
+
+    Rendered height grows ~quadratically with font size (see _est_lines'
+    chars-per-line and _line_h), so the candidate is a sqrt closed form, then
+    verified with the same _natural_h formula the renderer uses and clamped
+    down until every block actually fits: a block that fits at scale 1.0 must
+    never be dropped by this feature."""
+    if not blocks:
+        return 1.0
+    n = len(blocks)
+    nat = [max(0.0, _natural_h(b, w)) for b in blocks]
+    text_h = sum(h for b, h in zip(blocks, nat) if isinstance(b, _GROWABLE_BLOCKS))
+    fixed_h = sum(nat) - text_h
+    total = sum(nat) + GAP * (n - 1)
+    if not (total < avail * 0.65 and text_h > 0.2):
+        return 1.0
+    target = avail * 0.80 - fixed_h - GAP * (n - 1)
+    candidate = (target / text_h) ** 0.5 if target > 0 else 1.0
+    scale = max(1.0, min(GROW_CAP, candidate))
+    for _ in range(20):  # bounded: at most (GROW_CAP - 1) / 0.05 steps
+        scaled_text_h = sum(
+            _natural_h(b, w, scale) for b in blocks if isinstance(b, _GROWABLE_BLOCKS)
+        )
+        if scale <= 1.0 or scaled_text_h + fixed_h + GAP * (n - 1) <= avail:
+            return scale
+        scale = max(1.0, round(scale - 0.05, 2))
+    return scale
+
+
+def _body(slide, blocks: list[Block], theme, numbers, x, y, w,
+         scale: float | None = None) -> float:
     """Lay body blocks into [y, slide bottom]. When the content is sparse,
     distribute the slack (bigger inter-block gaps) and vertically center it at
-    an optical-center bias, so slides don't plant everything in the top third."""
-    global _BODY_SCALE
+    an optical-center bias, so slides don't plant everything in the top third.
+
+    `scale` grows text-block font sizes on an underfull slide; pass an
+    explicit value to share one scale across multiple columns of a slide
+    (two_column does), otherwise it is computed from `blocks` alone."""
     bottom = SLIDE_H - MARGIN
     if not blocks:
         return y
     avail = bottom - y
     n = len(blocks)
-    is_text = (Heading, Paragraph, BulletList, NumberedList, Callout)
     nat = [max(0.0, _natural_h(b, w)) for b in blocks]
-    text_h = sum(h for b, h in zip(blocks, nat) if isinstance(b, is_text))
+    text_h = sum(h for b, h in zip(blocks, nat) if isinstance(b, _GROWABLE_BLOCKS))
     fixed_h = sum(nat) - text_h
-    total = sum(nat) + GAP * (n - 1)
-
-    # Underfull: grow the text blocks toward an 80% fill target (capped), so a
-    # sparse slide doesn't leave the bottom half blank.
-    scale = 1.0
-    if total < avail * 0.65 and text_h > 0.2:
-        scale = max(1.0, min(GROW_CAP, (avail * 0.80 - fixed_h) / text_h))
-    scaled_total = text_h * scale + fixed_h + GAP * (n - 1)
+    if scale is None:
+        scale = _grow_scale(blocks, w, avail)
+    scaled_text_h = text_h if scale <= 1.0 else sum(
+        _natural_h(b, w, scale) for b in blocks if isinstance(b, _GROWABLE_BLOCKS)
+    )
+    scaled_total = scaled_text_h + fixed_h + GAP * (n - 1)
 
     gap, y0 = GAP, y
     if 0 < scaled_total < avail:  # distribute residual slack + optical-center
@@ -624,16 +771,12 @@ def _body(slide, blocks: list[Block], theme, numbers, x, y, w) -> float:
         used = scaled_total + extra_gap * (n - 1)
         y0 = y + max(0.0, (avail - used) * 0.42)
 
-    _BODY_SCALE = scale
-    try:
-        yy = y0
-        for b in blocks:
-            remaining = bottom - yy
-            if remaining < 0.3:
-                break  # ponytail: overflow blocks dropped; paginate if decks need it
-            yy += _block(slide, b, theme, numbers, x, yy, w, remaining) + gap
-    finally:
-        _BODY_SCALE = 1.0
+    yy = y0
+    for b in blocks:
+        remaining = bottom - yy
+        if remaining < 0.3:
+            break  # ponytail: overflow blocks dropped; paginate if decks need it
+        yy += _block(slide, b, theme, numbers, x, yy, w, remaining, scale) + gap
     return yy
 
 
@@ -685,31 +828,41 @@ def _title_band(
     if not title:
         return MARGIN
     w = SLIDE_W - x - MARGIN if w is None else w
-    tf = _box(slide, x, 0.42, w, 0.62)
+    top, min_h, size = 0.42, 0.62, LAYOUT["title_pt"]
+    box_h = max(min_h, _est_lines(title, size, w) * _line_h(size))
+    tf = _box(slide, x, top, w, box_h)
     _runs(
         tf.paragraphs[0], title, theme, {},
-        LAYOUT["title_pt"], theme.text, theme.font_heading, bold=True,
+        size, theme.text, theme.font_heading, bold=True,
     )
-    _rect(slide, x, 1.14, w, 0.028, accent or theme.primary)
-    return 1.42
+    rule_y = top + box_h + 0.10
+    _rect(slide, x, rule_y, w, 0.028, accent or theme.primary)
+    return rule_y + 0.028 + 0.252
 
 
 def _title_slide(slide, s: Slide, doc: Document, theme: Theme, accent: str) -> None:
     _rect(slide, 0, 0, 0.3, SLIDE_H, accent)
     if _usable_image(s.image):  # brand logo (or any title-slide image) → corner
         _logo(slide, s.image)
-    tf = _box(slide, 1.1, 2.5, SLIDE_W - 1.1 - MARGIN, 1.4)
+    tx, ty, title_pt = 1.1, 2.5, 40
+    tw = SLIDE_W - tx - MARGIN
+    title_text = s.title or doc.title
+    title_h = max(1.4, _est_lines(title_text, title_pt, tw) * _line_h(title_pt))
+    tf = _box(slide, tx, ty, tw, title_h)
     _runs(
-        tf.paragraphs[0], s.title or doc.title, theme, {},
-        40, theme.text, theme.font_heading, bold=True,
+        tf.paragraphs[0], title_text, theme, {},
+        title_pt, theme.text, theme.font_heading, bold=True,
     )
+    y = ty + title_h + 0.1
     subtitle = s.subtitle or doc.subtitle
     if subtitle:
-        tf = _box(slide, 1.1, 4.0, SLIDE_W - 1.1 - MARGIN, 0.6)
+        tf = _box(slide, tx, y, tw, 0.6)
         _runs(tf.paragraphs[0], subtitle, theme, {}, 20, theme.muted, theme.font_body)
+        y += 0.6
     byline = "  \u00b7  ".join(p for p in (", ".join(doc.authors), doc.date) if p)
     if byline:
-        tf = _box(slide, 1.1, 6.3, SLIDE_W - 1.1 - MARGIN, 0.35)
+        by_y = max(6.3, y + 0.3)
+        tf = _box(slide, tx, by_y, tw, 0.35)
         _runs(tf.paragraphs[0], byline, theme, {}, 14, theme.muted, theme.font_body)
 
 
@@ -768,15 +921,53 @@ def _content_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int],
     _body(slide, s.blocks + s.right, theme, numbers, MARGIN, y, SLIDE_W - 2 * MARGIN)
 
 
+def _cover_fit(pic, box_x: float, box_y: float, box_w: float, box_h: float,
+               max_scale: float | None = None) -> None:
+    """Scale `pic` to cover a box, cropping whichever dimension overflows
+    instead of distorting the image to force-fit both dimensions. `max_scale`
+    caps upscaling (pass 1.0 to never enlarge a low-res image beyond its
+    native size; the axis that still doesn't reach the box is centered)."""
+    img_w, img_h = pic.width, pic.height
+    bw, bh = Inches(box_w), Inches(box_h)
+    scale = max(bw / img_w, bh / img_h)
+    if max_scale is not None:
+        scale = min(scale, max_scale)
+    disp_w, disp_h = img_w * scale, img_h * scale
+    crop_x = 1 - bw / disp_w if disp_w > bw else 0.0
+    crop_y = 1 - bh / disp_h if disp_h > bh else 0.0
+    pic.crop_left = pic.crop_right = crop_x / 2
+    pic.crop_top = pic.crop_bottom = crop_y / 2
+    pic.width = int(min(disp_w, bw))
+    pic.height = int(min(disp_h, bh))
+    pic.left = Inches(box_x) + (bw - pic.width) // 2
+    pic.top = Inches(box_y) + (bh - pic.height) // 2
+
+
+def _contain_fit(pic, box_x: float, box_y: float, box_w: float, box_h: float,
+                 max_scale: float | None = None) -> None:
+    """Scale `pic` to fit entirely inside a box (no crop, no distortion) and
+    center it. Use for content images (diagrams, charts, screenshots) where
+    cropping an edge would lose information; the surrounding matte should be
+    filled by the caller so the residual band reads as a frame, not an error."""
+    img_w, img_h = pic.width, pic.height
+    bw, bh = Inches(box_w), Inches(box_h)
+    scale = min(bw / img_w, bh / img_h)
+    if max_scale is not None:
+        scale = min(scale, max_scale)
+    pic.width = int(img_w * scale)
+    pic.height = int(img_h * scale)
+    pic.left = Inches(box_x) + (bw - pic.width) // 2
+    pic.top = Inches(box_y) + (bh - pic.height) // 2
+
+
 def _hero_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int],
                 accent: str) -> None:
     try:
-        slide.shapes.add_picture(
-            str(s.image.path), 0, 0, Inches(SLIDE_W), Inches(SLIDE_H)
-        )
+        pic = slide.shapes.add_picture(str(s.image.path), 0, 0)
     except Exception:  # unreadable file: behave like content layout
         _content_slide(slide, s, theme, numbers, accent)
         return
+    _cover_fit(pic, 0.0, 0.0, SLIDE_W, SLIDE_H)
     blocks = s.blocks + s.right
     if not (s.title or s.subtitle or blocks):
         return
@@ -818,16 +1009,17 @@ def _image_side_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int],
     pane_w = SLIDE_W * LAYOUT["image_pane_ratio"]
     left_side = s.layout == "image_left"
     px = 0.0 if left_side else SLIDE_W - pane_w
+    # Matte the pane in the surface tint first, so a contain-fit image that does
+    # not fill the pane sits in a deliberate frame rather than a white gap.
+    _rect(slide, px, 0.0, pane_w, SLIDE_H, theme.surface)
     try:
         pic = slide.shapes.add_picture(str(s.image.path), Inches(px), 0)
     except Exception:  # unreadable file: behave like content layout
         _content_slide(slide, s, theme, numbers, accent)
         return
-    scale = min(Inches(pane_w) / pic.width, Inches(SLIDE_H) / pic.height)
-    pic.width = int(pic.width * scale)
-    pic.height = int(pic.height * scale)
-    pic.left = Inches(px) + (Inches(pane_w) - pic.width) // 2
-    pic.top = (Inches(SLIDE_H) - pic.height) // 2
+    # Contain-fit, not cover-fit: a side image is often a diagram or chart, and
+    # cropping its edge would silently drop content. Never upscale past native.
+    _contain_fit(pic, px, 0.0, pane_w, SLIDE_H, max_scale=1.0)
     tx = pane_w + MARGIN if left_side else MARGIN
     tw = SLIDE_W - pane_w - 2 * MARGIN
     y = _title_band(slide, s.title, theme, x=tx, w=tw, accent=accent)
@@ -853,8 +1045,13 @@ def _render_slide(prs, blank, s: Slide, doc: Document, theme: Theme,
     elif s.layout == "two_column":
         y = _title_band(slide, s.title, theme, accent=accent)
         col_w = (SLIDE_W - 2 * MARGIN - 0.5) / 2
-        _body(slide, s.blocks, theme, numbers, MARGIN, y, col_w)
-        _body(slide, s.right, theme, numbers, MARGIN + col_w + 0.5, y, col_w)
+        avail = (SLIDE_H - MARGIN) - y
+        col_scales = [
+            _grow_scale(cols, col_w, avail) for cols in (s.blocks, s.right) if cols
+        ]
+        col_scale = min(col_scales) if col_scales else 1.0
+        _body(slide, s.blocks, theme, numbers, MARGIN, y, col_w, col_scale)
+        _body(slide, s.right, theme, numbers, MARGIN + col_w + 0.5, y, col_w, col_scale)
     else:  # content, or an image layout without a usable image path
         _content_slide(slide, s, theme, numbers, accent)
     _doc_logo(slide, doc, s)
@@ -863,13 +1060,8 @@ def _render_slide(prs, blank, s: Slide, doc: Document, theme: Theme,
 
 
 def _sources_slide(prs, blank, doc: Document, theme: Theme) -> None:
-    slide = prs.slides.add_slide(blank)
-    slide.background.fill.solid()
-    slide.background.fill.fore_color.rgb = _rgb(theme.background)
-    y = _title_band(slide, "Sources", theme)
-    tf = _box(slide, MARGIN, y, SLIDE_W - 2 * MARGIN, SLIDE_H - MARGIN - y)
     seen: dict[str, int] = {}
-    first = True
+    lines: list[str] = []
     for src in doc.sources:
         if src.id in seen:
             continue  # dedupe so numbering matches the citation superscripts
@@ -881,10 +1073,27 @@ def _sources_slide(prs, blank, doc: Document, theme: Theme) -> None:
             line += f" ({src.date})"
         if src.url:
             line += f", {src.url}"
+        lines.append(line)
+
+    # paginate into "Sources (cont.)" slides using the same per-entry
+    # measurement the renderer uses, so a long source list doesn't overflow
+    size, item_gap, w = 12, 6 / 72, SLIDE_W - 2 * MARGIN
+    title, tf, y, bottom, first = "Sources", None, 0.0, 0.0, True
+    for line in lines:
+        h = _est_lines(line, size, w) * _line_h(size) + item_gap
+        if tf is None or y + h > bottom:
+            slide = prs.slides.add_slide(blank)
+            slide.background.fill.solid()
+            slide.background.fill.fore_color.rgb = _rgb(theme.background)
+            top = _title_band(slide, title, theme)
+            bottom = SLIDE_H - MARGIN
+            tf = _box(slide, MARGIN, top, w, bottom - top)
+            title, y, first = "Sources (cont.)", top, True
         p = tf.paragraphs[0] if first else tf.add_paragraph()
         first = False
         p.space_after = Pt(6)
-        _runs(p, line, theme, {}, 12, theme.muted, theme.font_body)
+        _runs(p, line, theme, {}, size, theme.muted, theme.font_body)
+        y += h
 
 
 def render(doc: Document, theme: Theme, out_path: Path) -> Path:

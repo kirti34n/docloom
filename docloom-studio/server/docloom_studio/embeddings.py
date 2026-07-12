@@ -16,6 +16,7 @@ multi-source notebook ("research all") can't collapse onto one verbose source.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections import Counter
@@ -23,13 +24,17 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .db import execute, owner_of_notebook, owner_of_source, query_all
+from .db import execute, owner_of_notebook, owner_of_source, query_all, query_one
 from .ingest import _source_dir, load_chunks
 from .providers import ProviderConfig, embed
 from .settings import get_setting
 
 _WORD = re.compile(r"[a-z0-9]+")
 _RRF_K = 60  # standard reciprocal-rank-fusion damping constant
+_EMBED_BATCH = 64  # provider input caps (e.g. OpenAI's embeddings endpoint) reject
+                   # very large single requests; a big source must be chunked
+_TOP_SOURCE_MIN_CHUNKS = 3  # depth guarantee for the single best-scoring source
+                            # before the coverage floor spreads across the rest
 
 
 def _embed_cfg(user_id: str | None) -> ProviderConfig:
@@ -88,11 +93,18 @@ def _rrf_ranks(scores: np.ndarray) -> dict[int, int]:
     return ranks
 
 
-async def embed_source(source_id: str, texts: list[str]) -> None:
+async def embed_source(source_id: str, texts: list[str], name: str = "embeddings") -> None:
+    """Embed `texts` and save as `<name>.npy` in the source's directory
+    (`embeddings.npy` for the real per-chunk vectors; ingest.py also writes a
+    single-item `summary.npy` for 'insights' context mode). Batched: one huge
+    request for a large source can exceed a provider's per-request input cap."""
     if not texts:
         return
-    vectors = await embed(_embed_cfg(owner_of_source(source_id)), texts)
-    np.save(_source_dir(source_id) / "embeddings.npy", vectors.astype(np.float32))
+    cfg = _embed_cfg(owner_of_source(source_id))
+    parts = [await embed(cfg, texts[i:i + _EMBED_BATCH])
+             for i in range(0, len(texts), _EMBED_BATCH)]
+    vectors = np.vstack(parts)
+    np.save(_source_dir(source_id) / f"{name}.npy", vectors.astype(np.float32))
 
 
 @dataclass
@@ -106,13 +118,18 @@ class Retrieved:
     score: float
 
 
-def _enabled_sources(notebook_id: str) -> list[tuple[str, str]]:
+def _enabled_sources(notebook_id: str) -> list[tuple[str, str, str]]:
     rows = query_all(
-        "SELECT id, title FROM sources WHERE notebook_id = ? AND status = 'ready' "
-        "AND context_mode != 'excluded'",
+        "SELECT id, title, context_mode FROM sources WHERE notebook_id = ? "
+        "AND status = 'ready' AND context_mode != 'excluded'",
         (notebook_id,),
     )
-    return [(r["id"], r["title"]) for r in rows]
+    return [(r["id"], r["title"], r["context_mode"]) for r in rows]
+
+
+def _source_meta(source_id: str) -> dict:
+    row = query_one("SELECT meta_json FROM sources WHERE id = ?", (source_id,))
+    return json.loads(row["meta_json"]) if row else {}
 
 
 def _mark_stale(source_id: str) -> None:
@@ -129,12 +146,26 @@ async def retrieve(notebook_id: str, query: str, k: int = 12) -> list[Retrieved]
 
     mats: list[np.ndarray] = []
     index: list[tuple[str, str, dict]] = []  # (source_id, title, chunk)
-    for source_id, title in sources:
-        npy = _source_dir(source_id) / "embeddings.npy"
+    for source_id, title, context_mode in sources:
+        if context_mode == "insights":
+            # feed the short standing summary instead of every chunk; if one
+            # hasn't been generated yet (older source, or best-effort
+            # summarization failed at ingest time) fall back to 'full' rather
+            # than drop the source from retrieval entirely
+            summary = _source_meta(source_id).get("insight_summary", "")
+            summary_npy = _source_dir(source_id) / "summary.npy"
+            if summary and summary_npy.is_file():
+                npy = summary_npy
+                chunks = [{"text": summary, "chunk_ix": 0, "section": "", "page": None}]
+            else:
+                npy = _source_dir(source_id) / "embeddings.npy"
+                chunks = load_chunks(source_id)
+        else:
+            npy = _source_dir(source_id) / "embeddings.npy"
+            chunks = load_chunks(source_id)
         if not npy.is_file():
             continue
         vecs = np.load(npy)
-        chunks = load_chunks(source_id)
         if len(chunks) != len(vecs):
             _mark_stale(source_id)  # surface it rather than skip silently
             continue
@@ -187,11 +218,27 @@ async def retrieve(notebook_id: str, query: str, k: int = 12) -> list[Retrieved]
         seen_text.add(key)
         deduped.append(i)
 
-    # per-source coverage floor: guarantee each source with a hit contributes at
-    # least one chunk before filling the rest by fused score
+    # Depth first, then breadth: give the single best-scoring source up to
+    # _TOP_SOURCE_MIN_CHUNKS chunks (deduped is already fused-score order, so
+    # this is its best chunks), THEN apply the coverage floor (one chunk from
+    # every other source that has a hit) as a minimum, THEN fill whatever's
+    # left by fused score regardless of source. The old order (one chunk per
+    # source, THEN a second pass for more) meant that once a notebook had >=k
+    # sources, every answer got exactly one chunk per source no matter how
+    # much more the top source had to offer.
     picked: list[int] = []
     per_source_seen: set[str] = set()
+    if deduped:
+        best_source = index[deduped[0]][0]
+        for i in deduped:
+            if len(picked) >= k or len(picked) >= _TOP_SOURCE_MIN_CHUNKS:
+                break
+            if index[i][0] == best_source:
+                picked.append(i)
+        per_source_seen.add(best_source)
     for i in deduped:
+        if len(picked) >= k:
+            break
         sid = index[i][0]
         if sid not in per_source_seen:
             per_source_seen.add(sid)

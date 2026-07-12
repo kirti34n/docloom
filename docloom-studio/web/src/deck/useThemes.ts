@@ -4,16 +4,22 @@ import type { StudioTheme } from './types'
 
 let cache: StudioTheme[] | null = null
 
-// overlay the active brand accent so preview matches export
+type BrandColors = { primary?: string | null; accent?: string | null }
+
+// overlay the active brand's primary/accent so preview matches export; each
+// role only overrides if the user actually set it, never one for the other,
+// or every theme collapses to the same flat color
 async function loadThemes(): Promise<StudioTheme[]> {
   const [themes, brand] = await Promise.all([
     api.get<StudioTheme[]>('/api/themes'),
-    api.get<{ accent?: string | null }>('/api/brand-kit').catch(
-      () => ({ accent: null }) as { accent?: string | null }),
+    api.get<BrandColors>('/api/brand-kit').catch(() => ({}) as BrandColors),
   ])
-  return brand.accent
-    ? themes.map((t) => ({ ...t, primary: brand.accent!, accent: brand.accent! }))
-    : themes
+  if (!brand.primary && !brand.accent) return themes
+  return themes.map((t) => ({
+    ...t,
+    ...(brand.primary ? { primary: brand.primary } : {}),
+    ...(brand.accent ? { accent: brand.accent } : {}),
+  }))
 }
 
 export function useThemes(): StudioTheme[] {

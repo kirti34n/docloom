@@ -18,7 +18,7 @@ OUT = ROOT / "examples" / "output"
 OUT.mkdir(parents=True, exist_ok=True)
 SECTIONS = json.loads((Path(__file__).parent / "showcase_sections.json").read_text(encoding="utf-8"))
 
-_DASH = re.compile("\s*[" + chr(0x2014) + chr(0x2013) + "]\s*")  # strip em/en dashes
+_DASH = re.compile(r"\s*[" + chr(0x2014) + chr(0x2013) + r"]\s*")  # strip em/en dashes
 
 def clean(x):
     if isinstance(x, str):
@@ -32,12 +32,15 @@ def clean(x):
 SECTIONS = clean(SECTIONS)
 
 # ---- theme -----------------------------------------------------------------
-_FS = ROOT / "docloom-studio" / "web" / "node_modules" / "@fontsource"
+# Font files are committed under examples/assets/ (SIL OFL, see the .txt files
+# there) so this example renders with the real brand fonts for anyone who runs
+# it, without needing docloom-studio's npm deps installed.
+_ASSETS = Path(__file__).parent / "assets"
 theme = Theme(primary="#4F46E5", accent="#0D9488", background="#FFFFFF",
              surface="#F4F6FB", text="#0F172A", muted="#64748B",
              font_heading="Sora", font_body="Inter",
-             font_heading_src=str(_FS / "sora/files/sora-latin-600-normal.woff2"),
-             font_body_src=str(_FS / "inter/files/inter-latin-400-normal.woff2"))
+             font_heading_src=str(_ASSETS / "sora-600.woff2"),
+             font_body_src=str(_ASSETS / "inter-400.woff2"))
 
 # ---- shared data blocks ----------------------------------------------------
 STATS = {"type": "stats", "items": [

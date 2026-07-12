@@ -16,9 +16,8 @@ def main() -> None:
     except ImportError:
         raise SystemExit("docloom-mcp needs the mcp package: pip install 'docloom[mcp]'")
 
-    from .ir import Document
     from .lint import lint
-    from .llm import AUTHORING_GUIDE, llm_schema
+    from .llm import AUTHORING_GUIDE, llm_schema, parse_llm_output
     from .render import FORMATS, render
     from .theme import DEFAULT, Theme
 
@@ -41,7 +40,7 @@ def main() -> None:
         An empty list means the document is clean. Fix every "error" before
         rendering; treat "warning" as strong advice.
         """
-        doc = Document.model_validate_json(document_json)
+        doc = parse_llm_output(document_json)
         return json.dumps([f.model_dump() for f in lint(doc, DEFAULT)])
 
     @mcp.tool()
@@ -59,7 +58,7 @@ def main() -> None:
         """
         from .render import slug
 
-        doc = Document.model_validate_json(document_json)
+        doc = parse_llm_output(document_json)
         theme = Theme.model_validate_json(theme_json) if theme_json else DEFAULT
         fmts = [f.strip() for f in formats.split(",") if f.strip()]
         unknown = [f for f in fmts if f not in FORMATS]
@@ -67,7 +66,7 @@ def main() -> None:
             raise ValueError(
                 f"unknown format(s) {unknown}; expected a subset of {sorted(FORMATS)}"
             )
-        out = Path(out_dir)
+        out = Path(out_dir).resolve()  # server cwd is unknown to the caller
         paths = []
         for fmt in fmts:
             path = render(doc, fmt, out / (slug(doc.title) + FORMATS[fmt][1]), theme)

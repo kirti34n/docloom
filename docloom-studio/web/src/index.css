@@ -2,18 +2,25 @@
 @import './tokens.css';
 
 @theme {
-  --color-ws-bg: var(--ws-bg);
-  --color-ws-panel: var(--ws-panel);
-  --color-ws-line: var(--ws-line);
-  --color-ws-ink: var(--ws-ink);
-  --color-ws-muted: var(--ws-muted);
-  --color-ws-accent: var(--ws-accent);
-  --color-ws-danger: var(--ws-danger);
+  /* ws-* names kept so existing className usages keep working, re-pointed at
+     the loom tokens */
+  --color-ws-bg: var(--paper);
+  --color-ws-panel: var(--vellum);
+  --color-ws-line: var(--rule);
+  --color-ws-ink: var(--ink);
+  --color-ws-muted: var(--ink-soft);
+  --color-ws-accent: var(--woad);
+  --color-ws-danger: var(--madder);
   --color-ws-warn: var(--ws-warn);
   --color-ws-ok: var(--ws-ok);
-  --color-stage-bg: var(--stage-bg);
-  --color-stage-line: var(--stage-line);
+  --color-stage-bg: var(--stage);
+  --color-stage-line: var(--stage-rule);
   --color-stage-muted: var(--stage-muted);
+  /* new loom vocabulary */
+  --color-brass: var(--brass);
+  --color-woad: var(--woad);
+  --color-madder: var(--madder);
+  --color-vellum: var(--vellum);
   --font-display: var(--font-display);
   --font-ui: var(--font-ui);
   --font-mono: var(--font-mono);
@@ -27,8 +34,8 @@ body,
 
 body {
   margin: 0;
-  background: var(--ws-bg);
-  color: var(--ws-ink);
+  background: var(--paper);
+  color: var(--ink);
   font-family: var(--font-ui);
   font-size: 14px;
   line-height: 1.5;
@@ -36,7 +43,7 @@ body {
 }
 
 :focus-visible {
-  outline: 2px solid var(--ws-accent);
+  outline: 2px solid var(--woad);
   outline-offset: 2px;
 }
 
@@ -92,18 +99,15 @@ body {
 }
 
 /* ---- reusable component classes ---------------------------------------- */
+/* separation by hairline, not shadow: cards get a 1px rule and nothing else */
 .ds-card {
-  background: var(--ws-panel);
-  border: 1px solid var(--ws-line);
+  background: var(--vellum);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
-  transition: box-shadow var(--dur) var(--ease-out),
-    border-color var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
+  transition: border-color var(--dur) var(--ease-out);
 }
 .ds-card-hover:hover {
-  border-color: color-mix(in srgb, var(--ws-accent) 40%, var(--ws-line));
-  box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
+  border-color: var(--woad);
 }
 .ds-btn {
   display: inline-flex;
@@ -113,34 +117,32 @@ body {
   border-radius: var(--radius-sm);
   font-weight: 500;
   transition: background var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out),
-    opacity var(--dur-fast);
+    color var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
 }
 .ds-btn-primary {
-  background: var(--ws-ink);
-  color: #fff;
+  background: var(--ink);
+  color: var(--paper);
 }
 .ds-btn-primary:hover:not(:disabled) {
-  box-shadow: var(--shadow-md);
-  opacity: 0.92;
+  opacity: 0.88;
 }
 .ds-btn-primary:active:not(:disabled) {
   transform: translateY(0.5px);
 }
 .ds-focusable {
-  transition: border-color var(--dur-fast) var(--ease-out),
-    box-shadow var(--dur-fast) var(--ease-out);
+  transition: border-color var(--dur-fast) var(--ease-out);
 }
 .ds-focusable:focus-within {
-  border-color: var(--ws-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ws-accent) 18%, transparent);
+  border-color: var(--woad);
+  outline: 2px solid var(--woad);
+  outline-offset: 1px;
 }
 .ds-skeleton {
   background: linear-gradient(
     90deg,
-    var(--ws-line) 0%,
-    color-mix(in srgb, var(--ws-line) 40%, var(--ws-panel)) 50%,
-    var(--ws-line) 100%
+    var(--rule) 0%,
+    color-mix(in srgb, var(--rule) 40%, var(--vellum)) 50%,
+    var(--rule) 100%
   );
   background-size: 200% 100%;
   animation: ds-shimmer 1.4s ease-in-out infinite;
@@ -163,11 +165,11 @@ body {
 .sheet-grid {
   border-collapse: collapse;
   font-size: 13px;
-  background: var(--ws-panel);
+  background: var(--vellum);
 }
 .sheet-grid th,
 .sheet-grid td {
-  border: 1px solid var(--ws-line);
+  border: 1px solid var(--rule);
   padding: 0;
 }
 .sheet-grid th input,
@@ -181,37 +183,54 @@ body {
 }
 .sheet-grid th input {
   font-weight: 600;
-  background: var(--ws-bg);
+  background: var(--paper);
 }
 .sheet-grid td input:focus {
-  outline: 2px solid var(--ws-accent);
+  outline: 2px solid var(--woad);
   outline-offset: -2px;
 }
 .sheet-rownum,
 .sheet-corner {
   width: 34px;
-  background: var(--ws-bg);
-  color: var(--ws-muted);
+  background: var(--paper);
+  color: var(--ink-soft);
   text-align: center;
   font-size: 11px;
 }
 .sheet-add button {
   padding: 4px 8px;
-  color: var(--ws-muted);
+  color: var(--ink-soft);
 }
 
+/* a citation: a mono numeral in brass with a hairline underline. superseded
+   by <SourceMark> (src/ui/SourceMark.tsx) but kept live for callers still on
+   the legacy class name. */
 .chat-cite {
   font-size: 0.62em;
   font-weight: 600;
-  color: var(--ws-accent);
+  font-family: var(--font-mono);
+  color: var(--brass);
+  border-bottom: 1px solid color-mix(in srgb, var(--brass) 50%, transparent);
   cursor: pointer;
   padding: 0 1px;
   vertical-align: super;
   background: none;
-  border: none;
+  border-top: none;
+  border-left: none;
+  border-right: none;
 }
 .chat-cite:hover {
-  text-decoration: underline;
+  background: color-mix(in srgb, var(--brass) 10%, transparent);
+}
+
+/* the loom: a source's warp thread lights up when its citation is hovered or
+   focused. <SourceMark> toggles .is-lit on every element sharing its
+   sourceId via [data-warp-id], wherever in the DOM the warp rail renders it. */
+[data-warp-id] {
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+[data-warp-id].is-lit {
+  background-color: color-mix(in srgb, var(--woad) 18%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

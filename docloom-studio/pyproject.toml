@@ -38,7 +38,10 @@ podcast = ["kokoro>=0.9", "soundfile>=0.12"]
 # the default, needs nothing extra.
 postgres = ["psycopg[binary]>=3.1"]
 # Extra source formats: EPUB books and YouTube transcripts.
-ingest = ["ebooklib>=0.18", "youtube-transcript-api>=0.6"]
+# youtube-transcript-api>=1.0: the 1.x API (instance.fetch(), snippet.text)
+# replaced the 0.x static YouTubeTranscriptApi.get_transcript(); the 0.6 pin
+# installed a version whose API this code never actually called.
+ingest = ["ebooklib>=0.18", "youtube-transcript-api>=1.0"]
 
 [project.scripts]
 docloom-studio = "docloom_studio.main:run"

@@ -5,7 +5,12 @@ can resolve them regardless of where the originals live; standalone
 `to_typst()` output references the original paths (POSIX-style), which
 resolve when the .typ is compiled from a location those paths are
 relative to. Absolute image paths (which Typst rejects) become comment
-lines in standalone output and only embed via `render()`."""
+lines in standalone output and only embed via `render()`.
+
+Charts with no pre-rendered path are painted with chart_svg and embedded as
+`image(bytes(...), format: "svg")` (typst>=0.13): the SVG text lands straight
+in the source, so this works in standalone to_typst() output too, not just
+the compiled render() path."""
 
 from __future__ import annotations
 
@@ -17,6 +22,7 @@ from urllib.parse import urlsplit
 
 from PIL import Image as PILImage
 
+from . import chart_svg
 from ..ir import (
     Artifact,
     Block,
@@ -245,6 +251,12 @@ def _block(b: Block, theme: Theme, numbers: dict[str, int]) -> list[str]:
         path = Path(b.path) if b.path else None
         if path and path.is_file() and _embeddable(path):
             lines.append(_image_ref(path))
+            if b.caption:
+                lines.append(_caption(b.caption, theme))
+            return lines
+        svg = chart_svg.render_svg(b, theme)
+        if svg:
+            lines.append(f'#image(bytes({_str(svg)}), format: "svg", width: 100%)')
             if b.caption:
                 lines.append(_caption(b.caption, theme))
             return lines

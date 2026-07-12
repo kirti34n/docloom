@@ -25,6 +25,7 @@ from pydantic import BaseModel
 T = TypeVar("T")
 
 TIMEOUT = httpx.Timeout(600.0, connect=10.0)
+DEFAULT_MAX_TOKENS = 8192  # anthropic requires an explicit cap; also complete()'s default
 
 
 class ProviderConfig(BaseModel):
@@ -36,6 +37,14 @@ class ProviderConfig(BaseModel):
 
 class ProviderError(RuntimeError):
     pass
+
+
+class TruncatedOutput(ProviderError):
+    """The provider stopped because it hit the token cap, not because it
+    finished. The output is almost certainly incomplete JSON, so retrying the
+    identical call (as generate_validated does for a parse error) just wastes
+    rounds on the same cap; callers get a clear reason instead of a confusing
+    downstream parse failure."""
 
 
 class GenerationFailed(ProviderError):
@@ -88,7 +97,7 @@ async def complete(
     messages: list[dict[str, str]],
     schema: dict | None = None,
     temperature: float = 0.4,
-    max_tokens: int = 8192,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> str:
     """One completion, returning the text content."""
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -110,17 +119,20 @@ async def complete(
                     "format": {"type": "json_schema", "schema": schema}
                 }
             r = await client.post(
-                (cfg.base_url or "https://api.anthropic.com") + "/v1/messages",
+                (cfg.base_url or "https://api.anthropic.com").rstrip("/") + "/v1/messages",
                 json=body,
                 headers={
                     "x-api-key": cfg.api_key,
                     "anthropic-version": "2023-06-01",
                 },
             )
-            _raise_for_status(r)
+            await _raise_for_status(r)
             data = r.json()
             if data.get("stop_reason") == "refusal":
                 raise ProviderError("the model declined this request")
+            if data.get("stop_reason") == "max_tokens":
+                raise TruncatedOutput(
+                    f"response was cut off at the {max_tokens}-token limit before finishing")
             return "".join(
                 b.get("text", "") for b in data.get("content", [])
                 if b.get("type") == "text"
@@ -137,16 +149,25 @@ async def complete(
             if schema is not None:
                 body["format"] = schema
             r = await client.post(cfg.base_url.rstrip("/") + "/api/chat", json=body)
-            _raise_for_status(r)
-            return r.json()["message"]["content"]
+            await _raise_for_status(r)
+            data = r.json()
+            if data.get("done_reason") == "length":
+                raise TruncatedOutput(
+                    f"response was cut off at the {max_tokens}-token limit before finishing")
+            return data["message"]["content"]
 
         # OpenAI-compatible: llama-server, lmstudio, openai
-        body = {
-            "model": cfg.model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
+        body = {"model": cfg.model, "messages": messages}
+        if cfg.kind == "openai":
+            # current OpenAI models (GPT-5.x, o-series) reject `max_tokens` (the
+            # unified replacement is `max_completion_tokens`) and reject a
+            # non-default temperature outright, so neither is sent as-is here;
+            # every openai call runs at the API default temperature, same as
+            # the anthropic branch above.
+            body["max_completion_tokens"] = max_tokens
+        else:
+            body["temperature"] = temperature
+            body["max_tokens"] = max_tokens
         if schema is not None:
             payload = _openai_required_transform(schema) if cfg.kind == "openai" else schema
             body["response_format"] = {
@@ -158,8 +179,12 @@ async def complete(
             cfg.base_url.rstrip("/") + "/v1/chat/completions",
             json=body, headers=headers,
         )
-        _raise_for_status(r)
-        return r.json()["choices"][0]["message"]["content"]
+        await _raise_for_status(r)
+        data = r.json()
+        if data["choices"][0].get("finish_reason") == "length":
+            raise TruncatedOutput(
+                f"response was cut off at the {max_tokens}-token limit before finishing")
+        return data["choices"][0]["message"]["content"]
 
 
 async def stream_text(
@@ -176,11 +201,16 @@ async def stream_text(
                 "options": {"num_ctx": 16384, "temperature": temperature},
             }
             async with client.stream("POST", cfg.base_url.rstrip("/") + "/api/chat", json=body) as r:
-                _raise_for_status(r)
+                await _raise_for_status(r)
                 async for line in r.aiter_lines():
                     if not line.strip():
                         continue
                     chunk = json.loads(line)
+                    # a mid-stream runtime error is a 200-status NDJSON line with
+                    # an "error" key instead of "message" (e.g. the model runner
+                    # crashed) -- surface it instead of silently truncating
+                    if chunk.get("error"):
+                        raise ProviderError(f"ollama stream error: {chunk['error']}")
                     piece = chunk.get("message", {}).get("content", "")
                     if piece:
                         yield piece
@@ -189,20 +219,49 @@ async def stream_text(
             return
 
         if cfg.kind == "anthropic":
-            # ponytail: non-streamed fallback; SSE parsing when chat UX needs it
-            yield await complete(cfg, messages, temperature=temperature)
+            body: dict[str, Any] = {
+                "model": cfg.model,
+                "max_tokens": DEFAULT_MAX_TOKENS,
+                "messages": [m for m in messages if m["role"] != "system"],
+                "stream": True,
+            }
+            system = "\n".join(m["content"] for m in messages if m["role"] == "system")
+            if system:
+                body["system"] = system
+            async with client.stream(
+                "POST",
+                (cfg.base_url or "https://api.anthropic.com").rstrip("/") + "/v1/messages",
+                json=body,
+                headers={"x-api-key": cfg.api_key, "anthropic-version": "2023-06-01"},
+            ) as r:
+                await _raise_for_status(r)
+                async for line in r.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if not payload:
+                        continue
+                    event = json.loads(payload)
+                    kind = event.get("type")
+                    if kind == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("type") == "text_delta" and delta.get("text"):
+                            yield delta["text"]
+                    elif kind == "error":
+                        raise ProviderError(f"anthropic stream error: {event.get('error')}")
             return
 
-        body = {
-            "model": cfg.model, "messages": messages,
-            "temperature": temperature, "stream": True,
+        body: dict[str, Any] = {
+            "model": cfg.model, "messages": messages, "stream": True,
         }
+        if cfg.kind != "openai":  # current OpenAI models reject a custom temperature
+            body["temperature"] = temperature
         headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
         async with client.stream(
             "POST", cfg.base_url.rstrip("/") + "/v1/chat/completions",
             json=body, headers=headers,
         ) as r:
-            _raise_for_status(r)
+            await _raise_for_status(r)
             async for line in r.aiter_lines():
                 if not line.startswith("data:"):
                     continue
@@ -222,14 +281,14 @@ async def embed(cfg: ProviderConfig, texts: list[str]) -> np.ndarray:
                 cfg.base_url.rstrip("/") + "/api/embed",
                 json={"model": cfg.model, "input": texts},
             )
-            _raise_for_status(r)
+            await _raise_for_status(r)
             return np.asarray(r.json()["embeddings"], dtype=np.float32)
         headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
         r = await client.post(
             cfg.base_url.rstrip("/") + "/v1/embeddings",
             json={"model": cfg.model, "input": texts}, headers=headers,
         )
-        _raise_for_status(r)
+        await _raise_for_status(r)
         rows = sorted(r.json()["data"], key=lambda d: d["index"])
         return np.asarray([d["embedding"] for d in rows], dtype=np.float32)
 
@@ -238,20 +297,20 @@ async def list_models(cfg: ProviderConfig) -> list[str]:
     async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
         if cfg.kind == "ollama":
             r = await client.get(cfg.base_url.rstrip("/") + "/api/tags")
-            _raise_for_status(r)
+            await _raise_for_status(r)
             return [m["name"] for m in r.json().get("models", [])]
         if cfg.kind == "anthropic":
             r = await client.get(
-                (cfg.base_url or "https://api.anthropic.com") + "/v1/models",
+                (cfg.base_url or "https://api.anthropic.com").rstrip("/") + "/v1/models",
                 headers={"x-api-key": cfg.api_key,
                          "anthropic-version": "2023-06-01"},
             )
-            _raise_for_status(r)
+            await _raise_for_status(r)
             return [m["id"] for m in r.json().get("data", [])]
         headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
         r = await client.get(cfg.base_url.rstrip("/") + "/v1/models",
                              headers=headers)
-        _raise_for_status(r)
+        await _raise_for_status(r)
         return [m["id"] for m in r.json().get("data", [])]
 
 
@@ -299,10 +358,15 @@ async def generate_validated(
     raise GenerationFailed(rounds)
 
 
-def _raise_for_status(r: httpx.Response) -> None:
+async def _raise_for_status(r: httpx.Response) -> None:
     if r.status_code >= 400:
         try:
-            detail = r.read().decode("utf-8", "replace")[:400]
+            # r.read() is sync and raises RuntimeError on a response that came
+            # from client.stream(...) ("Attempted to call a sync iterator on
+            # an async stream"), which the bare except below swallowed --
+            # silently losing the error body on every streaming call. aread()
+            # is the async-safe equivalent and works for both response kinds.
+            detail = (await r.aread()).decode("utf-8", "replace")[:400]
         except Exception:
             detail = ""
         raise ProviderError(f"provider returned HTTP {r.status_code}: {detail}")

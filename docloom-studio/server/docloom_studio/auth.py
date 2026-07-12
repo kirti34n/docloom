@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from .db import execute, new_id, now, query_all, query_one, rows_to_dicts
@@ -23,6 +24,12 @@ from .db import execute, new_id, now, query_all, query_one, rows_to_dicts
 SESSION_COOKIE = "ds_session"
 SESSION_TTL = 60 * 60 * 24 * 30  # 30 days, seconds
 MIN_PASSWORD = 8
+
+# Force the Secure cookie attribute even when this process itself sees plain
+# http, e.g. behind a reverse proxy that terminates TLS. Off by default so
+# local self-hosted use over http://127.0.0.1 still works.
+_FORCE_SECURE_COOKIE = os.environ.get(
+    "DOCLOOM_STUDIO_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
 
 # scrypt work factors (RFC 7914 interactive-login range)
 _N, _R, _P, _DKLEN = 2**14, 8, 1, 32
@@ -187,26 +194,26 @@ class WorkspaceCreate(BaseModel):
     name: str
 
 
-def _set_session_cookie(response: Response, token: str) -> None:
+def _set_session_cookie(response: Response, request: Request, token: str) -> None:
     response.set_cookie(
-        SESSION_COOKIE, token, max_age=SESSION_TTL,
-        httponly=True, samesite="lax", path="/",
+        SESSION_COOKIE, token, max_age=SESSION_TTL, httponly=True, samesite="lax",
+        path="/", secure=_FORCE_SECURE_COOKIE or request.url.scheme == "https",
     )
 
 
 @router.post("/auth/register")
-async def register(body: Credentials, response: Response) -> dict:
+async def register(body: Credentials, request: Request, response: Response) -> dict:
     user = create_user(body.email, body.password)
-    _set_session_cookie(response, create_session(user["id"]))
+    _set_session_cookie(response, request, create_session(user["id"]))
     return user
 
 
 @router.post("/auth/login")
-async def login(body: Credentials, response: Response) -> dict:
+async def login(body: Credentials, request: Request, response: Response) -> dict:
     uid = authenticate(body.email, body.password)
     if uid is None:
         raise HTTPException(401, "invalid email or password")
-    _set_session_cookie(response, create_session(uid))
+    _set_session_cookie(response, request, create_session(uid))
     return {"id": uid, "email": body.email.strip().lower()}
 
 

@@ -19,6 +19,9 @@ interface DocState {
   sources: SourceT[]
   themeName: string
   rev: number
+  // bumped on load/undo/redo so the Tiptap block editors resync their content
+  // from the store (they only re-read external content when this changes)
+  editorRev: number
   findings: Finding[]
   saving: boolean
   dirty: boolean
@@ -43,6 +46,7 @@ export const useDoc = create<DocState>()(
       sources: [],
       themeName: 'paper',
       rev: 0,
+      editorRev: 0,
       findings: [],
       saving: false,
       dirty: false,
@@ -65,8 +69,15 @@ export const useDoc = create<DocState>()(
           sources: doc.sources ?? [],
           themeName: a.payload.theme_name,
           rev: a.version,
+          editorRev: get().editorRev + 1,
           dirty: false,
         })
+        // load() is itself a recorded set(): whatever was on the store before
+        // (an empty store, or a previously opened artifact) would otherwise
+        // sit on pastStates and one Ctrl+Z would wipe or cross-contaminate
+        // this document. Wipe the history so undo only ever sees edits made
+        // to THIS artifact.
+        useDoc.temporal.getState().clear()
       },
 
       setTitle: (title) => {
@@ -110,7 +121,14 @@ export const useDoc = create<DocState>()(
         }
       },
     }),
-    { limit: 100, partialize: (s) => ({ title: s.title, blocks: s.blocks, order: s.order }) },
+    {
+      limit: 100,
+      partialize: (s) => ({ title: s.title, blocks: s.blocks, order: s.order }),
+      // without this, every autosave setState (saving/rev/findings, none
+      // partialized) pushes a duplicate history entry, so Undo appears to do
+      // nothing until it has walked past all the no-ops.
+      equality: (a, b) => JSON.stringify(a) === JSON.stringify(b),
+    },
   ),
 )
 
@@ -135,6 +153,14 @@ function save(): void {
 }
 
 export const docHistory = {
-  undo: () => { useDoc.temporal.getState().undo(); useDoc.setState({ dirty: true }); save() },
-  redo: () => { useDoc.temporal.getState().redo(); useDoc.setState({ dirty: true }); save() },
+  undo: () => {
+    useDoc.temporal.getState().undo()
+    useDoc.setState((s) => ({ dirty: true, editorRev: s.editorRev + 1 }))
+    save()
+  },
+  redo: () => {
+    useDoc.temporal.getState().redo()
+    useDoc.setState((s) => ({ dirty: true, editorRev: s.editorRev + 1 }))
+    save()
+  },
 }

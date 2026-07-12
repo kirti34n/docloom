@@ -13,19 +13,70 @@
   outline: none;
 }
 
-/* placeholder for empty single-line regions */
-.editable.ProseMirror p.is-empty:first-child::before,
-[data-placeholder] .ProseMirror p:only-child:empty::before {
+/* placeholder for empty single-line regions. There is no Tiptap Placeholder
+   extension installed, so this is plain CSS: Editable.tsx puts
+   data-placeholder on EditorContent's own wrapper div, which sits ABOVE the
+   ProseMirror element (attr() can only read the attribute of the element the
+   ::before belongs to, so the pseudo has to live on that wrapper, not on the
+   paragraph two levels down). An empty ProseMirror paragraph still renders a
+   trailing <br> for cursor placement, so it is never truly :empty; check for
+   that too. */
+[data-placeholder] {
+  position: relative;
+}
+[data-placeholder]:has(.ProseMirror p:only-child:is(:empty, :has(> br.ProseMirror-trailingBreak)))::before {
   content: attr(data-placeholder);
+  position: absolute;
+  top: 0;
+  left: 0;
   color: var(--muted);
   pointer-events: none;
-  float: left;
-  height: 0;
 }
 
 .edit-h1,
 .edit-title {
   font-family: var(--font-heading);
+}
+
+/* slide rail: a hover-revealed toolbar over each thumbnail's corner */
+.rail-item {
+  position: relative;
+}
+.rail-tools {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--stage) 75%, transparent);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.rail-item:hover .rail-tools,
+.rail-item:focus-within .rail-tools {
+  opacity: 1;
+}
+.rail-tools button,
+.rail-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--stage-muted);
+  cursor: pointer;
+}
+.rail-tools button:hover {
+  color: #fff;
+  background: color-mix(in srgb, white 12%, transparent);
+}
+.rail-grip {
+  cursor: grab;
 }
 
 /* cited text inside the editor: keep it readable (normal size) with a subtle
