@@ -18,13 +18,27 @@ export function PresentMode() {
   const [themeName, setThemeName] = useState('paper')
   const [index, setIndex] = useState(0)
   const [showNotes, setShowNotes] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!artifactId) return
-    api.get<ArtifactT>(`/api/artifacts/${artifactId}`).then((a) => {
-      setDoc(a.payload.ir)
-      setThemeName(a.payload.theme_name)
-    })
+    let stale = false
+    setDoc(null)
+    setIndex(0)
+    setError(null)
+    api
+      .get<ArtifactT>(`/api/artifacts/${artifactId}`)
+      .then((a) => {
+        if (stale) return
+        setDoc(a.payload.ir)
+        setThemeName(a.payload.theme_name)
+      })
+      .catch((e) => {
+        if (!stale) setError(e instanceof Error ? e.message : 'Could not load this deck.')
+      })
+    return () => {
+      stale = true
+    }
   }, [artifactId])
 
   const slides = doc?.slides ?? []
@@ -55,6 +69,21 @@ export function PresentMode() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [exit, total])
+
+  if (error) {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black text-white">
+        <p className="font-display text-xl">Could not load this deck.</p>
+        <p className="max-w-md text-center text-[13px] text-white/60">{error}</p>
+        <button
+          onClick={exit}
+          className="rounded-[var(--radius-sm)] border border-white/25 px-4 py-2 text-[13px] hover:bg-white/10"
+        >
+          Exit
+        </button>
+      </div>
+    )
+  }
 
   if (!doc || themes.length === 0) {
     return (

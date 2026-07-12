@@ -62,6 +62,38 @@ def test_health_reports_db_writable():
         assert "version" in body
 
 
+def test_fail_artifact_only_downgrades_building():
+    """Cancel/failure after an artifact already reached 'ready' (podcast
+    transcript saved, optional TTS cancelled) must not flip it to 'failed'."""
+    from docloom_studio.jobs import _fail_artifact
+
+    uid = new_id()
+    execute("INSERT INTO users (id, email, password_hash, created) "
+            "VALUES (?, ?, 'x', ?)", (uid, f"{uid}@test.local", now()))
+    wid = new_id()
+    execute("INSERT INTO workspaces (id, user_id, name, created) "
+            "VALUES (?, ?, 'ws', ?)", (wid, uid, now()))
+    nb = new_id()
+    execute("INSERT INTO notebooks (id, name, workspace_id, created, updated) "
+            "VALUES (?, 'nb', ?, ?, ?)", (nb, wid, now(), now()))
+
+    def artifact(status: str) -> str:
+        aid = new_id()
+        execute("INSERT INTO artifacts (id, notebook_id, kind, title, version, "
+                "payload_json, status, created, updated) "
+                "VALUES (?, ?, 'podcast', 'T', 1, '{}', ?, ?, ?)",
+                (aid, nb, status, now(), now()))
+        return aid
+
+    ready, building = artifact("ready"), artifact("building")
+    _fail_artifact(ready)
+    _fail_artifact(building)
+    assert query_one("SELECT status FROM artifacts WHERE id = ?",
+                     (ready,))["status"] == "ready"
+    assert query_one("SELECT status FROM artifacts WHERE id = ?",
+                     (building,))["status"] == "failed"
+
+
 def test_events_are_append_only_one_row_each():
     import asyncio
 

@@ -129,6 +129,28 @@ def test_asset_upload_sanitizes_traversal_filename():
     assert not (data_dir() / "evil.png").exists()  # nothing escaped upward
 
 
+def test_delete_asset_cannot_wipe_another_users_files():
+    """One user deleting another user's asset id must not touch the owner's
+    row OR its on-disk files (the DB delete is scoped, but the rmtree must be
+    gated on ownership too)."""
+    a = _register("delasset-a@ex.com")
+    b = _register("delasset-b@ex.com")
+    png = b"\x89PNG\r\n\x1a\n"
+    aid = a.post("/api/assets", files={"file": ("a.png", io.BytesIO(png), "image/png")},
+                 data={"type": "image"}).json()["id"]
+    adir = data_dir() / "assets" / aid
+    assert (adir / "a.png").exists()
+
+    # attacker (b) tries to delete a's asset
+    assert b.delete(f"/api/assets/{aid}").status_code == 404
+    assert (adir / "a.png").exists()  # files untouched
+    assert a.get(f"/api/assets/{aid}/file").status_code == 200  # still serves
+
+    # owner can delete their own
+    assert a.delete(f"/api/assets/{aid}").status_code == 200
+    assert not adir.exists()
+
+
 def test_asset_upload_rejects_oversized_file(monkeypatch):
     monkeypatch.setattr("docloom_studio.assets.MAX_UPLOAD_BYTES", 1024)
     a = _register("bigasset-a@ex.com")

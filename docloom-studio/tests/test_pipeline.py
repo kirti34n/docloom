@@ -204,7 +204,12 @@ def test_sheet_pipeline_assembles_and_exports(monkeypatch):
     monkeypatch.setattr(gen, "generate_validated", fake_gv)
     nb = _notebook()
     aid = create_artifact(nb, "sheet")
-    asyncio.run(run_sheet_pipeline(FakeCtx(), nb, aid, "budget"))
+    ctx = FakeCtx()
+    asyncio.run(run_sheet_pipeline(ctx, nb, aid, "budget"))
+
+    # the single-shot path must terminate its "sheet" stage, or the build UI
+    # shows the unit spinning until navigation
+    assert ("sheet", "done") in [(e[0], e[1]) for e in ctx.events]
 
     from docloom_studio.artifacts import export_artifact, ExportRequest
     import zipfile

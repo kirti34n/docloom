@@ -101,8 +101,8 @@ One `Document` carries any mix of three bodies; each renderer takes what it need
 
 | Field    | Renders to                       | Blocks |
 |----------|----------------------------------|--------|
-| `blocks` | DOCX, PDF, HTML, MD (reports)    | heading, paragraph, bullets, numbered, quote, code, table, image, callout, divider |
-| `slides` | PPTX (decks)                     | layouts: `title`, `section`, `content`, `two_column`, `quote` + any blocks, speaker `notes` |
+| `blocks` | DOCX, PDF, HTML, MD (reports)    | heading, paragraph, bullets, numbered, quote, code, table, image, callout, divider, chart, stats, artifact |
+| `slides` | PPTX (decks)                     | layouts: `title`, `section`, `content`, `two_column`, `quote`, `hero`, `image_left`, `image_right` + any blocks, speaker `notes` |
 | `sheets` | XLSX (workbooks)                 | typed cells, `{"formula": "=SUM(B2:B4)"}`, number formats, column widths |
 
 Plus `sources`, evidence records that spans cite by id. Text everywhere is either a plain string or spans (`bold`, `italic`, `code`, `link`, `cite`), so simple content stays cheap to generate.

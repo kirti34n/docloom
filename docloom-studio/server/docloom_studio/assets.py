@@ -115,6 +115,14 @@ async def patch_asset(
 
 @router.delete("/assets/{asset_id}")
 async def delete_asset(asset_id: str, user: dict = Depends(current_user)) -> dict:
+    # Confirm ownership BEFORE touching the disk: the DB delete is scoped by
+    # user_id, but an unconditional rmtree would let one user wipe another
+    # user's asset files by passing their asset_id (the row survives, but its
+    # backing directory is gone -> the owner's asset breaks).
+    row = query_one("SELECT id FROM assets WHERE id = ? AND user_id = ?",
+                    (asset_id, user["id"]))
+    if row is None:
+        raise HTTPException(404, "asset not found")
     execute("DELETE FROM assets WHERE id = ? AND user_id = ?", (asset_id, user["id"]))
     shutil.rmtree(data_dir() / "assets" / asset_id, ignore_errors=True)
     return {"ok": True}

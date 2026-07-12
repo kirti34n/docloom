@@ -410,6 +410,7 @@ async def run_sheet_pipeline(
             lint_fn=lambda d: ([] if d.sheets else ["produce at least one sheet"]),
         )
         title, sheets = result.title, result.sheets
+        ctx.emit("sheet", "done", detail=title)
     except TruncatedOutput:
         # the whole workbook doesn't fit one call (a big multi-sheet request
         # easily exceeds the token cap in one shot): plan sheet names first,

@@ -83,6 +83,8 @@ async def delete_notebook(
     require_notebook(user["id"], notebook_id)
     source_ids = [r["id"] for r in query_all(
         "SELECT id FROM sources WHERE notebook_id = ?", (notebook_id,))]
+    artifact_ids = [r["id"] for r in query_all(
+        "SELECT id FROM artifacts WHERE notebook_id = ?", (notebook_id,))]
     execute("DELETE FROM artifact_versions WHERE artifact_id IN "
             "(SELECT id FROM artifacts WHERE notebook_id = ?)", (notebook_id,))
     execute("DELETE FROM artifacts WHERE notebook_id = ?", (notebook_id,))
@@ -95,4 +97,8 @@ async def delete_notebook(
         d = data_dir() / "sources" / sid
         if d.exists():
             shutil.rmtree(d, ignore_errors=True)
+    for aid in artifact_ids:
+        for d in (data_dir() / "artifacts" / aid, data_dir() / "exports" / aid):
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
     return {"ok": True}

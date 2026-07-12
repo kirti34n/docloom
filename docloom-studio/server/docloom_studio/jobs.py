@@ -138,12 +138,14 @@ def _prune_finished_jobs() -> None:
 def _fail_artifact(artifact_id: str) -> None:
     """Best-effort: mark the artifact a job was building as 'failed' so a
     broken stub doesn't sit forever in the artifacts list as 'building'.
-    Never raises -- this runs from inside the job runner's own error handling
-    and must not shadow the original failure."""
+    Only downgrades an artifact still 'building': one that already reached
+    'ready' (a podcast whose transcript saved before its optional TTS was
+    cancelled or died) keeps its good state. Never raises -- this runs from
+    inside the job runner's own error handling and must not shadow the
+    original failure."""
     try:
-        from .artifacts import set_artifact_status
-
-        set_artifact_status(artifact_id, "failed")
+        execute("UPDATE artifacts SET status = 'failed' "
+                "WHERE id = ? AND status = 'building'", (artifact_id,))
     except Exception:
         log.warning("could not mark artifact %s failed", artifact_id)
 
