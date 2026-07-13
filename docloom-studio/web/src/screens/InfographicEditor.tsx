@@ -18,6 +18,28 @@ const TEMPLATES: Record<string, string[]> = {
   grid: ['list-grid-badge-card', 'list-column-vertical-icon-arrow'],
 }
 
+// every template lays items into a fixed-size card (a ~120-200px wide box),
+// so a card can't grow to fit long copy the way a browser reflow would. The
+// library evaluates a themeConfig font-size as a function of (currentValue,
+// textNode) (renderer/utils/attrs.js), so shrink the font once text is long
+// enough to threaten its box's hardcoded line budget: 1 line for item.label,
+// 2 lines for item.desc (see understand-infographic.md Track 2). This is a
+// mitigation, not a fix: the box height is fixed regardless of font, so very
+// long copy can still overflow.
+const MAX_ITEMS = 6
+const labelFontSize = (_current: string | null, node: SVGElement) => {
+  const len = node.textContent?.length ?? 0
+  if (len > 20) return 9
+  if (len > 12) return 11
+  return 14
+}
+const descFontSize = (_current: string | null, node: SVGElement) => {
+  const len = node.textContent?.length ?? 0
+  if (len > 70) return 9
+  if (len > 40) return 10
+  return 11
+}
+
 function dataUrlToSvg(url: string): string | null {
   if (!url.startsWith('data:image/svg+xml')) return null
   const comma = url.indexOf(',')
@@ -75,12 +97,20 @@ export function InfographicEditor() {
         const inst = new Infographic({
           container: container.current,
           template,
+          // the "list" template's built-in design packs rows -5px apart
+          // (its connector arrow bridges the overlap); give it breathing
+          // room instead so label/desc overflow doesn't land straight on
+          // the next item. Every other selectable template already uses a
+          // non-negative gap, so leave those alone.
+          design: template === 'list-column-vertical-icon-arrow'
+            ? { structure: { type: 'list-column', gap: 6, zigzag: true } }
+            : undefined,
           data: { title, lists: items },
           // the sidebar form is the single source of truth for this spec;
           // scheduleSave only ever serializes that React state, so a direct
           // in-canvas edit would just be discarded on the next autosave
           editable: false,
-          // Roomy canvas + top padding, and — crucially — an absolute title
+          // Roomy canvas + top padding, and, crucially, an absolute title
           // font size. The template otherwise scales the title with the canvas,
           // so it always wrapped to two lines and collided with the graphic.
           width: 1240,
@@ -90,6 +120,15 @@ export function InfographicEditor() {
             colorPrimary: theme.primary,
             palette: [theme.primary, theme.accent, theme.accent_2 ?? theme.accent],
             title: { 'font-size': 18, 'font-weight': 700 },
+            // item.label/item.desc override the component's hardcoded fonts
+            // the same way title does; scaled by length so long copy shrinks
+            // instead of overflowing its fixed-size card (1-line label box,
+            // 2-line desc box). Tighter desc line-height packs more of a
+            // wrapped 2-line desc back inside that box.
+            item: {
+              label: { 'font-size': labelFontSize },
+              desc: { 'font-size': descFontSize, 'line-height': 1.2 },
+            },
           },
         } as never)
         inst.render()
@@ -134,7 +173,7 @@ export function InfographicEditor() {
 
   const setItem = (i: number, patch: Partial<Item>) =>
     setItems((list) => list.map((it, j) => (j === i ? { ...it, ...patch } : it)))
-  const addItem = () => setItems((l) => [...l, { label: 'New item', desc: '' }])
+  const addItem = () => setItems((l) => (l.length >= MAX_ITEMS ? l : [...l, { label: 'New item', desc: '' }]))
   const delItem = (i: number) => setItems((l) => l.filter((_, j) => j !== i))
 
   const exportSvg = async () => {
@@ -198,7 +237,11 @@ export function InfographicEditor() {
           <div>
             <div className="flex items-center justify-between">
               <h3 className="font-mono text-[11px] uppercase leading-4 tracking-[0.08em] text-stage-muted">Items</h3>
-              <button onClick={addItem} aria-label="Add item" className="text-stage-muted hover:text-white"><Plus size={14} /></button>
+              <button onClick={addItem} disabled={items.length >= MAX_ITEMS} aria-label="Add item"
+                title={items.length >= MAX_ITEMS ? `Maximum ${MAX_ITEMS} items` : 'Add item'}
+                className="text-stage-muted hover:text-white disabled:pointer-events-none disabled:opacity-40">
+                <Plus size={14} />
+              </button>
             </div>
             <div className="mt-2 space-y-2">
               {items.map((it, i) => (

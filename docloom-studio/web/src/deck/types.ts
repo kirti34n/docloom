@@ -78,6 +78,16 @@ export interface SourceT {
   date?: string | null
 }
 
+/** The active brand's logo, resolved to a servable URL for the live preview.
+ * Not part of docloom's IR: the stored deck/doc payload never carries a real
+ * logo path (docloom only stamps `doc.logo` on the document at export time),
+ * so the preview fetches this separately from /api/brand-kit and overlays it
+ * client-side instead of reading it off DocumentT. */
+export interface BrandLogoT {
+  url: string
+  alt: string
+}
+
 export interface DocumentT {
   title: string
   subtitle?: string | null

@@ -61,9 +61,9 @@ def test_image_layout_slide_renders_bound_picture(tmp_path):
     assert len(_pics(prs.slides[0])) == 1
 
 
-def test_doc_logo_stamps_every_content_slide(tmp_path):
-    """A document-level logo appears on content slides but not on the title
-    slide (which places its own image) or full-bleed section slides."""
+def test_doc_logo_stamps_every_slide(tmp_path):
+    """A document-level logo appears top-right on every slide layout: the
+    title, content slides, and full-bleed section slides (over a scrim)."""
     logo = Image(path=_logo(tmp_path))
     doc = Document(title="Branded", logo=logo, slides=[
         Slide(layout="title", title="Q3"),
@@ -73,11 +73,9 @@ def test_doc_logo_stamps_every_content_slide(tmp_path):
     ])
     out = render(doc, "pptx", tmp_path / "branded.pptx")
     prs = Presentation(str(out))
-    assert len(_pics(prs.slides[0])) == 0  # title slide: no doc logo (no title image)
-    assert len(_pics(prs.slides[1])) == 1  # content: stamped
-    assert len(_pics(prs.slides[2])) == 1  # content: stamped
-    assert len(_pics(prs.slides[3])) == 0  # section: full-bleed, skipped
-    # stamped small, in the top-right corner
-    pic = _pics(prs.slides[1])[0]
-    assert pic.height / 914400 <= 0.45
-    assert pic.left / 914400 > 6.0
+    for i in range(4):
+        pics = _pics(prs.slides[i])
+        assert len(pics) == 1, f"slide {i} should carry the brand logo"
+        # top-right corner, modest size
+        assert pics[0].left / 914400 > 6.0
+        assert pics[0].height / 914400 <= 0.9

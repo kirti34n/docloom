@@ -42,6 +42,13 @@ DEFAULTS: dict[str, Any] = {
         "voice_a": "af_heart",  # host
         "voice_b": "am_michael",  # guest
     },
+    "provider.image": {
+        "kind": "gemini",  # cloud, paid: illustrative slide images only (Nano Banana)
+        "base_url": "https://generativelanguage.googleapis.com",
+        "api_key": "",
+        "model": "gemini-2.5-flash-image",
+        "enabled": False,
+    },
     "research.tavily_key": "",
     "assets.pexels_key": "",
     "deck.theme": "paper",

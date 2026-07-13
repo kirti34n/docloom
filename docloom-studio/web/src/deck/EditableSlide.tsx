@@ -5,6 +5,7 @@ import { plain } from './RichText'
 import { EditableText } from './Editable'
 import { EditableBlock } from './EditableBlock'
 import { useDeck } from './deckStore'
+import { BrandLogoMark, logoPlacement, useBrandLogo } from './DeckStage'
 
 const ADD_TYPES = [
   ['paragraph', 'Text'],
@@ -67,9 +68,12 @@ export function EditableSlide({ slideId }: { slideId: string }) {
   const addBlock = useDeck((s) => s.addBlock)
   const removeBlock = useDeck((s) => s.removeBlock)
   const cites = citeMap({ sources })
+  const logo = useBrandLogo()
 
   if (!slide) return null
   const acc = slide.accent ? ({ '--slide-accent': slide.accent } as React.CSSProperties) : {}
+  const { scrim, corner } = logoPlacement(slide.layout, !!assetSrc(slide.image))
+  const logoMark = <BrandLogoMark logo={logo} scrim={scrim} corner={corner} />
 
   // Slide.title/subtitle are plain strings in the IR (no spans), so their
   // regions use the plain-text kit: the affordance then matches what commit
@@ -105,6 +109,7 @@ export function EditableSlide({ slideId }: { slideId: string }) {
     case 'title':
       return (
         <div className="deck-stage layout-title" style={acc}>
+          {logoMark}
           <div className="edge-bar" />
           <h1><EditableText className="edit-h1" value={slide.title ?? ''} extRev={editorRev} plainText
             onChange={(rt) => updateSlide(slideId, { title: asString(rt) })} /></h1>
@@ -116,6 +121,7 @@ export function EditableSlide({ slideId }: { slideId: string }) {
     case 'section':
       return (
         <div className="deck-stage layout-section" style={acc}>
+          {logoMark}
           <h1><EditableText className="edit-h1" value={slide.title ?? ''} extRev={editorRev} plainText
             onChange={(rt) => updateSlide(slideId, { title: asString(rt) })} /></h1>
           <div className="subtitle"><EditableText value={slide.subtitle ?? ''} extRev={editorRev} plainText
@@ -127,6 +133,7 @@ export function EditableSlide({ slideId }: { slideId: string }) {
       const q = (slide.blocks ?? []).find((b) => b.type === 'quote')
       return (
         <div className="deck-stage layout-quote" style={acc}>
+          {logoMark}
           <div className="accent-bar" />
           {q ? (
             <>
@@ -153,6 +160,7 @@ export function EditableSlide({ slideId }: { slideId: string }) {
     case 'hero':
       return (
         <div className="deck-stage layout-hero" style={acc}>
+          {logoMark}
           {assetSrc(slide.image) ? (
             <img className="hero-img" src={assetSrc(slide.image)!} alt={slide.image?.alt ?? ''} />
           ) : (
@@ -172,7 +180,10 @@ export function EditableSlide({ slideId }: { slideId: string }) {
     case 'two_column':
       return (
         <div className="deck-stage" style={acc}>
-          <div className="slot title-band">{titleField}<div className="title-rule" /></div>
+          {logoMark}
+          <div className="slot title-band" style={logo ? { right: 240 } : undefined}>
+            {titleField}<div className="title-rule" />
+          </div>
           <div className="slot body-flow">
             <div className="two-cols">
               <div className="edit-col">{blockList('blocks')}</div>
@@ -184,11 +195,16 @@ export function EditableSlide({ slideId }: { slideId: string }) {
     case 'image_left':
     case 'image_right': {
       const side = slide.layout === 'image_left' ? 'left' : 'right'
+      // image_left keeps the logo top-right, over this pane's own text side,
+      // so the reserve carves from the right; image_right flips the logo to
+      // top-left (see logoPlacement), so the reserve carves from the left,
+      // where the logo actually sits.
       const inset = side === 'left'
-        ? { left: 'calc(45% + 40px)', right: '56px' }
-        : { left: '56px', right: 'calc(45% + 40px)' }
+        ? { left: 'calc(45% + 40px)', right: logo ? '240px' : '56px' }
+        : { left: logo ? '240px' : '56px', right: 'calc(45% + 40px)' }
       return (
         <div className="deck-stage" style={acc}>
+          {logoMark}
           <div className={`image-pane ${side}`}>
             {assetSrc(slide.image) ? (
               <img
@@ -213,7 +229,10 @@ export function EditableSlide({ slideId }: { slideId: string }) {
     default:
       return (
         <div className="deck-stage" style={acc}>
-          <div className="slot title-band">{titleField}<div className="title-rule" /></div>
+          {logoMark}
+          <div className="slot title-band" style={logo ? { right: 240 } : undefined}>
+            {titleField}<div className="title-rule" />
+          </div>
           <div className="slot body-flow">{blockList('blocks')}</div>
         </div>
       )

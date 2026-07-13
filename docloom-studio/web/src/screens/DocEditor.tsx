@@ -20,6 +20,7 @@ import { toast } from '../ui/toast'
 import type { ArtifactT } from '../deck/types'
 import { themeVars } from '../deck/types'
 import { EditableBlock } from '../deck/EditableBlock'
+import { useBrandLogo } from '../deck/DeckStage'
 import { useThemes, themeByName } from '../deck/useThemes'
 import { useDoc, docHistory } from '../doc/docStore'
 import '../deck/stage.css'
@@ -97,6 +98,7 @@ export function DocEditor() {
   const saving = useDoc((s) => s.saving)
   const dirty = useDoc((s) => s.dirty)
   const findings = useDoc((s) => s.findings)
+  const logo = useBrandLogo()
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
   useEffect(() => {
@@ -180,6 +182,15 @@ export function DocEditor() {
 
       <div className="flex-1 overflow-auto bg-ws-bg py-10">
         <div className="mx-auto max-w-3xl rounded-[var(--radius)] bg-white px-14 py-12 shadow-[var(--shadow-panel)]" style={vars}>
+          {logo && (
+            <div className="mb-4 flex justify-end">
+              <img
+                src={logo.url}
+                alt={logo.alt}
+                style={{ display: 'block', maxHeight: 48, maxWidth: 200, objectFit: 'contain' }}
+              />
+            </div>
+          )}
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}

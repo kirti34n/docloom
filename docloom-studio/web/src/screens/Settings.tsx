@@ -20,10 +20,19 @@ interface TtsConfig {
   voice_b: string
 }
 
+interface ImageProviderConfig {
+  kind: string
+  base_url: string
+  api_key: string
+  model: string
+  enabled: boolean
+}
+
 interface AllSettings {
   'provider.generation': ProviderConfig
   'provider.embeddings': ProviderConfig
   'provider.tts': TtsConfig
+  'provider.image': ImageProviderConfig
   'research.tavily_key': string
   'assets.pexels_key': string
   'deck.theme': string
@@ -193,6 +202,8 @@ export function Settings() {
     setSettings({ ...settings, 'provider.embeddings': { ...settings['provider.embeddings'], ...patch } })
   const setTts = (patch: Partial<TtsConfig>) =>
     setSettings({ ...settings, 'provider.tts': { ...settings['provider.tts'], ...patch } })
+  const setImage = (patch: Partial<ImageProviderConfig>) =>
+    setSettings({ ...settings, 'provider.image': { ...settings['provider.image'], ...patch } })
   const setStr = (key: 'research.tavily_key' | 'assets.pexels_key' | 'deck.theme', value: string) =>
     setSettings({ ...settings, [key]: value })
 
@@ -323,6 +334,56 @@ export function Settings() {
               />
             </Field>
           </div>
+        </div>
+      </Panel>
+
+      <Panel className="mt-6 p-6">
+        <Eyebrow>Images</Eyebrow>
+        <h2 className="mt-1 font-display text-xl font-semibold text-ws-ink">AI image generation (Nano Banana)</h2>
+        <p className="mt-1 text-[12.5px] text-ws-muted">
+          Optional, cloud, paid. Uses Google Gemini to generate illustrative slide images when no matching
+          asset is found in your library. Off by default; sends slide prompts to Google's API. Diagrams stay
+          local and deterministic (D2) either way.
+        </p>
+
+        <label className="mt-4 flex items-center gap-2 text-[13px] text-ws-ink">
+          <input
+            type="checkbox"
+            checked={settings['provider.image'].enabled}
+            onChange={(e) => setImage({ enabled: e.target.checked })}
+            className="h-4 w-4 accent-brass"
+          />
+          Enable AI image generation
+        </label>
+
+        <div className="mt-4 grid gap-4" style={{ opacity: settings['provider.image'].enabled ? 1 : 0.5 }}>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Server URL">
+              <input
+                value={settings['provider.image'].base_url}
+                onChange={(e) => setImage({ base_url: e.target.value })}
+                disabled={!settings['provider.image'].enabled}
+                className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink disabled:opacity-50"
+              />
+            </Field>
+            <Field label="Model">
+              <input
+                value={settings['provider.image'].model}
+                onChange={(e) => setImage({ model: e.target.value })}
+                disabled={!settings['provider.image'].enabled}
+                className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink disabled:opacity-50"
+              />
+            </Field>
+          </div>
+          <Field label="Google Gemini API key">
+            <input
+              type="password"
+              value={settings['provider.image'].api_key}
+              onChange={(e) => setImage({ api_key: e.target.value })}
+              disabled={!settings['provider.image'].enabled}
+              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink disabled:opacity-50"
+            />
+          </Field>
         </div>
       </Panel>
 

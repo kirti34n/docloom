@@ -52,7 +52,8 @@ h1,h2,h3,h4,h5{line-height:1.25;margin:2rem 0 .75rem}
 h1{font-size:2rem;margin-top:0}
 h2{font-size:1.4rem;border-bottom:1px solid var(--surface);padding-bottom:.35rem}
 h3{font-size:1.15rem}
-header{border-bottom:2px solid var(--primary);padding-bottom:1rem;margin-bottom:2rem}
+header{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;border-bottom:2px solid var(--primary);padding-bottom:1rem;margin-bottom:2rem}
+header .header-text{flex:1 1 auto;min-width:0}
 header p{margin:.25rem 0}
 header .subtitle{color:var(--muted);font-size:1.1rem}
 header .meta{color:var(--muted);font-size:.85rem}
@@ -136,7 +137,10 @@ def _css(theme: Theme) -> str:
         f"--bg:{theme.background};--surface:{theme.surface};"
         f"--text:{theme.text};--muted:{theme.muted}}}\n"
         + _CSS_STATIC
-        + f"header .brand-logo{{max-height:2.5rem;margin-bottom:.75rem}}\n"
+        # 3rem = 48px = 0.5in @96dpi: the shared logo target height also used
+        # by docx (Inches(0.5)) and typst (1.27cm), so the brand mark is a
+        # consistent size across every rendered format.
+        + f"header .brand-logo{{max-height:3rem;flex-shrink:0}}\n"
         + f"body{{font-family:{_css_font(theme.font_body)},Georgia,"
         f'"Times New Roman",serif}}\n'
         f"h1,h2,h3,h4,h5{{font-family:{_css_font(theme.font_heading)},"
@@ -384,13 +388,16 @@ def _sources_html(doc: Document) -> str:
 
 def to_html(doc: Document, theme: Theme) -> str:
     numbers = source_numbers(doc)
-    parts = [f"<header>{_logo_html(doc.logo)}<h1>{_esc(doc.title)}</h1>"]
+    # title/subtitle/meta share a flex slot with the logo (header, in _css);
+    # the logo comes after this div closes so justify-content:space-between
+    # pushes it to the top-right instead of the old left, in-flow placement.
+    parts = [f'<header><div class="header-text"><h1>{_esc(doc.title)}</h1>']
     if doc.subtitle:
         parts.append(f'<p class="subtitle">{_esc(doc.subtitle)}</p>')
     meta = " \u00b7 ".join(x for x in (", ".join(doc.authors), doc.date or "") if x)
     if meta:
         parts.append(f'<p class="meta">{_esc(meta)}</p>')
-    parts.append("</header>")
+    parts.append(f"</div>{_logo_html(doc.logo)}</header>")
     for b in report_blocks(doc):
         rendered = _block_html(b, numbers, theme)
         if rendered:

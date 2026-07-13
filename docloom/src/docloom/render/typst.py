@@ -159,7 +159,7 @@ def _rich(rt: RichText, numbers: dict[str, int], cell_link_color: str | None = N
                 # ponytail: typst 0.15.0 panics ("expected link ancestor in
                 # logical tree") when a styled link wraps across lines inside
                 # a table cell, so cell links render as colored text without
-                # #link — cells lose clickability until that upstream typst
+                # #link. Cells lose clickability until that upstream typst
                 # bug is fixed.
                 piece = f'#text(fill: rgb("{cell_link_color}"))[{piece}]'
             elif href:
@@ -429,9 +429,12 @@ def _inject_logo(source: str, doc: Document, tmp_dir: Path) -> str:
             # limit stops this from also rewriting the same literal text if it
             # appears inside user content (e.g. a Code block quoting docloom's
             # own output) further down in the source.
+            # 1.27cm = 0.5in: the shared logo target height also used by
+            # docx (Inches(0.5)) and html (3rem = 48px @96dpi), so the brand
+            # mark is a consistent size across every rendered format.
             return source.replace(
                 "// __DOCLOOM_LOGO__",
-                f"#align(right)[#image({_str(local)}, height: 1.4cm)]",
+                f"#align(right)[#image({_str(local)}, height: 1.27cm)]",
                 1,
             )
         except OSError:

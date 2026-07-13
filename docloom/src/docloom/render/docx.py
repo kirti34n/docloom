@@ -162,6 +162,9 @@ def _logo_block(docx_doc, doc: Document) -> None:
     par = docx_doc.add_paragraph()
     par.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     try:
+        # 0.5in: the shared logo target height also used by typst (1.27cm)
+        # and html (3rem = 48px @96dpi), so the brand mark is a consistent
+        # size across every rendered format.
         par.add_run().add_picture(str(logo.path), height=Inches(0.5))
     except Exception:
         # remove the now-empty paragraph so no stray gap remains

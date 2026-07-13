@@ -202,6 +202,17 @@ def _image_md(
     return out
 
 
+def _logo_md(logo: Image | None, copier: _AssetCopier | None = None) -> str:
+    """A brand logo image near the title, or "" if there is none or its file
+    is missing. Routed through the same asset copier as body images (rather
+    than a data URI) so it stays consistent with every other image in this
+    renderer: a downloaded .md keeps working logo art next to it instead of
+    a giant inline blob or a dead reference to the generating machine."""
+    if logo is None:
+        return ""
+    return _image_md(logo.path, logo.alt or "logo", None, copier)
+
+
 def _cell_md(text: str) -> str:
     return _pipe_safe(_esc_md(_one_line(text)))
 
@@ -331,7 +342,11 @@ def _footnotes_md(doc: Document, numbers: dict[str, int]) -> str:
 
 def to_markdown(doc: Document, copier: _AssetCopier | None = None) -> str:
     numbers = source_numbers(doc)
-    parts = [f"# {_esc_md(_one_line(doc.title))}"]
+    parts = []
+    logo = _logo_md(doc.logo, copier)
+    if logo:
+        parts.append(logo)
+    parts.append(f"# {_esc_md(_one_line(doc.title))}")
     meta = " \u00b7 ".join(
         x for x in (doc.subtitle or "", ", ".join(doc.authors), doc.date or "") if x
     )

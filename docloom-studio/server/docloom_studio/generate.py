@@ -276,10 +276,67 @@ def _default_outline(prompt: str) -> Outline:
     ])
 
 
-def _resolve_deck_images(doc: Document, user_id: str | None) -> None:
-    """Fill image-layout slots from the user's tagged assets, and put the brand
-    logo on the title slide. Slots that resolve to nothing render empty."""
+# Nano Banana (Gemini image generation) is for illustrative slide imagery
+# only -- diagrams stay on the deterministic D2 path (see run_diagram_pipeline
+# below). The model only emits a bare 2-4 word `image.query`; enriching it
+# with a fixed style suffix and an aspect matching the layout before calling
+# the provider is the single biggest lever on output quality (see
+# understand-image-diagram-gen.md 3.4).
+_IMAGE_ASPECT_BY_LAYOUT = {"hero": "16:9", "image_left": "4:3", "image_right": "4:3"}
+_IMAGE_STYLE_SUFFIX = "clean editorial illustration, flat vector, soft palette, no text"
+
+
+def _enrich_image_prompt(subject: str, layout: str) -> tuple[str, str]:
+    """(prompt, aspect_ratio) for one generated slide image. Pure and
+    deterministic, so it is cheap to unit test without touching the network."""
+    aspect = _IMAGE_ASPECT_BY_LAYOUT.get(layout, "16:9")
+    return f"{subject}, {_IMAGE_STYLE_SUFFIX}, {aspect}", aspect
+
+
+async def _generate_slide_image(
+    s: Slide, query: str, user_id: str | None, image_settings: dict,
+    ctx: JobCtx | None,
+) -> None:
+    """Best-effort illustrative image for ONE unmatched hero/image_left/
+    image_right slot. A timeout, a refusal, or any other provider-shaped
+    failure (_UNIT_FAILURES -- the same tuple every per-slide text call above
+    swallows) leaves the slot exactly as it was, query-only with no path, so
+    it simply renders empty instead of sinking the whole deck. ValueError is
+    also swallowed here: save_generated_image raises it for an
+    over-size generated image, a content-level rejection in the same spirit
+    as a provider error, not an infrastructure fault."""
+    subject = query or s.title or "an abstract illustration"
+    if ctx is not None:
+        ctx.emit("image", "running", detail=subject)
+    try:
+        from .assets import save_generated_image
+        from .providers import ImageProviderConfig, generate_image
+
+        prompt, aspect = _enrich_image_prompt(subject, s.layout)
+        data = await generate_image(
+            ImageProviderConfig(**image_settings), prompt, aspect_ratio=aspect)
+        aid = save_generated_image(user_id, data, prompt=prompt)
+        s.image = Image(asset_id=aid, path=f"asset://{aid}", alt=query or "")
+    except (*_UNIT_FAILURES, ValueError) as e:
+        if ctx is not None:
+            ctx.emit("image", "skipped", detail=subject, data={"error": str(e)[:200]})
+        return
+    if ctx is not None:
+        ctx.emit("image", "done", detail=subject)
+
+
+async def _resolve_deck_images(
+    doc: Document, user_id: str | None, ctx: JobCtx | None = None,
+) -> None:
+    """Fill image-layout slots from the user's tagged assets first, and put
+    the brand logo on the title slide. When nothing matches AND AI image
+    generation (Nano Banana) is enabled for this owner, generate an
+    illustrative image instead of leaving the slot empty. A slot only stays
+    empty when nothing matches and generation is off, disabled, or fails."""
     from .assets import active_brand, resolve_image
+
+    image_settings = get_setting("provider.image", user_id) or {}
+    gen_enabled = bool(image_settings.get("enabled"))
 
     logo = active_brand(user_id).get("logo_asset_id")
     for s in doc.slides:
@@ -288,6 +345,8 @@ def _resolve_deck_images(doc: Document, user_id: str | None) -> None:
             aid = resolve_image(q, user_id)
             if aid:
                 s.image = Image(asset_id=aid, path=f"asset://{aid}", alt=q or None)
+            elif gen_enabled:
+                await _generate_slide_image(s, q, user_id, image_settings, ctx)
         elif s.layout == "title" and logo:
             s.image = Image(asset_id=logo, path=f"asset://{logo}", alt="logo")
 
@@ -314,7 +373,14 @@ async def run_deck_pipeline(
             "does not support.\nEvidence:\n" + "\n".join(context_lines)
         )
 
-    has_images = query_one(
+    # Image layouts are offered whenever a slot can actually be filled:
+    # either the user has tagged assets to match against, or AI image
+    # generation is enabled and will fill an unmatched slot itself. Relaxing
+    # this for the enabled case is what lets a user with an empty asset
+    # library still get hero/image slides (_resolve_deck_images below does
+    # the actual generation).
+    image_gen_enabled = bool((get_setting("provider.image", owner) or {}).get("enabled"))
+    has_images = image_gen_enabled or query_one(
         "SELECT 1 FROM assets WHERE type IN ('image','logo') AND user_id = ? LIMIT 1",
         (owner,)) is not None
     outline_sys = OUTLINE_SYSTEM + (IMAGE_LAYOUT_HINT if has_images else NO_IMAGE_HINT)
@@ -406,7 +472,7 @@ async def run_deck_pipeline(
     ctx.emit("lint", "done", data={
         "findings": [f.model_dump() for f in findings],
     })
-    _resolve_deck_images(doc, owner)
+    await _resolve_deck_images(doc, owner, ctx)
 
     theme_name = get_setting("deck.theme", owner)
     payload = {"ir": doc.model_dump(exclude_none=True),
@@ -849,22 +915,76 @@ IG_TEMPLATES = {
 }
 
 
+# Hard caps matching what the fixed-size AntV cards actually fit (see
+# understand-infographic.md). The library never wraps/ellipsizes past its
+# pre-baked line budget -- it OVERLAPS the neighboring card instead. A
+# pydantic Field(max_length=...) alone would not help: docloom.llm.llm_schema
+# strips maxLength/minLength before the schema ever reaches the model, so the
+# model is never told about the limit; and if we instead relied on
+# Field(max_length=...) validation, an over-cap value would be a hard parse
+# failure (risking GenerationFailed after a few rounds) rather than a soft,
+# actionable retry. So the caps are enforced only in _infographic_errors
+# below (the lint_fn generate_validated's retry loop actually re-prompts on),
+# plus a deterministic clamp as a backstop once every retry round is spent.
+IG_ITEMS_MIN, IG_ITEMS_MAX = 3, 6
+IG_TITLE_MAX = 40
+IG_LABEL_MAX = 24
+IG_DESC_MAX = 90
+
+
 class InfographicItem(BaseModel):
-    label: str = Field(description="short item title (<= 5 words)")
-    desc: str = Field("", description="one short supporting phrase")
+    label: str = Field(description=f"short item title, at most {IG_LABEL_MAX} characters")
+    desc: str = Field(
+        "", description=f"one short supporting phrase, at most {IG_DESC_MAX} characters")
 
 
 class InfographicSpec(BaseModel):
     style: Literal["list", "steps", "pyramid", "grid"] = "list"
-    title: str
-    items: list[InfographicItem] = Field(description="3-6 items")
+    title: str = Field(description=f"short title, at most {IG_TITLE_MAX} characters")
+    items: list[InfographicItem] = Field(
+        description=f"{IG_ITEMS_MIN}-{IG_ITEMS_MAX} items")
 
 
-IG_SYSTEM = """\
+IG_SYSTEM = f"""\
 You design infographics. Return JSON: a `style` (list, steps, pyramid, or
-grid), a short `title`, and 3-6 `items` each with a punchy `label` and a
-one-line `desc`. Keep every label under 5 words. Ground in evidence when
-provided."""
+grid), a short `title`, and {IG_ITEMS_MIN}-{IG_ITEMS_MAX} `items` each with a
+punchy `label` and a one-line `desc`.
+
+Cards are a FIXED size: text past the limit does not wrap onto a new line,
+it overlaps the neighboring card. These are hard limits, not suggestions:
+- `title`: at most {IG_TITLE_MAX} characters (fits one line).
+- each `label`: at most {IG_LABEL_MAX} characters (2-4 words).
+- each `desc`: at most {IG_DESC_MAX} characters (one short phrase), or leave
+  it empty rather than run long.
+- exactly {IG_ITEMS_MIN}-{IG_ITEMS_MAX} `items`.
+
+Ground in evidence when provided."""
+
+
+def _clamp_text(text: str, limit: int) -> str:
+    """Deterministic backstop: if the model still ships an over-length value
+    after every lint retry (see _infographic_errors), cut it at the last word
+    boundary within the cap rather than shipping text guaranteed to overlap a
+    fixed-size card. Falls back to a hard cut only when there is no space to
+    break on (one very long token)."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(",.;:")
+    return cut or text[:limit]
+
+
+def _infographic_errors(spec: InfographicSpec) -> list[str]:
+    """The lint_fn generate_validated retries on. It enforces ONLY the item
+    count, which the deterministic _clamp_text backstop below cannot fix.
+    Over-length title/label/desc are deliberately NOT failed here: doing so
+    could exhaust every retry and hard-fail the whole generation on a model
+    that keeps overshooting, whereas _clamp_text (applied right after) trims
+    them deterministically so a long value never overlaps a card and never
+    sinks the artifact. IG_SYSTEM still asks the model to keep them short."""
+    if not IG_ITEMS_MIN <= len(spec.items) <= IG_ITEMS_MAX:
+        return [f"need {IG_ITEMS_MIN}-{IG_ITEMS_MAX} items, got {len(spec.items)}"]
+    return []
 
 
 async def run_infographic_pipeline(
@@ -881,8 +1001,14 @@ async def run_infographic_pipeline(
          {"role": "user", "content": prompt + _context_block(context_lines, cite=False)}],
         schema=llm_schema(InfographicSpec),
         parse=lambda t: parse_llm_output(t, InfographicSpec),
-        lint_fn=lambda s: ([] if 2 <= len(s.items) <= 8 else ["need 2-8 items"]),
+        lint_fn=_infographic_errors,
     )
+    # deterministic backstop: never ship a value the fixed-size cards are
+    # guaranteed to overlap, even if the model exhausted every lint retry
+    spec.title = _clamp_text(spec.title, IG_TITLE_MAX)
+    for item in spec.items:
+        item.label = _clamp_text(item.label, IG_LABEL_MAX)
+        item.desc = _clamp_text(item.desc, IG_DESC_MAX)
     ctx.emit("body", "done", detail=spec.title)
     payload = {
         "style": spec.style,

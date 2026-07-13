@@ -84,6 +84,11 @@ CHART_TYPE = {
 }
 CALLOUT_EDGE = {"info": "primary", "success": "accent", "warning": "muted", "danger": "text"}
 _SAFE_SCHEMES = {"http", "https", "mailto"}  # matches html.py
+# Shared brand-logo target: 0.5in tall on every layout, matching the docx
+# (Inches(0.5)), typst (1.27cm), and html (3rem @ 96dpi) renderers so the
+# mark reads as one consistent size across every exported format.
+LOGO_MAX_H = 0.5
+LOGO_MAX_W = SLIDE_W * 0.28  # width guard: caps a very wide (e.g. horizontal wordmark) logo
 
 
 def _safe_href(url: str) -> str | None:
@@ -795,39 +800,95 @@ def _usable_image(img: Image | None) -> bool:
     return img is not None and bool(img.path) and Path(img.path).is_file()
 
 
-def _logo(slide, img: Image, max_h: float = 0.85) -> None:
-    """Place a brand logo in the slide's top-right corner, scaled to fit."""
+def _logo(
+    slide, img: Image, theme: Theme, *,
+    max_h: float = LOGO_MAX_H, corner: str = "top_right", scrim: bool = False,
+) -> None:
+    """Place a brand logo in a slide corner, scaled to `max_h` tall (small
+    source logos upscale to fill it; the max_w guard still caps a very wide
+    logo, keeping aspect ratio either way).
+
+    `corner` is "top_right" (default) or "top_left" (image_right puts its
+    image pane at top-right, so the logo moves to the opposite corner there
+    instead of landing on the image). `scrim` draws a small contrasting
+    plate behind the logo, reusing `_rect`, for full-bleed layouts (section's
+    solid fill, hero's cover image) where the corner isn't a plain
+    background and the logo would otherwise risk being illegible."""
     try:
         pic = slide.shapes.add_picture(str(img.path), 0, 0)
     except Exception:
-        return  # unreadable image: skip rather than fail the render
-    max_w = SLIDE_W * 0.28
-    scale = min(Inches(max_h) / pic.height, Inches(max_w) / pic.width, 1.0)
+        return  # unreadable image (e.g. an unembeddable SVG): skip, don't fail the render
+    scale = min(Inches(max_h) / pic.height, Inches(LOGO_MAX_W) / pic.width)
     pic.width = int(pic.width * scale)
     pic.height = int(pic.height * scale)
-    pic.top = Inches(MARGIN)
-    pic.left = Inches(SLIDE_W - MARGIN) - pic.width
+    w_in, h_in = pic.width / 914400, pic.height / 914400
+    left = MARGIN if corner == "top_left" else SLIDE_W - MARGIN - w_in
+    top = MARGIN
+    if scrim:
+        pad = 0.08
+        plate = _rect(
+            slide, left - pad, top - pad, w_in + 2 * pad, h_in + 2 * pad,
+            theme.background,
+        )
+        pic._element.addprevious(plate._element)  # plate behind the logo picture
+    pic.top = Inches(top)
+    pic.left = Inches(left)
 
 
-def _doc_logo(slide, doc: Document, s: Slide) -> None:
-    """Stamp the document's brand logo on a content slide, small, top-right.
+def _doc_logo(slide, doc: Document, s: Slide, theme: Theme) -> None:
+    """Stamp the document's brand logo in a slide corner, small and the same
+    ~0.5in target size on every layout.
 
-    Skipped on full-bleed layouts (section/hero/image panes reach the corner)
-    and on the title slide, which places its own image."""
-    if s.layout in ("title", "section", "hero", "image_left", "image_right"):
+    section (solid theme.primary fill) and hero (full-bleed cover image) get
+    a contrasting scrim plate behind the logo since the corner there is not
+    a plain background. image_right's image pane sits at the top-right
+    corner, so its logo moves to top-left instead of landing on the image;
+    image_left's pane is already on the left, so the default top-right
+    corner is safe as-is. The title layout places its own logo (see
+    _title_slide, which also falls back to doc.logo) so it is skipped here
+    to avoid stamping it twice."""
+    if s.layout == "title":
         return
     if not _usable_image(doc.logo):
         return
-    _logo(slide, doc.logo, max_h=0.4)
+    if s.layout == "section":
+        _logo(slide, doc.logo, theme, max_h=LOGO_MAX_H, scrim=True)
+    elif s.layout == "hero" and _usable_image(s.image):
+        _logo(slide, doc.logo, theme, max_h=LOGO_MAX_H, scrim=True)
+    elif s.layout == "image_right" and _usable_image(s.image):
+        _logo(slide, doc.logo, theme, max_h=LOGO_MAX_H, corner="top_left")
+    else:
+        _logo(slide, doc.logo, theme, max_h=LOGO_MAX_H)
+
+
+def _logo_reserve(doc: Document) -> float:
+    """Extra right-edge width `_title_band` should leave blank so a top-right
+    logo never overlaps title text. Based on the logo's REAL scaled width
+    (a logo is height-capped to LOGO_MAX_H, so a normal ~square logo is only
+    ~0.5in wide), not the full-slide LOGO_MAX_W cap, so a small logo does not
+    needlessly carve down a narrow image-side title column."""
+    if not _usable_image(doc.logo):
+        return 0.0
+    try:
+        from PIL import Image as _PILImage  # python-pptx already depends on Pillow
+
+        with _PILImage.open(doc.logo.path) as im:
+            nw, nh = im.size
+        scaled_w = min(LOGO_MAX_W, LOGO_MAX_H * (nw / nh)) if nh else LOGO_MAX_H
+    except Exception:
+        scaled_w = LOGO_MAX_H  # conservative small default if it can't be measured
+    return scaled_w + GAP
 
 
 def _title_band(
     slide, title: str | None, theme: Theme,
     x: float = MARGIN, w: float | None = None, accent: str | None = None,
+    reserve: float = 0.0,
 ) -> float:
     if not title:
         return MARGIN
     w = SLIDE_W - x - MARGIN if w is None else w
+    w = max(1.5, w - reserve)  # room for a corner logo without crowding the text past legibility
     top, min_h, size = 0.42, 0.62, LAYOUT["title_pt"]
     box_h = max(min_h, _est_lines(title, size, w) * _line_h(size))
     tf = _box(slide, x, top, w, box_h)
@@ -842,8 +903,11 @@ def _title_band(
 
 def _title_slide(slide, s: Slide, doc: Document, theme: Theme, accent: str) -> None:
     _rect(slide, 0, 0, 0.3, SLIDE_H, accent)
-    if _usable_image(s.image):  # brand logo (or any title-slide image) → corner
-        _logo(slide, s.image)
+    # brand logo (or any title-slide image) → corner; fall back to doc.logo
+    # so a logo bound after generation still shows up here at export time
+    logo_img = s.image if _usable_image(s.image) else doc.logo
+    if _usable_image(logo_img):
+        _logo(slide, logo_img, theme)
     tx, ty, title_pt = 1.1, 2.5, 40
     tw = SLIDE_W - tx - MARGIN
     title_text = s.title or doc.title
@@ -915,9 +979,9 @@ def _quote_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int]) -> None
         _body(slide, rest, theme, numbers, MARGIN, y, SLIDE_W - 2 * MARGIN)
 
 
-def _content_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int],
-                   accent: str) -> None:
-    y = _title_band(slide, s.title, theme, accent=accent)
+def _content_slide(slide, s: Slide, doc: Document, theme: Theme,
+                   numbers: dict[str, int], accent: str) -> None:
+    y = _title_band(slide, s.title, theme, accent=accent, reserve=_logo_reserve(doc))
     _body(slide, s.blocks + s.right, theme, numbers, MARGIN, y, SLIDE_W - 2 * MARGIN)
 
 
@@ -960,12 +1024,12 @@ def _contain_fit(pic, box_x: float, box_y: float, box_w: float, box_h: float,
     pic.top = Inches(box_y) + (bh - pic.height) // 2
 
 
-def _hero_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int],
+def _hero_slide(slide, s: Slide, doc: Document, theme: Theme, numbers: dict[str, int],
                 accent: str) -> None:
     try:
         pic = slide.shapes.add_picture(str(s.image.path), 0, 0)
     except Exception:  # unreadable file: behave like content layout
-        _content_slide(slide, s, theme, numbers, accent)
+        _content_slide(slide, s, doc, theme, numbers, accent)
         return
     _cover_fit(pic, 0.0, 0.0, SLIDE_W, SLIDE_H)
     blocks = s.blocks + s.right
@@ -1004,8 +1068,8 @@ def _hero_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int],
         _body(slide, blocks, band_theme, numbers, MARGIN, y, tw)
 
 
-def _image_side_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int],
-                      accent: str) -> None:
+def _image_side_slide(slide, s: Slide, doc: Document, theme: Theme,
+                      numbers: dict[str, int], accent: str) -> None:
     pane_w = SLIDE_W * LAYOUT["image_pane_ratio"]
     left_side = s.layout == "image_left"
     px = 0.0 if left_side else SLIDE_W - pane_w
@@ -1016,14 +1080,29 @@ def _image_side_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int],
         pic = slide.shapes.add_picture(str(s.image.path), Inches(px), 0)
     except Exception:  # unembeddable file: drop the matte, behave like content layout
         matte._element.getparent().remove(matte._element)
-        _content_slide(slide, s, theme, numbers, accent)
+        _content_slide(slide, s, doc, theme, numbers, accent)
         return
     # Contain-fit, not cover-fit: a side image is often a diagram or chart, and
     # cropping its edge would silently drop content. Never upscale past native.
     _contain_fit(pic, px, 0.0, pane_w, SLIDE_H, max_scale=1.0)
     tx = pane_w + MARGIN if left_side else MARGIN
     tw = SLIDE_W - pane_w - 2 * MARGIN
-    y = _title_band(slide, s.title, theme, x=tx, w=tw, accent=accent)
+    reserve = _logo_reserve(doc)
+    # image_left keeps the logo top-right, over this pane's own outer edge, so
+    # the reserve carves from the right like a plain content slide; image_right
+    # flips the logo to top-left (to stay off the image pane on that side), so
+    # the reserve instead carves from the left, where the logo actually sits.
+    if left_side:
+        y = _title_band(slide, s.title, theme, x=tx, w=tw, accent=accent, reserve=reserve)
+    else:
+        y = _title_band(
+            slide, s.title, theme, x=tx + reserve, w=max(1.5, tw - reserve), accent=accent,
+        )
+    # a titleless image slide starts its body at the very top, where the corner
+    # logo also sits (top-left for image_right, top-right for image_left), so
+    # push the body below the logo band to avoid overlapping it
+    if not s.title and _usable_image(doc.logo):
+        y = max(y, MARGIN + LOGO_MAX_H + GAP)
     _body(slide, s.blocks + s.right, theme, numbers, tx, y, tw)
 
 
@@ -1040,11 +1119,11 @@ def _render_slide(prs, blank, s: Slide, doc: Document, theme: Theme,
     elif s.layout == "quote":
         _quote_slide(slide, s, theme, numbers)
     elif s.layout == "hero" and _usable_image(s.image):
-        _hero_slide(slide, s, theme, numbers, accent)
+        _hero_slide(slide, s, doc, theme, numbers, accent)
     elif s.layout in ("image_left", "image_right") and _usable_image(s.image):
-        _image_side_slide(slide, s, theme, numbers, accent)
+        _image_side_slide(slide, s, doc, theme, numbers, accent)
     elif s.layout == "two_column":
-        y = _title_band(slide, s.title, theme, accent=accent)
+        y = _title_band(slide, s.title, theme, accent=accent, reserve=_logo_reserve(doc))
         col_w = (SLIDE_W - 2 * MARGIN - 0.5) / 2
         avail = (SLIDE_H - MARGIN) - y
         col_scales = [
@@ -1054,8 +1133,8 @@ def _render_slide(prs, blank, s: Slide, doc: Document, theme: Theme,
         _body(slide, s.blocks, theme, numbers, MARGIN, y, col_w, col_scale)
         _body(slide, s.right, theme, numbers, MARGIN + col_w + 0.5, y, col_w, col_scale)
     else:  # content, or an image layout without a usable image path
-        _content_slide(slide, s, theme, numbers, accent)
-    _doc_logo(slide, doc, s)
+        _content_slide(slide, s, doc, theme, numbers, accent)
+    _doc_logo(slide, doc, s, theme)
     if s.notes:
         slide.notes_slide.notes_text_frame.text = s.notes
 

@@ -107,7 +107,38 @@ async def upload_asset(
                 "only — install the font to see it in PPTX."
                 if _font_embeddable(dest) else
                 "This font's license blocks embedding; it will not be embedded.")
-    return {"id": aid, "font_note": warn}
+    # Auto-bind the first uploaded logo as the active brand logo, so a user
+    # doesn't have to separately open the brand kit panel and pick it from a
+    # dropdown. Never clobber a logo the user already chose.
+    logo_asset_id = None
+    if type == "logo":
+        brand = active_brand(user["id"])
+        if not brand.get("logo_asset_id"):
+            logo_asset_id = aid
+            set_setting("brand.active", {**brand, "logo_asset_id": aid}, user["id"])
+    return {"id": aid, "font_note": warn, "logo_asset_id": logo_asset_id}
+
+
+def save_generated_image(
+    user_id: str, data: bytes, *, prompt: str, ext: str = ".png",
+) -> str:
+    """Persist AI-generated image bytes (e.g. Nano Banana output) as an owned
+    asset, mirroring upload_asset's own insert. Returns the new asset id;
+    callers reference the file as asset://{id}, same as an uploaded image."""
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise ValueError(
+            f"generated image exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit")
+    if ext not in IMAGE_EXT:
+        ext = ".png"  # keep the filename extension and the bytes' format agreeing
+    aid = new_id()
+    filename = f"generated{ext}"
+    (_asset_dir(aid) / filename).write_bytes(data)
+    execute(
+        "INSERT INTO assets (id, type, filename, tags, user_id, created) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (aid, "image", filename, (prompt or "").strip()[:300], user_id, now()),
+    )
+    return aid
 
 
 class TagPatch(BaseModel):
@@ -135,6 +166,16 @@ async def delete_asset(asset_id: str, user: dict = Depends(current_user)) -> dic
         raise HTTPException(404, "asset not found")
     execute("DELETE FROM assets WHERE id = ? AND user_id = ?", (asset_id, user["id"]))
     shutil.rmtree(data_dir() / "assets" / asset_id, ignore_errors=True)
+    # clear any brand-kit reference to the now-deleted asset so a preview does
+    # not render a broken image, and a fresh logo upload can auto-bind again
+    brand = active_brand(user["id"])
+    ref_fields = ("logo_asset_id", "heading_asset_id", "body_asset_id")
+    if any(brand.get(f) == asset_id for f in ref_fields):
+        set_setting(
+            "brand.active",
+            {**brand, **{f: None for f in ref_fields if brand.get(f) == asset_id}},
+            user["id"],
+        )
     return {"ok": True}
 
 

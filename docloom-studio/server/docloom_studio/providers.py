@@ -14,10 +14,18 @@ to disable reasoning on the models that allow it.
 Every schema-shaped generation goes through generate_validated(): complete →
 lenient parse → optional lint → feed findings back → retry. docloom's
 parse_llm_output does the lenient half.
+
+Image generation (Nano Banana / gemini-2.5-flash-image) is a separate,
+smaller surface: ImageProviderConfig + generate_image() call Gemini's same
+generateContent endpoint but with responseModalities:["IMAGE"], and return
+raw bytes instead of text. It is intentionally not a `kind` branch of
+complete()/stream_text(): those are text-shaped (schema, thinking, streaming)
+and image generation shares none of that.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any, AsyncIterator, Awaitable, Callable, TypeVar
 
@@ -41,6 +49,18 @@ class ProviderConfig(BaseModel):
     # allows it (see the gemini thinkingConfig logic below); "on" always
     # leaves the model's own default reasoning behavior in place.
     thinking: str = "auto"
+
+
+class ImageProviderConfig(BaseModel):
+    """Config for illustrative slide-image generation ("Nano Banana"). Kept
+    separate from ProviderConfig: it has its own enable gate (the feature is a
+    paid cloud call and must default off) and no schema/thinking/max_tokens
+    concerns. Only kind="gemini" is implemented today."""
+    kind: str = "gemini"
+    base_url: str = "https://generativelanguage.googleapis.com"
+    api_key: str = ""
+    model: str = "gemini-2.5-flash-image"
+    enabled: bool = False
 
 
 class ProviderError(RuntimeError):
@@ -112,6 +132,10 @@ _GEMINI_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com"
 _GEMINI_BLOCKED_FINISH_REASONS = {
     "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "SPII", "BLOCKLIST",
 }
+# Image generation can additionally stop with IMAGE_SAFETY (a safety trip
+# specific to the image-output path); everything else that can block text
+# generation applies here too.
+_GEMINI_IMAGE_BLOCKED_FINISH_REASONS = _GEMINI_BLOCKED_FINISH_REASONS | {"IMAGE_SAFETY"}
 
 
 def _gemini_base_url(cfg: "ProviderConfig") -> str:
@@ -193,6 +217,43 @@ def _gemini_parse_response(data: dict[str, Any], max_tokens: int) -> str:
     if not text and finish_reason not in (None, "STOP"):
         raise ProviderError(f"gemini stopped without output: {finish_reason}")
     return text
+
+
+def _gemini_image_request_body(prompt: str, aspect_ratio: str) -> dict[str, Any]:
+    """Pure builder for the image generateContent body ("Nano Banana"). Free
+    of any httpx/network code so tests can call it directly."""
+    return {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseModalities": ["IMAGE"],
+            "imageConfig": {"aspectRatio": aspect_ratio},
+        },
+    }
+
+
+def _gemini_parse_image_response(data: dict[str, Any]) -> bytes:
+    """Defensive parse of the image generateContent response: a prompt-level
+    block, an empty candidate list, a safety-stopped candidate, or a
+    candidate whose parts contain no image data must all raise ProviderError
+    so a caller (e.g. a deck's per-slide image fill) can skip the slot
+    instead of crashing the whole job."""
+    block_reason = data.get("promptFeedback", {}).get("blockReason")
+    if block_reason:
+        raise ProviderError(f"gemini blocked the image prompt: {block_reason}")
+    candidates = data.get("candidates") or []
+    if not candidates:
+        raise ProviderError("gemini returned no candidates for the image request")
+    parts = candidates[0].get("content", {}).get("parts") or []
+    for part in parts:
+        # v1beta REST is camelCase (inlineData/mimeType); some proto/doc
+        # samples show snake_case (inline_data) -- accept either.
+        blob = part.get("inlineData") or part.get("inline_data")
+        if blob and blob.get("data"):
+            return base64.b64decode(blob["data"])
+    finish_reason = candidates[0].get("finishReason")
+    if finish_reason in _GEMINI_IMAGE_BLOCKED_FINISH_REASONS:
+        raise ProviderError(f"gemini stopped generating the image: {finish_reason}")
+    raise ProviderError(f"gemini returned no image (finishReason={finish_reason})")
 
 
 async def complete(
@@ -489,6 +550,31 @@ async def list_models(cfg: ProviderConfig) -> list[str]:
                              headers=headers)
         await _raise_for_status(r)
         return [m["id"] for m in r.json().get("data", [])]
+
+
+async def generate_image(
+    cfg: ImageProviderConfig,
+    prompt: str,
+    *,
+    aspect_ratio: str = "16:9",
+) -> bytes:
+    """Text-to-image via Gemini's native generateContent ("Nano Banana").
+    Standalone rather than a complete()/stream_text() kind branch: the
+    response is an inline-data image blob, not text, and shares none of the
+    schema/thinking machinery those functions carry. Raises ProviderError
+    (see _gemini_parse_image_response) on a blocked prompt or a candidate
+    with no image part, so a per-slot caller can catch it and skip cleanly
+    instead of crashing the whole job."""
+    model = (cfg.model or "").removeprefix("models/")
+    base = (cfg.base_url or _GEMINI_DEFAULT_BASE_URL).rstrip("/")
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        r = await client.post(
+            f"{base}/v1beta/models/{model}:generateContent",
+            json=_gemini_image_request_body(prompt, aspect_ratio),
+            headers={"x-goog-api-key": cfg.api_key},
+        )
+        await _raise_for_status(r)
+        return _gemini_parse_image_response(r.json())
 
 
 async def generate_validated(

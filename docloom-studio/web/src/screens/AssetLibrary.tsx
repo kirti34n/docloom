@@ -3,6 +3,7 @@ import { Trash2, Upload } from 'lucide-react'
 import { api } from '../api/client'
 import { toast } from '../ui/toast'
 import { Button, Empty, Eyebrow, Panel } from '../ui'
+import { invalidateBrandLogoCache } from '../deck/DeckStage'
 
 interface Asset {
   id: string
@@ -52,6 +53,14 @@ export function AssetLibrary() {
       }
       const data = await res.json()
       if (data.font_note) setNote(data.font_note)
+      // The server auto-binds the first uploaded logo as the active brand
+      // logo (never clobbering one the user already picked) and reports the
+      // binding back here, so the Logo dropdown below and every live preview
+      // pick it up without a separate manual "set as brand logo" step.
+      if (data.logo_asset_id) {
+        setBrand((b) => ({ ...b, logo_asset_id: data.logo_asset_id }))
+        invalidateBrandLogoCache()
+      }
       load()
     } catch (e) {
       toast.error(`Upload failed: ${e instanceof Error ? e.message : e}`)
@@ -71,6 +80,7 @@ export function AssetLibrary() {
   }
   const saveBrand = async (next: Brand) => {
     setBrand(next)
+    invalidateBrandLogoCache()
     await api.put('/api/brand-kit', next)
   }
 
