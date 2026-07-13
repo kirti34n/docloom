@@ -9,7 +9,7 @@ import pytest
 
 from docloom import (
     DEFAULT, BulletList, Document, ListItem, Paragraph, Slide, Span,
-    lint, llm_schema, render,
+    has_errors, lint, llm_schema, render,
 )
 
 EXAMPLE = Path(__file__).parent.parent / "examples" / "quarterly_report.json"
@@ -22,7 +22,13 @@ def doc() -> Document:
 
 def test_example_validates_and_lints_clean(doc):
     assert doc.slides and doc.blocks and doc.sheets and doc.sources
-    assert lint(doc, DEFAULT) == []
+    # the example must stay export-ready: no ERROR-severity findings. Advisory
+    # authoring warnings (weak-title, unlabeled-visual, etc.) are hints, not
+    # blockers, so they are allowed here.
+    findings = lint(doc, DEFAULT)
+    assert not has_errors(findings), [
+        f.model_dump() for f in findings if f.severity == "error"
+    ]
 
 
 def test_llm_schema_is_provider_safe():

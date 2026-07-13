@@ -10,6 +10,7 @@ interface ProviderConfig {
   base_url: string
   api_key: string
   model: string
+  max_tokens?: number
 }
 
 interface TtsConfig {
@@ -29,7 +30,7 @@ interface AllSettings {
   [key: string]: unknown
 }
 
-const PROVIDER_PRESETS: Record<string, { label: string; base_url: string; hint: string }> = {
+const PROVIDER_PRESETS: Record<string, { label: string; base_url: string; hint: string; model?: string; embedModel?: string }> = {
   'llama-server': {
     label: 'llama.cpp server (recommended)',
     base_url: 'http://localhost:8080',
@@ -55,20 +56,29 @@ const PROVIDER_PRESETS: Record<string, { label: string; base_url: string; hint: 
     base_url: 'https://api.anthropic.com',
     hint: 'Requires an API key.',
   },
+  gemini: {
+    label: 'Google Gemini API',
+    base_url: 'https://generativelanguage.googleapis.com',
+    hint: 'Requires a Google AI Studio API key.',
+    model: 'gemini-2.5-flash',
+    embedModel: 'gemini-embedding-001',
+  },
 }
 
 function needsApiKey(kind: string): boolean {
-  return kind === 'openai' || kind === 'anthropic'
+  return kind === 'openai' || kind === 'anthropic' || kind === 'gemini'
 }
 
 function ProviderFields({
   cfg,
   models,
   onChange,
+  isEmbeddings = false,
 }: {
   cfg: ProviderConfig
   models: string[]
   onChange: (patch: Partial<ProviderConfig>) => void
+  isEmbeddings?: boolean
 }) {
   return (
     <>
@@ -77,7 +87,11 @@ function ProviderFields({
           value={cfg.kind}
           onChange={(e) => {
             const kind = e.target.value
-            onChange({ kind, base_url: PROVIDER_PRESETS[kind].base_url })
+            const preset = PROVIDER_PRESETS[kind]
+            // the embeddings slot needs an embedding model, not the chat model
+            // (e.g. gemini-embedding-001, not gemini-2.5-flash which 400s on embed)
+            const model = isEmbeddings ? preset.embedModel ?? preset.model : preset.model
+            onChange({ kind, base_url: preset.base_url, ...(model ? { model } : {}) })
           }}
           className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 text-[13px] text-ws-ink"
         >
@@ -234,6 +248,24 @@ export function Settings() {
 
         <div className="mt-4 grid gap-4">
           <ProviderFields cfg={settings['provider.generation']} models={genModels} onChange={setGen} />
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Max tokens" hint="Upper bound on tokens generated per call.">
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={settings['provider.generation'].max_tokens ?? 8192}
+                onChange={(e) => {
+                  const v = e.target.valueAsNumber
+                  // ProviderConfig.max_tokens is a pydantic int; coerce to a
+                  // positive whole number so a fractional/blank entry cannot
+                  // crash every generation call server-side
+                  setGen({ max_tokens: Number.isNaN(v) ? 8192 : Math.max(1, Math.floor(v)) })
+                }}
+                className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink"
+              />
+            </Field>
+          </div>
         </div>
 
         <div className="mt-5 flex items-center gap-3">
@@ -256,7 +288,7 @@ export function Settings() {
         <p className="mt-1 text-[12.5px] text-ws-muted">Turns your sources into searchable chunks for citations.</p>
 
         <div className="mt-4 grid gap-4">
-          <ProviderFields cfg={settings['provider.embeddings']} models={embModels} onChange={setEmb} />
+          <ProviderFields cfg={settings['provider.embeddings']} models={embModels} onChange={setEmb} isEmbeddings />
         </div>
       </Panel>
 

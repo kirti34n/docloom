@@ -1,4 +1,4 @@
-"""LLM provider layer: two HTTP call shapes, five presets.
+"""LLM provider layer: several HTTP call shapes, six presets.
 
 llama-server / LM Studio / OpenAI speak OpenAI-compatible chat completions
 (json_schema response_format = enforced structured output on llama-server and
@@ -6,7 +6,10 @@ LM Studio). Ollama uses its native /api/chat with the `format` schema for
 masking; the `think` API flag is never set (ollama#15260: think=false silently
 disables masking). For qwen3 models we instead inject the `/no_think` prompt
 token, which stops the slow reasoning block while keeping masking on.
-Anthropic uses /v1/messages with output_config structured outputs.
+Anthropic uses /v1/messages with output_config structured outputs. Gemini uses
+its native generateContent / streamGenerateContent / embedContent endpoints,
+with responseJsonSchema for structured output and thinkingConfig.thinkingBudget
+to disable reasoning on the models that allow it.
 
 Every schema-shaped generation goes through generate_validated(): complete →
 lenient parse → optional lint → feed findings back → retry. docloom's
@@ -29,10 +32,15 @@ DEFAULT_MAX_TOKENS = 8192  # anthropic requires an explicit cap; also complete()
 
 
 class ProviderConfig(BaseModel):
-    kind: str = "ollama"  # llama-server | ollama | lmstudio | openai | anthropic
+    kind: str = "ollama"  # llama-server | ollama | lmstudio | openai | anthropic | gemini
     base_url: str = "http://localhost:11434"
     api_key: str = ""
     model: str = ""
+    max_tokens: int = DEFAULT_MAX_TOKENS
+    # "auto" | "off" | "on". "auto"/"off" disable reasoning where the provider
+    # allows it (see the gemini thinkingConfig logic below); "on" always
+    # leaves the model's own default reasoning behavior in place.
+    thinking: str = "auto"
 
 
 class ProviderError(RuntimeError):
@@ -90,6 +98,101 @@ def _apply_no_think(cfg: "ProviderConfig", messages: list[dict[str, str]]) -> li
             return msgs
     msgs.append({"role": "user", "content": "/no_think"})
     return msgs
+
+
+# Gemini's native Generative Language API is shaped nothing like the
+# OpenAI-compatible convention every other fall-through branch speaks: the
+# model id is part of the URL (colon-suffixed method), auth is a plain header
+# (not Bearer), system prompts/roles/structured-output all use different
+# keys, and finish/block reasons need their own defensive parse. The pure
+# helpers below build the request body and parse the response without doing
+# any network I/O, so they can be unit tested directly (no live API, no
+# mocked transport needed).
+_GEMINI_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com"
+_GEMINI_BLOCKED_FINISH_REASONS = {
+    "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "SPII", "BLOCKLIST",
+}
+
+
+def _gemini_base_url(cfg: "ProviderConfig") -> str:
+    base = cfg.base_url
+    # ProviderConfig.base_url defaults to the shared ollama localhost value,
+    # which is not a real Gemini endpoint; treat it (and an empty value) as
+    # unset so a gemini config that kept the default still reaches Google.
+    if not base or base == ProviderConfig.model_fields["base_url"].default:
+        base = _GEMINI_DEFAULT_BASE_URL
+    return base.rstrip("/")
+
+
+def _gemini_model_id(cfg: "ProviderConfig") -> str:
+    return (cfg.model or "").removeprefix("models/")
+
+
+def _gemini_can_zero_thinking_budget(model: str) -> bool:
+    """Only the Gemini 2.x flash family accepts thinkingBudget: 0. 2.5-pro has a
+    nonzero floor; gemini-3.x uses thinkingLevel instead of thinkingBudget. The
+    floating "-latest" aliases (gemini-flash-latest) resolve server-side to a
+    gemini-3 flash and never contain the literal "gemini-3", so match the 2.x
+    flash ids explicitly rather than trying to deny "gemini-3"."""
+    m = model.lower()
+    return ("gemini-2.5-flash" in m or "gemini-2.0-flash" in m) and "pro" not in m
+
+
+def _gemini_request_body(
+    cfg: "ProviderConfig",
+    messages: list[dict[str, str]],
+    schema: dict | None,
+    temperature: float,
+    max_tokens: int,
+) -> dict[str, Any]:
+    """Pure builder for the generateContent / streamGenerateContent body.
+    Free of any httpx/network code so tests can call it directly."""
+    contents = [
+        {"role": "model" if m["role"] == "assistant" else m["role"],
+         "parts": [{"text": m["content"]}]}
+        for m in messages if m["role"] != "system"
+    ]
+    generation_config: dict[str, Any] = {
+        "temperature": temperature,
+        "maxOutputTokens": max_tokens,
+    }
+    if schema is not None:
+        generation_config["responseMimeType"] = "application/json"
+        # responseJsonSchema (not the older responseSchema) accepts docloom's
+        # llm_schema() dict as-is, including $defs/$ref/anyOf.
+        generation_config["responseJsonSchema"] = schema
+    if cfg.thinking != "on" and _gemini_can_zero_thinking_budget(_gemini_model_id(cfg)):
+        generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+    body: dict[str, Any] = {"contents": contents, "generationConfig": generation_config}
+    system = "\n".join(m["content"] for m in messages if m["role"] == "system")
+    if system:
+        body["systemInstruction"] = {"parts": [{"text": system}]}
+    return body
+
+
+def _gemini_parse_response(data: dict[str, Any], max_tokens: int) -> str:
+    """Defensive parse per Gemini's finishReason/promptFeedback contract:
+    candidates can be missing/empty, and content.parts can be absent even
+    when a finishReason is present."""
+    block_reason = data.get("promptFeedback", {}).get("blockReason")
+    if block_reason:
+        raise ProviderError(f"gemini blocked the prompt: {block_reason}")
+    candidates = data.get("candidates") or []
+    if not candidates:
+        raise ProviderError("gemini returned no candidates")
+    finish_reason = candidates[0].get("finishReason")
+    if finish_reason == "MAX_TOKENS":
+        raise TruncatedOutput(
+            f"response was cut off at the {max_tokens}-token limit before finishing")
+    if finish_reason in _GEMINI_BLOCKED_FINISH_REASONS:
+        raise ProviderError(f"gemini stopped generating: {finish_reason}")
+    parts = candidates[0].get("content", {}).get("parts") or []
+    text = "".join(p.get("text", "") for p in parts if "text" in p)
+    # any other non-STOP terminal reason (LANGUAGE, OTHER, ...) that produced no
+    # text is a failure, not a silent empty success
+    if not text and finish_reason not in (None, "STOP"):
+        raise ProviderError(f"gemini stopped without output: {finish_reason}")
+    return text
 
 
 async def complete(
@@ -155,6 +258,17 @@ async def complete(
                 raise TruncatedOutput(
                     f"response was cut off at the {max_tokens}-token limit before finishing")
             return data["message"]["content"]
+
+        if cfg.kind == "gemini":
+            model = _gemini_model_id(cfg)
+            body = _gemini_request_body(cfg, messages, schema, temperature, max_tokens)
+            r = await client.post(
+                _gemini_base_url(cfg) + f"/v1beta/models/{model}:generateContent",
+                json=body,
+                headers={"x-goog-api-key": cfg.api_key},
+            )
+            await _raise_for_status(r)
+            return _gemini_parse_response(r.json(), max_tokens)
 
         # OpenAI-compatible: llama-server, lmstudio, openai
         body = {"model": cfg.model, "messages": messages}
@@ -251,6 +365,40 @@ async def stream_text(
                         raise ProviderError(f"anthropic stream error: {event.get('error')}")
             return
 
+        if cfg.kind == "gemini":
+            model = _gemini_model_id(cfg)
+            body = _gemini_request_body(cfg, messages, None, temperature, cfg.max_tokens)
+            async with client.stream(
+                "POST",
+                _gemini_base_url(cfg) + f"/v1beta/models/{model}:streamGenerateContent?alt=sse",
+                json=body,
+                headers={"x-goog-api-key": cfg.api_key},
+            ) as r:
+                await _raise_for_status(r)
+                async for line in r.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if not payload:
+                        continue
+                    event = json.loads(payload)
+                    # surface a blocked prompt or a safety/recitation stop rather
+                    # than ending the stream silently and empty (mirrors the
+                    # ollama/anthropic streams and the non-streaming parse)
+                    block_reason = event.get("promptFeedback", {}).get("blockReason")
+                    if block_reason:
+                        raise ProviderError(f"gemini blocked the prompt: {block_reason}")
+                    candidates = event.get("candidates") or []
+                    if not candidates:
+                        continue
+                    fr = candidates[0].get("finishReason")
+                    if fr in _GEMINI_BLOCKED_FINISH_REASONS:
+                        raise ProviderError(f"gemini stopped generating: {fr}")
+                    parts = candidates[0].get("content", {}).get("parts") or []
+                    if parts and "text" in parts[0]:
+                        yield parts[0]["text"]
+            return
+
         body: dict[str, Any] = {
             "model": cfg.model, "messages": messages, "stream": True,
         }
@@ -283,6 +431,21 @@ async def embed(cfg: ProviderConfig, texts: list[str]) -> np.ndarray:
             )
             await _raise_for_status(r)
             return np.asarray(r.json()["embeddings"], dtype=np.float32)
+        if cfg.kind == "gemini":
+            model = _gemini_model_id(cfg)
+            r = await client.post(
+                _gemini_base_url(cfg) + f"/v1beta/models/{model}:batchEmbedContents",
+                json={"requests": [
+                    {"model": f"models/{model}",
+                     "content": {"parts": [{"text": t}]},
+                     "taskType": "RETRIEVAL_DOCUMENT"}
+                    for t in texts
+                ]},
+                headers={"x-goog-api-key": cfg.api_key},
+            )
+            await _raise_for_status(r)
+            return np.asarray(
+                [e["values"] for e in r.json()["embeddings"]], dtype=np.float32)
         headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
         r = await client.post(
             cfg.base_url.rstrip("/") + "/v1/embeddings",
@@ -307,6 +470,20 @@ async def list_models(cfg: ProviderConfig) -> list[str]:
             )
             await _raise_for_status(r)
             return [m["id"] for m in r.json().get("data", [])]
+        if cfg.kind == "gemini":
+            r = await client.get(
+                _gemini_base_url(cfg) + "/v1beta/models",
+                headers={"x-goog-api-key": cfg.api_key},
+            )
+            await _raise_for_status(r)
+            # Lenient on purpose: list_models doesn't know which slot
+            # (generation vs embeddings) is asking, so don't hide models here
+            # by guessing a capability filter.
+            return [
+                m["name"].removeprefix("models/")
+                for m in r.json().get("models", [])
+                if "generateContent" in m.get("supportedGenerationMethods", []) or True
+            ]
         headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
         r = await client.get(cfg.base_url.rstrip("/") + "/v1/models",
                              headers=headers)
@@ -328,7 +505,8 @@ async def generate_validated(
     rounds: list[dict[str, Any]] = []
     for round_no in range(1, max_rounds + 1):
         raw = await complete(cfg, history, schema=schema,
-                             temperature=0.3 + 0.15 * (round_no - 1))
+                             temperature=0.3 + 0.15 * (round_no - 1),
+                             max_tokens=cfg.max_tokens)
         entry: dict[str, Any] = {"round": round_no}
         problem: str | None = None
         result: T | None = None

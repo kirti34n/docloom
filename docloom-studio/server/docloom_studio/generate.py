@@ -13,7 +13,7 @@ from docloom import (
     AUTHORING_GUIDE, Column, Document, Sheet, Slide, Source, Span, ensure_ids,
     lint, llm_schema,
 )
-from docloom.ir import Block, Heading, Image, Table
+from docloom.ir import Block, Chart, Code, Heading, Image, StatRow, Table, plain
 from docloom.llm import parse_llm_output
 from pydantic import BaseModel, Field
 
@@ -34,7 +34,7 @@ OutlineLayout = Literal["section", "content", "two_column", "quote",
 
 IMAGE_LAYOUT_HINT = """
 You may also use "hero" (full-bleed image + title), "image_left", or
-"image_right" (image beside content) — use them where a picture helps.
+"image_right" (image beside content), use them where a picture helps.
 """
 NO_IMAGE_HINT = '\nUse only section, content, two_column, and quote.\n'
 IMAGE_SLIDE_HINT = ('\nFor hero/image_left/image_right layouts, set `image.query` '
@@ -53,28 +53,88 @@ class Outline(BaseModel):
 
 
 OUTLINE_SYSTEM = """\
-You plan slide decks. Given a request, return an outline as JSON:
-deck_title plus 4-12 slides, each {title, layout, intent}.
-Layouts: "section" for chapter breaks, "content" for points/evidence,
-"two_column" for comparisons, "quote" for one big statement.
-Do NOT include the opening title slide - it is added automatically.
-Slide titles: specific and under 60 characters. Intents: one sentence.
+You plan slide decks. Given a request and the evidence provided, return an
+outline as JSON: deck_title plus 3-14 slides, each {title, layout, intent}.
+Do NOT include the opening title slide, it is added automatically.
+
+STRUCTURE
+- One idea per slide. Read top to bottom, the slide titles alone must tell
+  the whole story (problem, evidence, implication), so a reader who only
+  skims the titles still gets the point.
+- Base the structure on what the evidence actually contains, not a generic
+  template; let the sources decide how many slides you need and what each
+  one covers.
+
+LAYOUTS
+- "section" for chapter breaks, "content" for a single point plus its
+  evidence, "two_column" for a direct comparison, "quote" for one big
+  statement that deserves its own slide.
+- Vary layouts across the deck. Do not make every slide "content".
+
+TITLES
+- Every slide title is a complete declarative sentence stating the
+  takeaway, 5-15 words, with a real verb. Never a topic label ("Overview",
+  "Introduction", "Results", "Q3 Metrics", "Background", "Agenda").
+  Bad: "Revenue". Good: "Revenue grew 14 percent on APAC expansion".
+
+INTENT
+- One sentence naming the single idea AND the evidence that proves it (a
+  number, a comparison, a quote, a trend). If the point rests on one or
+  two numbers, a trend, or a ranking, say so, that slide should lead with
+  a stats or chart block, not another bullet list.
 """
 
 SLIDE_SYSTEM = AUTHORING_GUIDE + """
 You are drafting ONE slide of a deck as a single JSON object matching the
-provided schema (a docloom Slide). Follow the requested layout and intent.
-Keep it tight: bullets under 130 chars, at most 6 bullets, tables at most
-4x4. two_column slides put contrasting material in `blocks` (left) and
-`right`. quote slides carry exactly one quote block. Set speaker `notes`
-with anything that does not fit on the slide.
+provided schema (a docloom Slide). Follow the requested layout and intent,
+but you own the content: pick the block type the evidence calls for.
+
+ONE IDEA
+- This slide makes exactly one assertion. If you find yourself wanting to
+  say two things, drop the weaker one or move it to speaker notes.
+- Title = the takeaway, not a label: a complete sentence with a verb,
+  5-15 words (e.g. "Support tickets dropped 30 percent after the rollout",
+  never "Support Tickets" or "Results").
+
+BLOCK SELECTION (do not default to bullets; pick what the evidence needs)
+- The point is one or two numbers: a "stats" block (a big, bold value plus
+  label), not a number buried in a sentence.
+- The point is a trend, comparison, ranking, or share of a whole: a
+  "chart" block (bar, column, line, or area). NEVER a "pie" chart.
+- The reader needs to look up precise or mixed-unit values: a "table".
+- The point is a sequence of steps: a "numbered" list.
+- Items are genuinely parallel, discrete, and few: up to 5 short "bullets"
+  (each under 12 words). Anything else reads better as a short paragraph.
+- two_column slides put contrasting material in `blocks` (left) and
+  `right`. quote slides carry exactly one quote block, the single
+  strongest line.
+
+LIMITS
+- At most 6 blocks/elements and about 25 words of on-slide body text.
+  Bullets: under 130 chars each, at most 6 per slide, fewer is better.
+  Tables: at most 4x4 on a slide. Put everything else in speaker `notes`.
+- Every chart, table, or image carries its own short title and a one-line
+  takeaway caption (what the reader should conclude from it), not just
+  raw data.
+
+GROUNDING
+- Ground every number, date, name, and claim in the evidence provided and
+  set the span's `cite` to the matching source id. If the evidence does
+  not support a claim, cut the claim, do not invent one.
+- Never write placeholder, lorem-ipsum, "TBD", or "insert X here" text,
+  and never ship a title with nothing under it: if the evidence is thin,
+  write the strongest true sentence it supports instead of leaving the
+  slide empty.
+
+Set speaker `notes` with anything that does not fit on the slide (detail,
+sourcing, transitions).
 """
 
 
 def _citation_gate(doc: Document, known_ids: set[str]) -> None:
     """Drop any span cite the model invented that isn't a real source id.
     docloom's cite/unknown-source lint would otherwise flag the deck as broken;
-    this is the deterministic grounding gate — no hallucinated references ship."""
+    this is the deterministic grounding gate, no hallucinated references ship."""
 
     def clean(text) -> None:
         if isinstance(text, list):
@@ -123,8 +183,97 @@ def _lint_errors(source_ids: set[str], **doc_kwargs) -> list[str]:
             if f.severity == "error" and f.rule not in _ADVISORY_RULES]
 
 
+def _blocks_text(blocks) -> list[str]:
+    """Flatten the literal text carried by a list of blocks, for the cheap
+    content checks below (empty-body / anti-placeholder). Not a citation
+    walk, see _citation_gate for that."""
+    out: list[str] = []
+    for b in blocks:
+        if hasattr(b, "text"):
+            out.append(plain(b.text))
+        if hasattr(b, "items"):
+            # BulletList/NumberedList items have `.text`; StatRow also has
+            # `.items` but its Stat items do not, guard per-item like
+            # _citation_gate does instead of assuming the shape
+            for it in b.items:
+                if hasattr(it, "text"):
+                    out.append(plain(it.text))
+        if isinstance(b, Table):
+            out.extend(plain(c) for c in b.header)
+            out.extend(plain(c) for row in b.rows for c in row)
+        # Code source is deliberately NOT collected: its only consumer is the
+        # placeholder scan, and empty literals (results = []) or a "# TODO"
+        # comment are legitimate code, not filler to reject.
+        if isinstance(b, Chart) and b.title:
+            out.append(b.title)
+        if isinstance(b, StatRow):
+            for s in b.items:
+                out.append(s.label)
+                out.append(s.value)
+    return out
+
+
+_PLACEHOLDER_RE = re.compile(
+    r"lorem ipsum|\btodo\b|\btbd\b|\bxxx\b|\[\s*\]|insert\s+\w[\w \-]*\s+here",
+    re.IGNORECASE,
+)
+
+
+def _placeholder_errors(texts: list[str]) -> list[str]:
+    """Flag stock filler text a model sometimes ships instead of real
+    content (a lorem-ipsum block, a literal TODO/TBD, an empty bracket). Code
+    source is excluded upstream in _blocks_text, so `x = []` never trips this.
+    Cheap and deterministic; feeds straight into generate_validated's retry
+    loop, the same way a lint finding does."""
+    for t in texts:
+        if t and _PLACEHOLDER_RE.search(t):
+            snippet = t.strip()[:80]
+            return [f'placeholder text found ("{snippet}"); replace it with '
+                    "real, grounded content"]
+    return []
+
+
+def _fallback_topic(prompt: str) -> str:
+    """A short, single-line topic carved out of the raw prompt, for the
+    deterministic default outlines below. No LLM call, so this must not
+    depend on generation succeeding."""
+    topic = " ".join(prompt.split())[:48].strip()
+    return topic or "the requested topic"
+
+
+def _slide_content_errors(slide: Slide) -> list[str]:
+    all_blocks = slide.blocks + slide.right
+    if slide.layout in ("content", "two_column", "quote") and not all_blocks:
+        return ["this slide has no content blocks; add real, grounded "
+                "content, not an empty placeholder"]
+    texts = _blocks_text(all_blocks)
+    if slide.title:
+        texts.append(slide.title)
+    return _placeholder_errors(texts)
+
+
 def _slide_errors(deck_title: str, slide: Slide, source_ids: set[str]) -> list[str]:
-    return _lint_errors(source_ids, title=deck_title, slides=[slide])
+    return (_lint_errors(source_ids, title=deck_title, slides=[slide])
+            + _slide_content_errors(slide))
+
+
+def _default_outline(prompt: str) -> Outline:
+    """A minimal generic outline used only when the outline call itself
+    fails after every retry (bad JSON, an exhausted lint loop, a dead
+    provider): keeps the job moving into the per-slide loop, each of which
+    still gets real grounded content, instead of failing before a single
+    slide is even attempted."""
+    topic = _fallback_topic(prompt)
+    return Outline(deck_title=topic, slides=[
+        OutlineItem(title=f"An overview of {topic}", layout="content",
+                    intent=f"introduce {topic} and why it matters"),
+        OutlineItem(title=f"The key points behind {topic}", layout="content",
+                    intent=f"the main points to know about {topic}"),
+        OutlineItem(title="What the evidence shows", layout="content",
+                    intent=f"supporting detail and evidence about {topic}"),
+        OutlineItem(title="What this means going forward", layout="content",
+                    intent=f"the practical takeaway about {topic}"),
+    ])
 
 
 def _resolve_deck_images(doc: Document, user_id: str | None) -> None:
@@ -172,15 +321,29 @@ async def run_deck_pipeline(
     slide_sys = SLIDE_SYSTEM + (IMAGE_SLIDE_HINT if has_images else "")
 
     ctx.emit("outline", "running")
-    outline: Outline = await generate_validated(
-        cfg,
-        [{"role": "system", "content": outline_sys},
-         {"role": "user", "content": prompt + context_block}],
-        schema=llm_schema(Outline),
-        parse=lambda t: parse_llm_output(t, Outline),
-        lint_fn=lambda o: (["outline needs between 3 and 14 slides"]
-                           if not 3 <= len(o.slides) <= 14 else []),
-    )
+    # a touch of targeted retrieval for the outline call too, not just the
+    # per-slide calls below: the same evidence resurfaced right before the
+    # generation point instead of only buried in the broad context block
+    outline_evidence = await _section_block(notebook_id, prompt, context_block, bool(sources))
+    try:
+        outline: Outline = await generate_validated(
+            cfg,
+            [{"role": "system", "content": outline_sys},
+             {"role": "user", "content": prompt + outline_evidence}],
+            schema=llm_schema(Outline),
+            parse=lambda t: parse_llm_output(t, Outline),
+            lint_fn=lambda o: (["outline needs between 3 and 14 slides"]
+                               if not 3 <= len(o.slides) <= 14 else []),
+        )
+    except _UNIT_FAILURES as e:
+        # the outline is the least critical, most disposable stage: a
+        # generic default still lets every per-slide call below produce
+        # real, grounded content instead of failing the whole job before a
+        # single slide has even been attempted
+        ctx.emit("outline", "skipped",
+                 detail="using a default outline after a generation failure",
+                 data={"error": str(e)[:200]})
+        outline = _default_outline(prompt)
     ctx.emit("outline", "done", data={
         "deck_title": outline.deck_title,
         "slides": [{"title": s.title, "layout": s.layout} for s in outline.slides],
@@ -196,7 +359,7 @@ async def run_deck_pipeline(
         ctx.emit("slide", "running", detail=item.title,
                  data={"index": index + 1, "total": len(outline.slides)})
         sec_block = await _section_block(
-            notebook_id, f"{item.title} — {item.intent}", context_block, bool(sources))
+            notebook_id, f"{item.title} - {item.intent}", context_block, bool(sources))
         user = (
             f'Deck: "{outline.deck_title}"\nFull outline:\n{plan_lines}\n\n'
             f'Draft slide {index + 1}: "{item.title}" (layout: {item.layout}).\n'
@@ -271,20 +434,85 @@ class DocSection(BaseModel):
 
 
 DOC_OUTLINE_SYSTEM = """\
-You plan written reports. Return JSON: doc_title plus 3-8 sections, each
-{heading, intent}. Headings are specific noun phrases. Intents are one
-sentence. Do not include an introduction heading unless it adds real content."""
+You plan written reports. Given a request and the evidence provided, return
+JSON: doc_title plus 2-10 sections, each {heading, intent}.
+
+STRUCTURE (answer-first)
+- Section 1 is always an executive summary: state the single main
+  conclusion the evidence supports, then name the (roughly 3) supporting
+  points the rest of the report backs up. Head it "Executive summary".
+- Order the remaining sections most-important-first, then supporting
+  detail, then implications. Base them on what the evidence actually
+  covers, not a generic template.
+- Do not add a section that only restates another section's content.
+
+HEADINGS
+- A heading states a claim or topic in a specific noun phrase (e.g. "APAC
+  expansion drove the Q3 revenue increase"), never a generic label
+  ("Introduction", "Background", "Discussion", "Conclusion", "Section 2").
+- Intents are one sentence: the point this section proves and the evidence
+  it will lean on (a stat, a comparison, a quote).
+"""
 
 DOC_SECTION_SYSTEM = AUTHORING_GUIDE + """
 You are drafting ONE section of a report as a JSON object with a `blocks`
 array (docloom blocks: paragraph, bullets, numbered, quote, callout, table,
-stats, chart). Do NOT include a heading block — the heading is added for you.
-Keep paragraphs tight; prefer bullets and a small table or chart where it
-helps. Ground every claim in the provided evidence and cite it."""
+stats, chart, heading). Do NOT repeat this section's own title as a heading
+block (level 1 or 2); that title is added for you. You MAY use level-3
+sub-headings inside the section to break it into chunks (see below).
+If this section is the executive summary, open with the single main
+conclusion in the first sentence, then the supporting points.
+
+PARAGRAPHS
+- Every paragraph opens with a topic sentence stating its claim, then
+  supports it. At most 4 sentences per paragraph; split up longer ones.
+- If the section runs long, add a `heading` block (level 3) roughly every
+  150-250 words to break it into scannable chunks.
+
+BLOCK SELECTION (pick the block the evidence calls for)
+- One or two key numbers: a "stats" block, not a number buried in a
+  sentence.
+- A trend, comparison, ranking, or share of a whole: a "chart" block (bar,
+  column, line, or area). NEVER a "pie" chart.
+- Precise or mixed-unit values a reader would look up: a "table".
+- A genuinely parallel, discrete, short list (at most 5-6 items):
+  "bullets". Otherwise write it as prose, walls of bullets are not
+  analysis.
+- Every chart, table, or image gets a short title and a one-line takeaway
+  caption stating what it shows.
+
+GROUNDING
+- Ground every claim, number, date, and name in the provided evidence and
+  cite it. If the evidence does not support a claim, cut it, never invent
+  one.
+- Never ship placeholder, lorem-ipsum, "TBD", or "insert X here" text, and
+  never return an empty or title-only section: if the evidence is thin,
+  write the strongest true paragraph it supports."""
+
+
+def _section_content_errors(section: DocSection) -> list[str]:
+    if not section.blocks:
+        return ["this section has no content blocks; add real, grounded "
+                "content, not an empty placeholder"]
+    return _placeholder_errors(_blocks_text(section.blocks))
 
 
 def _section_errors(doc_title: str, section: DocSection, source_ids: set[str]) -> list[str]:
-    return _lint_errors(source_ids, title=doc_title, blocks=section.blocks)
+    return (_lint_errors(source_ids, title=doc_title, blocks=section.blocks)
+            + _section_content_errors(section))
+
+
+def _default_doc_outline(prompt: str) -> DocOutline:
+    """Same purpose as _default_outline (deck), for the report pipeline."""
+    topic = _fallback_topic(prompt)
+    return DocOutline(doc_title=topic, sections=[
+        DocOutlineItem(heading=f"Overview of {topic}",
+                       intent=f"introduce {topic} and why it matters"),
+        DocOutlineItem(heading=f"What the evidence shows about {topic}",
+                       intent=f"the main findings about {topic}"),
+        DocOutlineItem(heading="What this means going forward",
+                       intent=f"the practical implications of {topic}"),
+    ])
 
 
 async def run_doc_pipeline(
@@ -298,15 +526,22 @@ async def run_doc_pipeline(
     context_block = _context_block(context_lines)
 
     ctx.emit("outline", "running")
-    outline: DocOutline = await generate_validated(
-        cfg,
-        [{"role": "system", "content": DOC_OUTLINE_SYSTEM},
-         {"role": "user", "content": prompt + context_block}],
-        schema=llm_schema(DocOutline),
-        parse=lambda t: parse_llm_output(t, DocOutline),
-        lint_fn=lambda o: ([] if 2 <= len(o.sections) <= 10
-                           else ["need 2-10 sections"]),
-    )
+    outline_evidence = await _section_block(notebook_id, prompt, context_block, bool(sources))
+    try:
+        outline: DocOutline = await generate_validated(
+            cfg,
+            [{"role": "system", "content": DOC_OUTLINE_SYSTEM},
+             {"role": "user", "content": prompt + outline_evidence}],
+            schema=llm_schema(DocOutline),
+            parse=lambda t: parse_llm_output(t, DocOutline),
+            lint_fn=lambda o: ([] if 2 <= len(o.sections) <= 10
+                               else ["need 2-10 sections"]),
+        )
+    except _UNIT_FAILURES as e:
+        ctx.emit("outline", "skipped",
+                 detail="using a default outline after a generation failure",
+                 data={"error": str(e)[:200]})
+        outline = _default_doc_outline(prompt)
     ctx.emit("outline", "done", data={"doc_title": outline.doc_title,
              "sections": [s.heading for s in outline.sections]})
 
@@ -316,7 +551,7 @@ async def run_doc_pipeline(
                  data={"index": i + 1, "total": len(outline.sections)})
         blocks.append(Heading(level=2, text=item.heading))
         sec_block = await _section_block(
-            notebook_id, f"{item.heading} — {item.intent}", context_block, bool(sources))
+            notebook_id, f"{item.heading} - {item.intent}", context_block, bool(sources))
         try:
             section: DocSection = await generate_validated(
                 cfg,
@@ -361,10 +596,19 @@ class SheetDoc(BaseModel):
 
 SHEET_SYSTEM = AUTHORING_GUIDE + """
 You produce spreadsheets. Return JSON with a `title` and a `sheets` array.
+One sheet per distinct table; do not split one table across sheets, and do
+not merge unrelated tables into one.
+
 Each sheet has a name, columns (header + optional Excel number format like
 "$#,##0" or "0.0%"), and rows of typed cells (numbers as numbers, not
-strings). Use a {"formula": "=SUM(B2:B10)"} cell for totals. Ground figures
-in the evidence when provided."""
+strings). Use a {"formula": "=SUM(B2:B10)"} cell for totals and other
+derived values (subtotals, averages, percent-of-total) instead of
+precomputing them yourself. Every sheet needs at least one column and at
+least one real data row; a header row with no data is not a spreadsheet.
+
+Ground every figure in the evidence provided; never invent numbers, and
+never fill a cell with placeholder text ("TBD", "example", "N/A" as a
+stand-in for a real value)."""
 
 
 class SheetOutlineItem(BaseModel):
@@ -378,16 +622,46 @@ class SheetOutline(BaseModel):
 
 
 SHEET_OUTLINE_SYSTEM = """\
-You plan spreadsheet workbooks. Return JSON: a workbook `title` plus 1-6
-sheets, each {name, intent}. One sheet per distinct table; do not split one
-table across sheets."""
+You plan spreadsheet workbooks. Given a request and the evidence provided,
+return JSON: a workbook `title` plus 1-8 sheets, each {name, intent}. One
+sheet per distinct table; do not split one table across sheets or merge
+unrelated tables into one. Base the sheets on what the evidence actually
+contains. Intents are one sentence naming the data this sheet holds and
+where it comes from."""
 
 SHEET_SECTION_SYSTEM = AUTHORING_GUIDE + """
 You produce ONE sheet of a workbook as a JSON object matching the provided
 schema (a docloom Sheet): a name, columns (header + optional Excel number
 format like "$#,##0" or "0.0%"), and rows of typed cells (numbers as numbers,
-not strings). Use a {"formula": "=SUM(B2:B10)"} cell for totals. Ground
-figures in the evidence when provided."""
+not strings). Use a {"formula": "=SUM(B2:B10)"} cell for totals and other
+derived values instead of precomputing them yourself.
+
+This sheet must carry real data: at least one column and at least one data
+row. Ground every figure in the evidence provided; never invent numbers,
+and never use placeholder text ("TBD", "example", "N/A" as a stand-in for a
+real value) in a cell."""
+
+
+def _sheet_text(sheet: Sheet) -> list[str]:
+    texts = [sheet.name] + [c.header for c in sheet.columns]
+    for row in sheet.rows:
+        texts.extend(cell for cell in row if isinstance(cell, str))
+    return texts
+
+
+def _sheet_content_errors(sheet: Sheet) -> list[str]:
+    if not (sheet.columns and sheet.rows):
+        return ["a sheet needs at least one column and at least one data row"]
+    return _placeholder_errors(_sheet_text(sheet))
+
+
+def _default_sheet_outline(prompt: str) -> SheetOutline:
+    """Same purpose as _default_outline (deck), for the sheet split-fallback
+    path; kept to a single generic sheet rather than 3-5 items since a bare
+    workbook name is a much weaker signal than a deck/report topic."""
+    topic = _fallback_topic(prompt)
+    return SheetOutline(title=topic, sheets=[
+        SheetOutlineItem(name="Data", intent=f"the data behind {topic}")])
 
 
 async def run_sheet_pipeline(
@@ -398,52 +672,70 @@ async def run_sheet_pipeline(
     cfg = ProviderConfig(**get_setting("provider.generation", owner))
     ctx.emit("context", "done")
     context_block = _context_block(context_lines, cite=False)  # SheetDoc has no Span type
+    have_sources = bool(sources)
+    # a touch of targeted retrieval for the whole-workbook request, the same
+    # mechanism the deck/doc per-unit calls use, instead of leaving the
+    # sheet pipeline on the broad context block alone
+    outline_evidence = await _section_block(notebook_id, prompt, context_block, have_sources)
 
     ctx.emit("sheet", "running")
     try:
         result: SheetDoc = await generate_validated(
             cfg,
             [{"role": "system", "content": SHEET_SYSTEM},
-             {"role": "user", "content": prompt + context_block}],
+             {"role": "user", "content": prompt + outline_evidence}],
             schema=llm_schema(SheetDoc),
             parse=lambda t: parse_llm_output(t, SheetDoc),
-            lint_fn=lambda d: ([] if d.sheets else ["produce at least one sheet"]),
+            lint_fn=lambda d: (["produce at least one sheet"] if not d.sheets
+                               else [msg for s in d.sheets
+                                     for msg in _sheet_content_errors(s)]),
         )
         title, sheets = result.title, result.sheets
         ctx.emit("sheet", "done", detail=title)
-    except TruncatedOutput:
+    except (TruncatedOutput, GenerationFailed) as e:
         # the whole workbook doesn't fit one call (a big multi-sheet request
-        # easily exceeds the token cap in one shot): plan sheet names first,
-        # then fill each sheet with its own bounded call, same shape as the
+        # easily exceeds the token cap in one shot), or it came back empty
+        # after every retry (GenerationFailed): plan sheet names first, then
+        # fill each sheet with its own bounded call, same shape as the
         # deck/doc pipelines, so a big workbook still produces something
         # instead of failing 3 retries against the same cap and shipping
         # nothing
-        ctx.emit("outline", "running",
-                 detail="workbook too large for one call; splitting by sheet")
-        outline: SheetOutline = await generate_validated(
-            cfg,
-            [{"role": "system", "content": SHEET_OUTLINE_SYSTEM},
-             {"role": "user", "content": prompt + context_block}],
-            schema=llm_schema(SheetOutline),
-            parse=lambda t: parse_llm_output(t, SheetOutline),
-            lint_fn=lambda o: ([] if 1 <= len(o.sheets) <= 8 else ["need 1-8 sheets"]),
-        )
+        detail = ("workbook too large for one call; splitting by sheet"
+                  if isinstance(e, TruncatedOutput)
+                  else "one-shot workbook failed validation; splitting by sheet")
+        ctx.emit("outline", "running", detail=detail)
+        try:
+            outline: SheetOutline = await generate_validated(
+                cfg,
+                [{"role": "system", "content": SHEET_OUTLINE_SYSTEM},
+                 {"role": "user", "content": prompt + outline_evidence}],
+                schema=llm_schema(SheetOutline),
+                parse=lambda t: parse_llm_output(t, SheetOutline),
+                lint_fn=lambda o: ([] if 1 <= len(o.sheets) <= 8 else ["need 1-8 sheets"]),
+            )
+        except _UNIT_FAILURES as e:
+            ctx.emit("outline", "skipped",
+                     detail="using a default outline after a generation failure",
+                     data={"error": str(e)[:200]})
+            outline = _default_sheet_outline(prompt)
         ctx.emit("outline", "done", data={"title": outline.title,
                  "sheets": [s.name for s in outline.sheets]})
         title, sheets = outline.title, []
         for i, item in enumerate(outline.sheets):
             ctx.emit("sheet", "running", detail=item.name,
                      data={"index": i + 1, "total": len(outline.sheets)})
+            sec_block = await _section_block(
+                notebook_id, f"{item.name} - {item.intent}", context_block, have_sources)
             try:
                 sheet: Sheet = await generate_validated(
                     cfg,
                     [{"role": "system", "content": SHEET_SECTION_SYSTEM},
                      {"role": "user", "content":
                         f'Workbook: "{outline.title}"\nSheet: "{item.name}"\n'
-                        f"Intent: {item.intent}{context_block}"}],
+                        f"Intent: {item.intent}{sec_block}"}],
                     schema=llm_schema(Sheet),
                     parse=lambda t: parse_llm_output(t, Sheet),
-                    lint_fn=lambda s: [] if s.columns else ["a sheet needs at least one column"],
+                    lint_fn=_sheet_content_errors,
                 )
             except _UNIT_FAILURES as e:
                 ctx.emit("sheet", "skipped", detail=item.name, data={
@@ -624,8 +916,8 @@ A is a warm, curious host; B is a knowledgeable guest. Return JSON: a `title`
 and a `turns` array of {speaker, text}. Alternate A/B, open with A introducing
 the topic, and close with A wrapping up. 8-24 turns, each 1-4 spoken sentences,
 natural and conversational (contractions, brief reactions). Ground every claim
-in the provided evidence; do not invent facts. No stage directions or markdown
-— just what each person says."""
+in the provided evidence; do not invent facts. No stage directions or markdown,
+just what each person says."""
 
 
 async def run_podcast_pipeline(

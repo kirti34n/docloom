@@ -156,7 +156,7 @@ async def provider_test(user: dict = Depends(current_user)) -> dict:
             cfg,
             [{"role": "user",
               "content": "Reply with a JSON greeting and any number."}],
-            schema=_TEST_SCHEMA, max_tokens=200,
+            schema=_TEST_SCHEMA, max_tokens=1024,
         )
         parsed = json.loads(raw)
         ok = isinstance(parsed.get("greeting"), str)

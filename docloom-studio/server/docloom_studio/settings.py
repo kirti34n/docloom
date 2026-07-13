@@ -24,10 +24,11 @@ def data_dir() -> Path:
 
 DEFAULTS: dict[str, Any] = {
     "provider.generation": {
-        "kind": "ollama",  # llama-server | ollama | lmstudio | openai | anthropic
+        "kind": "ollama",  # llama-server | ollama | lmstudio | openai | anthropic | gemini
         "base_url": "http://localhost:11434",
         "api_key": "",
         "model": "qwen3.5:9b",
+        "max_tokens": 8192,
     },
     "provider.embeddings": {
         "kind": "ollama",
