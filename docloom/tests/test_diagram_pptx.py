@@ -761,3 +761,99 @@ def test_ladder_and_raster_reslve_preserve_the_callers_legend_choice(monkeypatch
     assert h > 0.0
     assert seen_legend  # the ladder climbed and re-solved at least once
     assert all(v is False for v in seen_legend)
+
+
+# --------------------------------------------------- native routing crosses
+# a node (docs/diagram-status.md re-audit: "the native PPTX emitter routes
+# an edge through a node"). Repro: two nodes far apart with an unrelated
+# THIRD node sitting between them at roughly the same height -- attached
+# mode's glued elbow connector has no obstacle awareness, so its default
+# routing (whatever exact bend a given renderer picks) can cut straight
+# through that third node's silhouette. Verified by rendering the actual
+# spec3 bake-off fixture (Card Vault -> Card Network cutting through the
+# eu-west-1 Postgres Replica cylinder) through LibreOffice and looking at
+# the PNG; this is the same shape, hand-built for a fast, deterministic
+# unit test.
+
+
+def _crossing_solved_diagram():
+    a = diagram_svg.SolvedNode(id="a", type="service", label="Source", sublabel=None,
+                               tag=None, group=None, x=0, y=100, w=150, h=50)
+    obstacle = diagram_svg.SolvedNode(id="mid", type="store", label="In The Way",
+                                      sublabel=None, tag=None, group=None,
+                                      x=400, y=90, w=150, h=70)
+    b = diagram_svg.SolvedNode(id="b", type="external", label="Target", sublabel=None,
+                               tag=None, group=None, x=800, y=110, w=150, h=50)
+    edge = diagram_svg.SolvedEdge(
+        source="a", target="b", label=None, style="emphasis",
+        # a real obstacle-avoiding polyline (dips below "mid" then back up),
+        # matching what solve()'s own route() would produce -- the whole
+        # point of the fix is to USE this instead of the naive glued elbow.
+        pts=[(150, 125), (300, 125), (300, 220), (700, 220), (700, 135), (800, 135)],
+        label_box=None,
+    )
+    clean_edge = diagram_svg.SolvedEdge(
+        source="a", target="mid", label=None, style="solid",
+        pts=[(150, 120), (400, 115)], label_box=None,
+    )
+    return diagram_svg.SolvedDiagram(
+        width=1000, height=300, title=None, nodes=[a, obstacle, b],
+        edges=[clean_edge, edge], groups=[], legend=["service", "store", "external"],
+        direction="LR", legend_h=0.0,
+    )
+
+
+def test_default_elbow_crosses_obstacle_detects_the_repro_geometry():
+    a_pt = (150.0, 125.0)   # a's right-mid exit port
+    b_pt = (800.0, 135.0)   # b's left-mid entry port
+    obstacle_rect = (400.0, 90.0, 150.0, 70.0)  # "mid" node's rect
+    assert diagram_pptx._default_elbow_crosses_obstacle(a_pt, b_pt, [obstacle_rect])
+
+
+def test_default_elbow_crosses_obstacle_is_false_when_nothing_is_in_the_way():
+    a_pt = (150.0, 125.0)
+    b_pt = (800.0, 135.0)
+    far_away_rect = (400.0, 1000.0, 150.0, 70.0)
+    assert not diagram_pptx._default_elbow_crosses_obstacle(a_pt, b_pt, [far_away_rect])
+
+
+def test_native_edge_that_would_cross_a_node_falls_back_to_the_routed_polyline():
+    """The crossing edge (a -> b, over "mid") must NOT become a glued
+    <p:cxnSp> connector -- it must be built via build_freeform from its own
+    solved polyline instead, same as freeform mode draws it, so the
+    RESTING visual is the collision-free route rather than a naive glued
+    elbow that cuts through "mid". The clean edge (a -> mid, nothing in its
+    way) must still be a real glued connector: this is a per-edge decision,
+    not a mode-wide fallback."""
+    s = _crossing_solved_diagram()
+    theme = Theme()
+    prs, slide = _new_slide()
+    diagram_pptx._emit_native(slide, Diagram(id="x", nodes=[], edges=[]), s, theme,
+                              diagram_pptx.theme_dict(theme), 0.5, 0.5, 12.0, 6.0,
+                              1.0, s.width / 96, s.height / 96, "attached", False)
+    xml = _save_and_read_slide_xml(prs)
+    # exactly one of the two edges keeps its glued connector (a->mid); the
+    # crossing one (a->b) does not.
+    assert xml.count("<p:cxnSp>") == 1
+    assert len(re.findall(r"<a:stCxn ", xml)) == 1
+    assert len(re.findall(r"<a:endCxn ", xml)) == 1
+    # both edges still get drawn (an arrowhead each) -- the fallback keeps
+    # the edge visible, it just isn't glued.
+    assert xml.count("a:tailEnd") == 2
+
+
+def test_native_edge_fallback_polyline_does_not_cross_the_obstacle_node():
+    """Structural proof the fallback actually avoids the obstacle: every
+    segment of the freeform shape's own point list (recovered from the
+    custGeom path data) stays clear of "mid"'s rect, using the same
+    segment-vs-rect test diagram_svg.check() runs post-layout."""
+    s = _crossing_solved_diagram()
+    theme = Theme()
+    prs, slide = _new_slide()
+    diagram_pptx._emit_native(slide, Diagram(id="x", nodes=[], edges=[]), s, theme,
+                              diagram_pptx.theme_dict(theme), 0.5, 0.5, 12.0, 6.0,
+                              1.0, s.width / 96, s.height / 96, "attached", False)
+    mid_rect = (400.0, 90.0, 150.0, 70.0)
+    crossing_edge = s.edges[1]
+    for a_pt, b_pt in zip(crossing_edge.pts, crossing_edge.pts[1:]):
+        assert not diagram_svg._seg_intersects_rect(a_pt, b_pt, mid_rect)

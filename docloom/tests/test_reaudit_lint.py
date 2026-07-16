@@ -26,7 +26,8 @@ from docloom import Artifact, Chart, Document, Image, Paragraph, Series, Slide, 
 # function, not the module. Importing names directly out of the submodule
 # sidesteps that shadowing.
 from docloom.lint import (
-    ARTIFACT_PLACEHOLDER_H_IN, CHART_H_IN, DIAGRAM_H_IN,
+    ARTIFACT_PLACEHOLDER_H_IN, CAPTION_H_IN, CHART_H_IN, DIAGRAM_H_IN,
+    IMAGE_CAPTION_H_IN, QUOTE_ATTR_H_IN, SUBTITLE_PAD_IN,
     estimate_depth as lint_estimate_depth,
 )
 from docloom.render import pptx as pptx_mod
@@ -123,3 +124,66 @@ def test_lint_estimate_depth_is_the_real_painter_function_not_a_copy():
     # be the exact same function object, not merely equivalent behavior.
     from docloom.render.diagram_svg import estimate_depth as real_estimate_depth
     assert lint_estimate_depth is real_estimate_depth
+
+
+# ---------------------------- silent-content-loss class audit: geometry fix
+#
+# Before this fix, lint's SLIDE_BODY_H_IN/CHART_H_IN modeled neither a
+# slide's subtitle (which shrinks the renderer's real available body height)
+# nor a block's own caption/attribution (which adds to its real footprint),
+# so a slide the renderer silently dropped a trailing block from still
+# scored as safe. render/pptx.py now names these reserves instead of
+# sprinkling raw literals through several functions; these tests pin lint's
+# own mirrored copies against those real names, the same technique already
+# used above for CHART_H_IN/DIAGRAM_H_IN/ARTIFACT_PLACEHOLDER_H_IN.
+
+
+def test_caption_h_in_mirrors_pptx_caption_h_in():
+    assert CAPTION_H_IN == pptx_mod.CAPTION_H_IN
+
+
+def test_image_caption_h_in_mirrors_pptx_image_caption_h_in():
+    assert IMAGE_CAPTION_H_IN == pptx_mod.IMAGE_CAPTION_H_IN
+
+
+def test_quote_attr_h_in_mirrors_pptx_quote_attr_h_in():
+    assert QUOTE_ATTR_H_IN == pptx_mod.QUOTE_ATTR_H_IN
+
+
+def test_subtitle_pad_in_mirrors_pptx_subtitle_pad_in():
+    assert SUBTITLE_PAD_IN == pptx_mod.SUBTITLE_PAD_IN
+
+
+def test_subtitle_presence_now_shrinks_the_height_budget_content_layout():
+    # The exact repro: a chart with a caption comfortably fits the
+    # subtitle-less 5.48in body budget, but once a real subtitle is added
+    # (render/pptx.py's _subtitle_line pushes the body down for it), the
+    # SAME content must now be flagged -- before this fix, lint's geometry
+    # model was blind to the subtitle entirely and never flagged it.
+    chart = Chart(chart="bar", title="Revenue", labels=["Q1"],
+                  series=[Series(name="s", values=[1.0])], caption="c")
+    no_subtitle = Document(title="T", slides=[Slide(
+        layout="content", title="A slide title", blocks=[chart],
+    )])
+    with_subtitle = Document(title="T", slides=[Slide(
+        layout="content", title="A slide title",
+        subtitle="word " * 60,  # long enough to wrap to several lines
+        blocks=[chart],
+    )])
+    assert not any(
+        f.rule == "deck/overflow" for f in lint(no_subtitle)
+    ), "chart + caption alone must fit the subtitle-less budget"
+    assert any(
+        f.rule == "deck/overflow" for f in lint(with_subtitle)
+    ), "the same content with a real subtitle must now be flagged"
+
+
+def test_captioned_chart_height_now_includes_its_own_caption():
+    # docs/... finding: CHART_H_IN alone (4.8) undercounted a captioned
+    # chart's real footprint (4.8 + 0.26 = 5.06); this is the other half of
+    # the geometry gap that let the audit's repro pass silently.
+    from docloom.lint import _block_height
+
+    chart_no_cap = Chart(chart="bar", labels=["Q1"], series=[Series(name="s", values=[1.0])])
+    chart_cap = Chart(chart="bar", labels=["Q1"], series=[Series(name="s", values=[1.0])], caption="c")
+    assert _block_height(chart_cap, 10.0) == _block_height(chart_no_cap, 10.0) + CAPTION_H_IN

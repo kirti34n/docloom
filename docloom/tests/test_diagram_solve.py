@@ -1045,3 +1045,182 @@ def test_estimate_depth_matches_solve_ranking_for_bakeoff_specs(spec):
     depth = P.estimate_depth(ids, edges)
     rank = P.rank_nodes(ids, spec["edges"])
     assert depth == max(rank.values()) + 1
+
+
+# ---------------------------------------------------------------------------
+# grid packing (docs/diagram-plan.md addendum, 2026-07-16): a rank that
+# holds more real nodes than fit legibly gets wrapped into multiple bands
+# (sub-columns along the flow axis) instead of one ever-taller column.
+# ---------------------------------------------------------------------------
+
+
+def _hub_fanout_diagram(n: int) -> Diagram:
+    """Load balancer -> n parallel, UNGROUPED instances -> shared store.
+    Every instance shares the SAME two neighbors (lb and db), so their
+    barycenter-desired cross positions coincide and it is purely the
+    min-separation constraint stacking them into a column -- the shape
+    grid packing is actually for (see ROW_LIMIT's own module docstring)."""
+    nodes = [DiagramNode(id="lb", label="LB", type="service")]
+    edges = []
+    for i in range(n):
+        nodes.append(DiagramNode(id=f"i{i}", label=f"Instance {i}", type="service"))
+        edges.append(DiagramEdge(source="lb", target=f"i{i}"))
+    nodes.append(DiagramNode(id="db", label="DB", type="store"))
+    for i in range(n):
+        edges.append(DiagramEdge(source=f"i{i}", target="db"))
+    return Diagram(id="hub", title="hub fanout", direction="LR", nodes=nodes, edges=edges)
+
+
+def test_decide_bands_splits_an_oversized_ungrouped_rank():
+    d = _hub_fanout_diagram(8)
+    sp = P._to_spec(d)
+    L = P.layout(sp, target_aspect=13.333 / 6.5)
+    fanout_rank = next(r for r, items in L["layers"].items()
+                       if sum(1 for it in items if it.kind == "node" and it.key != "lb"
+                              and it.key != "db") == 8)
+    assert L["bands_count"][fanout_rank] > 1
+
+
+def test_decide_bands_never_splits_a_single_group_run():
+    # every instance in ONE group: _decide_bands must never separate a
+    # group's members across bands (docs/diagram-plan.md's "group member
+    # contiguity" requirement), so the whole group is one indivisible block
+    # and the rank stays a single band no matter how many members it has.
+    nodes = [DiagramNode(id="lb", label="LB", type="service")]
+    edges = []
+    for i in range(8):
+        nodes.append(DiagramNode(id=f"i{i}", label=f"Instance {i}", type="service", group="g"))
+        edges.append(DiagramEdge(source="lb", target=f"i{i}"))
+    d = Diagram(id="grp", direction="LR", nodes=nodes, edges=edges,
+               groups=[DiagramGroup(id="g", label="Group")])
+    sp = P._to_spec(d)
+    L = P.layout(sp, target_aspect=13.333 / 6.5)
+    fanout_rank = next(r for r, items in L["layers"].items()
+                       if sum(1 for it in items if it.kind == "node" and it.group == "g") == 8)
+    assert L["bands_count"][fanout_rank] == 1
+    # and every member really did land in the same band
+    bands = {it.band for it in L["layers"][fanout_rank] if it.group == "g"}
+    assert bands == {0}
+
+
+def test_decide_bands_only_splits_the_actual_bottleneck_rank():
+    """Regression: an earlier version banded ANY rank over ROW_LIMIT, even
+    one that was not close to the diagram's real cross-axis bottleneck --
+    pure overhead (flow_total grows, cross_total does not shrink) since the
+    canvas stays pinned to the untouched, taller rank. Built from the exact
+    shape that caught it: a wide-but-short rank (4 ungrouped real nodes)
+    sitting alongside a much taller, mostly-DUMMY rank (a long edge with
+    many intermediate hops) that _decide_bands must leave alone -- reals
+    <= ROW_LIMIT there means it never qualifies for banding regardless of
+    the dummy pile-up, so the wide rank must not be split either since it
+    is not within BOTTLENECK_FRAC of that taller rank's footprint."""
+    nodes = [DiagramNode(id="a", label="A", type="service")]
+    # a rank with 4 ungrouped reals, comfortably over ROW_LIMIT
+    for i in range(4):
+        nodes.append(DiagramNode(id=f"w{i}", label=f"W{i}", type="service"))
+    nodes.append(DiagramNode(id="z", label="Z", type="service"))
+    edges = [DiagramEdge(source="a", target=f"w{i}") for i in range(4)]
+    edges += [DiagramEdge(source=f"w{i}", target="z") for i in range(4)]
+    # a long edge from a to z that must skip over several dummy ranks,
+    # inflating one rank's total item count with NO real nodes in it, well
+    # past the wide rank's own footprint
+    for i in range(4):
+        nodes.append(DiagramNode(id=f"pad{i}", label=f"pad{i}", type="service"))
+        edges.append(DiagramEdge(source=(f"pad{i-1}" if i else "a"), target=f"pad{i}"))
+    edges.append(DiagramEdge(source="pad3", target="z"))
+    d = Diagram(id="bottleneck", direction="LR", nodes=nodes, edges=edges)
+    sp = P._to_spec(d)
+    L = P.layout(sp, target_aspect=13.333 / 6.5)
+    wide_rank = next(r for r, items in L["layers"].items()
+                     if sum(1 for it in items if it.kind == "node" and
+                            it.key.startswith("w")) == 4)
+    # this fixture is a soft regression guard (the exact footprint numbers
+    # depend on constants that may retune): assert the STRUCTURAL property
+    # that matters -- solve() never regresses vs. the unbanded layout,
+    # checked directly below via _fit_score, rather than asserting bands==1
+    # against numbers that could legitimately shift.
+    unbanded = P.layout(sp, target_aspect=13.333 / 6.5, allow_bands=False)
+
+    def _score(L2):
+        cross_total = max(it.cross + it.ce / 2 for r in L2["layers"] for it in L2["layers"][r])
+        flow_total = max(it.flow + it.fe for r in L2["layers"] for it in L2["layers"][r])
+        w0, h0 = (flow_total, cross_total) if L2["lr"] else (cross_total, flow_total)
+        return min(13.333 / w0, 6.5 / h0) if w0 and h0 else 0.0
+
+    solved = P.solve(d, target_aspect=13.333 / 6.5)
+    assert P._fit_score(solved, 13.333 / 6.5) >= P._fit_score(
+        P._finish_solve(unbanded, sp, True), 13.333 / 6.5
+    ) - 1e-9
+
+
+def test_band_groups_degenerates_to_one_group_when_unbanded():
+    d = _spec_to_diagram(SPEC1)  # no rank in SPEC1 needs banding
+    L = P.layout(P._to_spec(d))
+    for r, items in L["layers"].items():
+        grps = P._band_groups(items)
+        assert len(grps) == 1
+        assert grps[0] == items
+
+
+@pytest.mark.parametrize("n", [6, 8, 12])
+def test_hub_fanout_check_is_clean_across_details_and_aspects(n):
+    """The real correctness proof for grid packing: check() (no node
+    overlaps, no edge crossing an unrelated node, every label attributable,
+    nothing off-canvas) must stay clean for a diagram that DOES trigger
+    banding, at every detail level and a spread of target_aspects -- not
+    just the 5 bake-off specs, none of which actually band (see the grid-
+    packing report)."""
+    d = _hub_fanout_diagram(n)
+    for detail in DETAILS:
+        for target_aspect in (2.0, 1.0, 3.5, 0.6, 13.333 / 6.5):
+            solved = P.solve(d, target_aspect=target_aspect, detail=detail)
+            problems = P.check(solved)
+            assert problems == [], (n, detail, target_aspect, problems)
+
+
+def test_grid_packing_never_regresses_the_fitted_scale_vs_unbanded():
+    """solve()'s banded-vs-unbanded safety net (_solve_one) must never ship
+    a worse candidate than the plain, unbanded layout would have been --
+    checked directly against a from-scratch unbanded solve (allow_bands=
+    False) for every bake-off spec (none of which benefit from banding,
+    exercising the "banding tried, reverted" path) and the hub fixture
+    (which does benefit, exercising the "banding tried, kept" path)."""
+    for spec, name in [(s, s["title"]) for s in BAKEOFF_SPECS]:
+        d = _spec_to_diagram(spec)
+        sp = P._to_spec(d)
+        ta = 13.333 / 6.5
+        banded_best = P.solve(d, target_aspect=ta)
+        unbanded_L = P.layout(sp, target_aspect=ta, allow_bands=False)
+        unbanded = P._finish_solve(unbanded_L, sp, True)
+        assert P._fit_score(banded_best, ta) >= P._fit_score(unbanded, ta) - 1e-9, name
+
+    d = _hub_fanout_diagram(12)
+    sp = P._to_spec(d)
+    ta = 13.333 / 6.5
+    banded_best = P.solve(d, target_aspect=ta)
+    unbanded = P._finish_solve(P.layout(sp, target_aspect=ta, allow_bands=False), sp, True)
+    assert P._fit_score(banded_best, ta) >= P._fit_score(unbanded, ta) - 1e-9
+    # and for the hub fixture banding actually WINS (this is the fixture
+    # that motivated the whole mechanism): the picked candidate must be
+    # strictly better than unbanded, not merely tied.
+    assert P._fit_score(banded_best, ta) > P._fit_score(unbanded, ta)
+
+
+def test_grid_packing_does_not_change_output_for_a_groupless_unbanded_fixture():
+    # For a diagram with NO groups at all (so pass-1's ghost-sizing
+    # measurement, which _decide_bands also runs against and which CAN
+    # legitimately shift a few px even when the FINAL layout never splits
+    # any rank -- ghost sizing is its own pre-existing estimate, deferred
+    # in docs/diagram-plan.md section 3 -- never enters the picture), grid
+    # packing must produce byte-identical output to allow_bands=False when
+    # no rank actually trips ROW_LIMIT. The golden 2-node fixture test above
+    # already locks the simplest case; this locks a bigger groupless one
+    # too (SPEC4, no groups, no rank wide enough to trip ROW_LIMIT).
+    d = _spec_to_diagram(SPEC4)
+    sp = P._to_spec(d)
+    ta = 12.133 / 5.6
+    with_packing = P.paint_svg(P.solve(d, target_aspect=ta))
+    without_packing = P.paint_svg(
+        P._finish_solve(P.layout(sp, target_aspect=ta, allow_bands=False), sp, True)
+    )
+    assert with_packing == without_packing

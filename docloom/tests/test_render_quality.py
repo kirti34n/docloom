@@ -9,7 +9,18 @@ card legibility, and the pie chart percent-label bug). Also covers the
 post-diagram-wave fixes: _content_slide/_image_side_slide/two_column
 silently dropping s.subtitle, an imageless hero falling through to the
 plain content layout instead of getting its own full-bleed treatment, and
-warning/danger callouts rendering as uncolored gray/near-black."""
+warning/danger callouts rendering as uncolored gray/near-black.
+
+Also covers the silent-content-loss CLASS audit: _body's "ponytail" trailing-
+block drop replaced with reserve-ahead allocation + a warning (never a
+silent drop again); slide.image.caption now rendered on image_left/
+image_right (it was silently dropped there while DOCX/HTML/MD kept it via
+flatten_slides); an imageless hero with blocks giving them real room instead
+of crushing a diagram into an illegible raster tile; and callout fills now a
+tinted wash of their own style color instead of one flat gray for all four
+styles. Table/chart/quote/placeholder captions and attributions are now
+reserved up front and always drawn, never opportunistically dropped when a
+slide runs tight."""
 
 from __future__ import annotations
 
@@ -907,3 +918,287 @@ def test_pptx_callout_edge_color_derives_from_theme_accent(tmp_path):
     # still hex colors within the theme's own tonal family (same saturation
     # class as accent), not an unrelated hardcoded stoplight hex
     assert warning.startswith("#") and danger.startswith("#")
+
+
+# ------------------------------------- silent-content-loss CLASS audit fixes
+
+
+def _blank_slide():
+    from pptx import Presentation
+
+    prs = Presentation()
+    return prs.slides.add_slide(prs.slide_layouts[6])
+
+
+def test_pptx_never_drops_a_trailing_block_reserves_room_and_warns(tmp_path):
+    # The audit's exact repro: a subtitle (shrinks the real body height) plus
+    # a captioned chart (whose own real footprint the old lint/renderer
+    # geometry model did not account for) left a trailing paragraph ~0.03in
+    # of room -- under the old "remaining < 0.3: break" floor in _body, which
+    # silently dropped it from the XML with zero trace and no warning. It
+    # must now be reserved room ahead of time and always drawn, with a
+    # warning surfacing the crowding instead of silence.
+    doc = Document(title="T", slides=[
+        Slide(
+            layout="content", title="Quarterly results at a glance",
+            subtitle="A subtitle that eats into the body's real available height",
+            blocks=[
+                Chart(chart="bar", title="Revenue", labels=["Q1", "Q2", "Q3", "Q4"],
+                      series=[Series(name="Revenue", values=[10.0, 12.0, 14.0, 16.0])],
+                      caption="source: internal finance system"),
+                Paragraph(text="TRAILINGMARK this paragraph must not be silently dropped"),
+            ],
+        ),
+    ])
+    with pytest.warns(UserWarning, match="exceeds the available body height"):
+        out = render(doc, "pptx", tmp_path / "ponytail.pptx")
+    from pptx import Presentation
+
+    text = _shapes_text(Presentation(str(out)).slides[0])
+    assert "TRAILINGMARK" in text
+    assert "source: internal" in text  # the chart's own caption also survives
+
+
+def test_pptx_never_drops_a_trailing_block_matches_docx_html_md(tmp_path):
+    # Cross-renderer diff (the technique the audit used to catch this class):
+    # PPTX must keep everything DOCX/HTML/MD keep for the same document.
+    doc = Document(title="T", slides=[
+        Slide(
+            layout="content", title="Quarterly results at a glance",
+            subtitle="a subtitle",
+            blocks=[
+                Chart(chart="bar", title="Revenue", labels=["Q1", "Q2", "Q3", "Q4"],
+                      series=[Series(name="Revenue", values=[10.0, 12.0, 14.0, 16.0])],
+                      caption="a caption"),
+                Paragraph(text="TRAILINGMARK2"),
+            ],
+        ),
+    ])
+    with pytest.warns(UserWarning):
+        pptx_out = render(doc, "pptx", tmp_path / "cross.pptx")
+    from pptx import Presentation
+
+    assert "TRAILINGMARK2" in _shapes_text(Presentation(str(pptx_out)).slides[0])
+    for fmt in ("docx", "html", "md"):
+        out = render(doc, fmt, tmp_path / f"cross.{fmt}")
+        if fmt == "docx":
+            import docx as docx_lib
+
+            d = docx_lib.Document(str(out))
+            text = "\n".join(p.text for p in d.paragraphs)
+        else:
+            text = out.read_text(encoding="utf-8")
+        assert "TRAILINGMARK2" in text
+
+
+def test_pptx_quote_attribution_never_dropped_even_when_max_h_is_tiny():
+    # Same silent-drop class one field down: _quote_block used to only draw
+    # b.attribution "if there happens to be room left over" after the quote
+    # text itself, which could be false on a genuinely tight slide.
+    from docloom.render.pptx import _quote_block
+
+    slide = _blank_slide()
+    q = Quote(
+        text="A long quote that would normally want lots of room to render "
+             "at full display scale, forcing the attribution to compete for space.",
+        attribution="ATTRMARK",
+    )
+    _quote_block(slide, q, Theme(), {}, x=1.0, y=1.0, w=6.0, max_h=0.3)
+    assert "ATTRMARK" in _shapes_text(slide)
+
+
+def test_pptx_table_caption_never_dropped_even_when_max_h_is_tiny():
+    from docloom.render.pptx import _table_block
+
+    slide = _blank_slide()
+    t = TableBlock(header=["a", "b"], rows=[["1", "2"], ["3", "4"]], caption="TABLECAPMARK")
+    _table_block(slide, t, Theme(), {}, x=1.0, y=1.0, w=6.0, max_h=0.3)
+    assert "TABLECAPMARK" in _shapes_text(slide)
+
+
+def test_pptx_chart_caption_never_dropped_even_when_max_h_is_tiny():
+    from docloom.render.pptx import _chart_block
+
+    slide = _blank_slide()
+    c = Chart(chart="column", labels=["a", "b"], series=[Series(name="s", values=[1.0, 2.0])],
+              caption="CHARTCAPMARK")
+    _chart_block(slide, c, Theme(), {}, x=1.0, y=1.0, w=6.0, max_h=0.3)
+    assert "CHARTCAPMARK" in _shapes_text(slide)
+
+
+def test_pptx_placeholder_caption_never_dropped_even_when_max_h_is_tiny():
+    from docloom.render.pptx import _placeholder_block
+
+    slide = _blank_slide()
+    _placeholder_block(
+        slide, x=1.0, y=1.0, w=6.0, max_h=0.3, theme=Theme(),
+        alt="alt text", caption="PLACEHOLDERCAPMARK",
+    )
+    assert "PLACEHOLDERCAPMARK" in _shapes_text(slide)
+
+
+def test_pptx_image_left_renders_the_image_caption(tmp_path):
+    # Finding B's own reported instance: slide.image.caption was silently
+    # dropped on image_left/image_right (DOCX/HTML/MD all kept it, via
+    # flatten_slides turning a deck-only document's s.image into a real
+    # Image block for the report renderers -- only PPTX lost it).
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="image_left", title="T2",
+              image=ImageBlock(path=_png(tmp_path / "pic.png"), caption="SIDECAPMARK"),
+              blocks=[Paragraph(text="body")]),
+    ])
+    out = render(doc, "pptx", tmp_path / "left_cap.pptx")
+    assert "SIDECAPMARK" in _shapes_text(Presentation(str(out)).slides[0])
+
+
+def test_pptx_image_right_renders_the_image_caption(tmp_path):
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="image_right", title="T2",
+              image=ImageBlock(path=_png(tmp_path / "pic.png"), caption="SIDECAPMARK2"),
+              blocks=[Paragraph(text="body")]),
+    ])
+    out = render(doc, "pptx", tmp_path / "right_cap.pptx")
+    assert "SIDECAPMARK2" in _shapes_text(Presentation(str(out)).slides[0])
+
+
+def test_pptx_image_side_caption_matches_docx_html_md(tmp_path):
+    # Cross-renderer diff for finding B's exact instance.
+    doc = Document(title="T", slides=[
+        Slide(layout="image_left", title="T2",
+              image=ImageBlock(path=_png(tmp_path / "pic.png"), caption="SIDECAPMARK3"),
+              blocks=[Paragraph(text="body")]),
+    ])
+    from pptx import Presentation
+
+    pptx_out = render(doc, "pptx", tmp_path / "cross_cap.pptx")
+    assert "SIDECAPMARK3" in _shapes_text(Presentation(str(pptx_out)).slides[0])
+    for fmt in ("docx", "html", "md"):
+        out = render(doc, fmt, tmp_path / f"cross_cap.{fmt}")
+        if fmt == "docx":
+            import docx as docx_lib
+
+            d = docx_lib.Document(str(out))
+            text = "\n".join(p.text for p in d.paragraphs)
+        else:
+            text = out.read_text(encoding="utf-8")
+        assert "SIDECAPMARK3" in text
+
+
+# ------------------------------------------------- finding C: hero-with-blocks
+
+
+def _diagram_edge_count(pptx_path) -> int:
+    import zipfile
+
+    with zipfile.ZipFile(pptx_path) as z:
+        xml = "".join(
+            z.read(n).decode("utf-8", "replace")
+            for n in z.namelist() if "slides/slide" in n
+        )
+    return xml.count("<p:cxnSp>")
+
+
+def test_pptx_imageless_hero_with_diagram_renders_natively_not_crushed(tmp_path):
+    # Finding C: the dispatcher fix that let an imageless hero reach
+    # _hero_slide at all (finding A, part 2) regressed a hero WITH blocks --
+    # the block band was capped at a flat 1.7in guess sized for a short
+    # caption over a photo, crushing a 2-node diagram's label font below the
+    # legibility floor and silently degrading it to an unreadable raster
+    # tile with zero connectors. It must now render natively (a real
+    # cxnSp-glued connector per edge), not raster, and without triggering
+    # diagram_pptx's own "does not clear the Npt node-label floor" warning.
+    doc = Document(title="T", slides=[
+        Slide(layout="hero", title="HEROMARK the two-node flow",
+              subtitle="SUBHEROMARK context line",
+              blocks=[Diagram(
+                  id="flow",
+                  nodes=[DiagramNode(id="a", label="Client"), DiagramNode(id="b", label="Service")],
+                  edges=[DiagramEdge(source="a", target="b", label="request")],
+                  caption="Two-node request flow",
+              )]),
+    ])
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = render(doc, "pptx", tmp_path / "hero_diagram.pptx")
+    assert not any("node-label floor" in str(w.message) for w in caught), (
+        "diagram degraded to raster instead of getting real room"
+    )
+    assert _diagram_edge_count(out) == 1  # native connector glue, not a raster picture
+
+    from pptx import Presentation
+
+    text = _shapes_text(Presentation(str(out)).slides[0])
+    assert "HEROMARK" in text and "SUBHEROMARK" in text
+
+
+def test_pptx_imageless_hero_without_blocks_is_unaffected(tmp_path):
+    # Regression guard: the finding-C fix must not disturb the already-
+    # correct short-band sizing for a bare title/subtitle imageless hero.
+    from pptx import Presentation
+
+    theme = Theme()
+    doc = Document(title="T", slides=[
+        Slide(layout="hero", title="HEROMARK the ask", subtitle="SUBHEROMARK context"),
+    ])
+    out = render(doc, "pptx", tmp_path / "hero_no_blocks.pptx", theme=theme)
+    slide = Presentation(str(out)).slides[0]
+    bg = str(slide.background.fill.fore_color.rgb).upper()
+    assert bg == theme.primary.lstrip("#").upper()
+    assert "HEROMARK" in _shapes_text(slide) and "SUBHEROMARK" in _shapes_text(slide)
+
+
+# --------------------------------------------- finding D: callout fill wash
+
+
+def test_pptx_callout_fills_are_tinted_and_distinct_per_style(tmp_path):
+    # All four fills used to be the identical flat theme.surface gray, so
+    # only the 4px edge bar carried any color at all.
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from pptx.util import Inches
+
+    from docloom import Callout
+
+    theme = Theme()
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            Callout(style="info", text="i"),
+            Callout(style="success", text="s"),
+            Callout(style="warning", text="w"),
+            Callout(style="danger", text="d"),
+        ]),
+    ])
+    out = render(doc, "pptx", tmp_path / "callout_fills.pptx", theme=theme)
+    slide = Presentation(str(out)).slides[0]
+    # the fill rects are the wide, tall AUTO_SHAPEs: narrow ones (< 0.2in)
+    # are the edge bars, and the thin (~0.028in) one is the title's accent
+    # rule, neither of which is a callout fill
+    fills = [
+        str(s.fill.fore_color.rgb).upper()
+        for s in slide.shapes
+        if s.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE
+        and s.width >= Inches(0.2) and s.height >= Inches(0.2)
+    ]
+    assert len(fills) == 4
+    assert len(set(fills)) == 4, "callout fills are not distinct per style"
+    assert theme.surface.lstrip("#").upper() not in fills, (
+        "callout fill is still the old flat gray"
+    )
+
+
+def test_pptx_callout_fill_color_derives_from_the_edge_color():
+    from docloom.render.pptx import _callout_edge_color, _callout_fill_color
+
+    theme = Theme(accent="#0E9F6E")
+    for style in ("info", "success", "warning", "danger"):
+        fill = _callout_fill_color(style, theme)
+        edge = _callout_edge_color(style, theme)
+        assert fill.startswith("#") and fill != edge
+        # a wash toward background, not the flat surface gray
+        assert fill.upper() != theme.surface.upper()

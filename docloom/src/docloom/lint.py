@@ -1,7 +1,7 @@
 """Deterministic document linter.
 
-Catches the failures LLM-generated documents actually ship with — overflowing
-slides, walls of text, dangling citations, unreadable theme contrast — and
+Catches the failures LLM-generated documents actually ship with (overflowing
+slides, walls of text, dangling citations, unreadable theme contrast) and
 returns machine-readable findings an LLM can self-correct against:
 
     findings = lint(doc)
@@ -60,7 +60,7 @@ class Finding(BaseModel):
 
 
 # Heuristic budgets for a 16:9 slide. Deliberately simple character-count
-# estimates — they catch the 95% case (walls of text) without a layout engine.
+# estimates: they catch the 95% case (walls of text) without a layout engine.
 MAX_BULLETS_PER_SLIDE = 7
 MAX_BULLET_CHARS = 130
 MAX_TITLE_CHARS = 60
@@ -103,6 +103,17 @@ STATS_MAX_CARDS = 5      # render/pptx.py LAYOUT["stat_max_cards"]
 TABLE_ROW_H_IN = 0.36    # render/pptx.py _table_block's row height cap
 BLOCK_GAP_IN = 0.14      # render/pptx.py LAYOUT["gap_in"], summed between blocks
 LINE_H_IN = 0.26         # ~ render/pptx.py _line_h(14pt), body text line height
+# Caption/attribution/subtitle reserves: mirror render/pptx.py's own named
+# constants of the same name (CAPTION_H_IN, IMAGE_CAPTION_H_IN,
+# QUOTE_ATTR_H_IN, SUBTITLE_PAD_IN), pinned by test_reaudit_lint.py. Before
+# these existed, a subtitle-bearing slide's real available body height and a
+# captioned chart's real footprint were both invisible to this rule -- the
+# exact repro that let a trailing block get silently dropped by the renderer
+# while lint scored the slide as safe (docs/... silent-content-loss class).
+CAPTION_H_IN = 0.26       # table/chart/diagram/placeholder caption strip
+IMAGE_CAPTION_H_IN = 0.3  # image caption strip (slightly taller)
+QUOTE_ATTR_H_IN = 0.28    # quote attribution line
+SUBTITLE_PAD_IN = 0.12    # fixed pad below a subtitle's estimated lines
 
 # Authoring-quality thresholds (research-notebooklm-quality.md section 6).
 # These rules are advisory only: severity="warning" so they never hard-block
@@ -272,23 +283,24 @@ def _block_height(block: Block, width_in: float) -> float:
     stats row, or table takes a near-constant amount of vertical space no
     matter how few characters it carries, which _block_chars cannot see."""
     if isinstance(block, Chart):
-        return CHART_H_IN
+        return CHART_H_IN + (CAPTION_H_IN if block.caption else 0.0)
     if isinstance(block, (Image, Artifact)):
+        cap = IMAGE_CAPTION_H_IN if block.caption else 0.0
         if block.path and Path(block.path).is_file():
-            return IMAGE_H_IN
+            return IMAGE_H_IN + cap
         # An unresolved Artifact still draws a real placeholder box in PPTX
         # (P5 audit defect 1), so it reserves real layout room; an
         # unresolved Image slot stays the deliberate 0.0 no-op (finding 13,
         # docs/diagram-status.md -- this used to score every unresolved
         # Artifact at 0.0, letting deck/overflow pass slides that now
         # overflow once pptx.py started drawing the placeholder).
-        return ARTIFACT_PLACEHOLDER_H_IN if isinstance(block, Artifact) else 0.0
+        return (ARTIFACT_PLACEHOLDER_H_IN + cap) if isinstance(block, Artifact) else 0.0
     if isinstance(block, Diagram):
-        return DIAGRAM_H_IN if block.nodes else 0.0
+        return (DIAGRAM_H_IN + (CAPTION_H_IN if block.caption else 0.0)) if block.nodes else 0.0
     if isinstance(block, StatRow):
         return STATS_H_IN if block.items else 0.0
     if isinstance(block, Table):
-        return (len(block.rows) + 1) * TABLE_ROW_H_IN
+        return (len(block.rows) + 1) * TABLE_ROW_H_IN + (CAPTION_H_IN if block.caption else 0.0)
     per_line = max(8, int(width_in * 144 / 14))
 
     def lines(text: str) -> int:
@@ -298,11 +310,30 @@ def _block_height(block: Block, width_in: float) -> float:
 
     if isinstance(block, (BulletList, NumberedList)):
         return sum(max(1, lines(plain(it.text))) * LINE_H_IN for it in block.items)
-    if isinstance(block, (Heading, Paragraph, Quote, Callout)):
+    if isinstance(block, Quote):
+        return lines(plain(block.text)) * LINE_H_IN + (
+            QUOTE_ATTR_H_IN if block.attribution else 0.0
+        )
+    if isinstance(block, (Heading, Paragraph, Callout)):
         return lines(plain(block.text)) * LINE_H_IN
     if isinstance(block, Code):
         return lines(block.code) * LINE_H_IN
     return 0.0  # Divider and anything else: negligible
+
+
+def _subtitle_reserve_h(subtitle: str | None, width_in: float) -> float:
+    """Height render/pptx.py's _subtitle_line reserves before the body
+    starts, mirroring its own formula (estimated lines at 15pt, plus its
+    fixed SUBTITLE_PAD_IN pad) so a subtitle-bearing slide's real available
+    body height is modeled instead of silently assumed away. Only the
+    layouts that actually call _subtitle_line before their body (content,
+    image_left/right, two_column -- see the call site below) are affected;
+    hero/quote/title/section handle a subtitle differently."""
+    if not subtitle:
+        return 0.0
+    per_line = max(8, int(width_in * 144 / 15))
+    n_lines = sum(max(1, -(-len(ln) // per_line)) for ln in subtitle.split("\n"))
+    return n_lines * LINE_H_IN + SUBTITLE_PAD_IN
 
 
 def _banned_label(text: str) -> str | None:
@@ -437,10 +468,16 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
         out.append(Finding(
             rule="deck/ignored-blocks", severity="warning", where=where,
             message=f'"{slide.layout}" slides render only title/subtitle; '
-                    "these blocks will not appear — use a content slide",
+                    "these blocks will not appear; use a content slide",
         ))
 
-    if slide.layout in ("hero", "image_left", "image_right") and slide.image is None:
+    # hero deliberately excluded: an imageless hero is a first-class,
+    # supported configuration (render/pptx.py's _hero_slide falls back to a
+    # solid theme.primary full-bleed fill, not a degraded layout), so
+    # flagging it here contradicted the product -- only image_left/
+    # image_right genuinely degrade (falling through to a plain content
+    # layout) when their image slot is empty.
+    if slide.layout in ("image_left", "image_right") and slide.image is None:
         out.append(Finding(
             rule="deck/missing-slot-image", severity="warning", where=where,
             message=f'"{slide.layout}" layout has no image slot filled; '
@@ -513,7 +550,7 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
                     rule="deck/overflow", severity="error", where=f"{where}.{name}",
                     message=f"~{total} chars in one column "
                             f"(budget {MAX_SLIDE_CHARS // 2} at half width); "
-                            "this will overflow the slide — split it",
+                            "this will overflow the slide; split it",
                 ))
     elif slide.layout == "hero":
         # a hero body renders in a short bottom caption band (~1.5in), not a
@@ -535,7 +572,7 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
             out.append(Finding(
                 rule="deck/overflow", severity="error", where=where,
                 message=f"~{total} chars of content (budget {MAX_SLIDE_CHARS}); "
-                        "this will overflow the slide — split it",
+                        "this will overflow the slide; split it",
             ))
 
     # height budget: fixed-size blocks (chart/image/table/stats) are blind to
@@ -546,6 +583,27 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
     # them: only the image or the other column takes width, not height.
     narrow = slide.layout in ("image_left", "image_right", "two_column")
     w_in = NARROW_BODY_W_IN if narrow else FULL_BODY_W_IN
+    # content/image_left/image_right/two_column all draw a subtitle band
+    # (render/pptx.py's _subtitle_line) right after the title band, before
+    # the body starts -- eating into the same fixed SLIDE_BODY_H_IN budget
+    # that otherwise assumes just the title band alone. This is the exact
+    # gap that let a subtitle-bearing chart-plus-trailing-block slide pass
+    # deck/overflow silently while the renderer dropped the trailing block.
+    # two_column's subtitle spans the FULL width (drawn before the two
+    # columns split), unlike its body blocks, which each get the narrow
+    # per-column width; hero/quote/title/section handle a subtitle
+    # differently and are not affected.
+    if slide.layout == "content":
+        sub_w: float | None = FULL_BODY_W_IN
+    elif slide.layout in ("image_left", "image_right"):
+        sub_w = NARROW_BODY_W_IN
+    elif slide.layout == "two_column":
+        sub_w = FULL_BODY_W_IN
+    else:
+        sub_w = None
+    body_budget = SLIDE_BODY_H_IN
+    if sub_w is not None:
+        body_budget -= _subtitle_reserve_h(slide.subtitle, sub_w)
     if slide.layout == "two_column":
         height_groups = [
             (f"{where}.blocks", slide.blocks), (f"{where}.right", slide.right),
@@ -556,20 +614,22 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
         total_h = sum(_block_height(b, w_in) for b in blocks)
         if len(blocks) > 1:
             total_h += BLOCK_GAP_IN * (len(blocks) - 1)
-        if total_h > SLIDE_BODY_H_IN:
-            # advisory, not blocking: the PPTX renderer shrinks fixed-size
-            # blocks (charts especially) toward the available space, so an
-            # over-budget estimate usually still renders. A warning surfaces
-            # the crowding without hard-failing export on a chart + a few
-            # bullets (the char-budget rule above stays an error: text cannot
-            # shrink indefinitely).
+        if total_h > body_budget:
+            # advisory, not blocking: the PPTX renderer shrinks/reserves
+            # room for fixed-size blocks (charts especially) and their
+            # captions instead of dropping them, so an over-budget estimate
+            # usually still renders, just tightly. A warning surfaces the
+            # crowding without hard-failing export on a chart + a few
+            # bullets (the char-budget rule above stays an error: text
+            # cannot shrink indefinitely).
             out.append(Finding(
                 rule="deck/overflow", severity="warning", where=group_where,
                 message=f"~{total_h:.1f}in of estimated content height "
-                        f"(budget {SLIDE_BODY_H_IN}in); a chart, image, "
-                        "table, or stats row takes a near-fixed amount of "
-                        "space regardless of caption length. Consider "
-                        "splitting the slide or dropping a block",
+                        f"(budget {body_budget:.2f}in); a chart, image, "
+                        "table, diagram, or stats row takes a near-fixed "
+                        "amount of space, and captions/attributions/a "
+                        "subtitle add to it. Consider splitting the slide "
+                        "or dropping a block",
             ))
 
 

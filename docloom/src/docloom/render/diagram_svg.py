@@ -131,6 +131,70 @@ DEFAULT_TARGET_ASPECT = 2.0
 MAX_SPREAD = 5.5
 
 # ---------------------------------------------------------------------------
+# GRID PACKING (2026-07-16, structural fix superseding constant-tightening):
+# the previous layout gave every rank exactly ONE COLUMN -- all same-rank
+# nodes stacked along the cross axis, single flow position. For a rank with
+# real fan-out (parallel instances, sibling services, several members of one
+# group) this makes the CROSS extent scale linearly with that rank's node
+# count while every OTHER rank stays a single item tall, so the diagram's
+# overall canvas is driven by its widest rank, not by its total content --
+# measured: a 10-node fixture with a 6-wide rank hit 4.4% node fill and a
+# 5.28pt fitted label (RASTER path) purely from that one rank's height.
+# Constant-tightening (CROSS_GAP/FLOW_GAP/etc above) had already been pushed
+# to its collision-margin/label-clipping limits and gained a measured +0.5pt
+# -- nowhere near the 8pt floor. This is the structural fix instead: when a
+# rank's REAL NODE count exceeds ROW_LIMIT, split those nodes (in their
+# already crossing-minimized, group-contiguous order from order_layers) into
+# multiple BANDS -- parallel sub-columns offset along the FLOW axis within
+# that rank's own slot, each holding <= ROW_LIMIT nodes -- so the rank grows
+# in the flow direction (which the aspect-control pass wants more of anyway
+# for a 16:9 target) instead of purely in cross. A group's members always
+# land in exactly one band (never split -- order_layers's group_sort already
+# keeps them contiguous in the pre-band order, and _decide_bands treats a
+# contiguous same-group run as one indivisible block), so a group's derived
+# box still hugs its members with no dead space introduced by banding
+# itself. Dummy/ghost items (routing plumbing, not authored content) are
+# never banded -- they always sit in band 0 -- which keeps every ghost/dummy
+# code path (group span-filling, long-edge routing) byte-identical to
+# before whenever a rank's real-node count is at or under ROW_LIMIT (i.e.
+# every existing fixture that never exercises banding, including the golden
+# SVG test's 2-node fixture, renders pixel-for-pixel unchanged).
+#
+# Banding only helps a rank whose fan-out is NOT all one group (a rank that
+# is one homogeneous group's members, like spec1's 6-member "renderers" row,
+# stays a single indivisible band by construction -- grid packing cannot
+# shrink a rank whose entire width IS one contiguous group run without
+# splitting that group, which the plan explicitly forbids). This is a real,
+# measured limitation, not an oversight: see docs/diagram-status.md and the
+# grid-packing report for the exact before/after numbers per fixture.
+#
+# ROW_LIMIT=3: tuned empirically against the 5 bake-off specs (check() clean
+# at every detail level and target_aspect in the existing parametrized
+# battery) plus dedicated 10/14-node grouped fixtures built for this task;
+# lower values (2) over-fragment already-modest ranks with little gain,
+# higher values (4-5) leave real fan-out ranks too tall to matter for the
+# 8pt floor on a 16:9 content box.
+ROW_LIMIT = 3
+# Gap (px) between adjacent bands (sub-columns) within one rank's flow slot.
+# Deliberately smaller than FLOW_GAP_LR/TB (the gap BETWEEN ranks): bands
+# are sub-divisions of one logical rank, not a new rank, and the inter-band
+# gap doubles as the "safe corridor" route() detours through (BAND_CLEAR
+# below) when routing an edge into or out of a banded rank without crossing
+# a sibling band's node -- it must stay free of nodes by construction
+# (assign_flow() never places a node inside it), which is exactly what
+# route()'s safe_exit()/safe_entry() rely on.
+BAND_GAP = 34
+# How far past (or before) a banded item's own column route()'s detour
+# travels before turning onto the vertical "clear" run -- must stay inside
+# BAND_GAP so it never enters the neighboring band's node column.
+BAND_CLEAR = 9
+# How far outside a banded rank's own [min-cross, max-cross] extent the
+# detour's horizontal "safe altitude" run sits -- clears every node in every
+# band of that rank by construction (the run's cross coordinate is strictly
+# outside the extent every node in the rank was measured from).
+RANK_SAFE_MARGIN = 14
+
+# ---------------------------------------------------------------------------
 # color
 # ---------------------------------------------------------------------------
 
@@ -313,6 +377,10 @@ class Item:
         self.group = None
         self.rank = 0
         self.order = 0
+        self.band = 0          # grid-packing sub-column within this rank
+                                # (0 unless _decide_bands() splits the rank;
+                                # dummy/ghost items always stay 0 -- see
+                                # ROW_LIMIT's own comment above)
         self.cross = 0.0
         self.flow = 0.0
         self.ce = 10.0
@@ -533,6 +601,87 @@ def order_layers(items, chains, sweeps=10):
 
 
 # ---------------------------------------------------------------------------
+# grid packing: split an over-wide rank into multiple bands (sub-columns)
+# ---------------------------------------------------------------------------
+
+# A rank only gets banded when it is genuinely close to the diagram's own
+# cross-axis bottleneck. Reason (measured, not theoretical): banding ALWAYS
+# adds to flow_total (a new column costs BAND_GAP + that column's own
+# width), so it only pays for itself when it actually reduces cross_total,
+# the diagram's OVERALL cross extent -- which is the max across ranks, not
+# a per-rank quantity. Splitting a rank whose cross footprint is well under
+# the true bottleneck (e.g. a rank sitting behind a long-edge dummy pile-up
+# elsewhere in the diagram, a real measured case: spec2's rank 2 has 4 real
+# nodes and would trip ROW_LIMIT, but ranks 3-4's DUMMY congestion from an
+# unrelated long edge already stood 12-14% taller) buys nothing -- the
+# canvas height stays pinned to the untouched bottleneck rank while flow
+# grew anyway, a pure net loss (measured: spec2 canvas 2442x1263 -> a worse
+# 2664x1363, fitted label 4.63pt -> 4.29pt, before this guard existed).
+BOTTLENECK_FRAC = 0.9
+
+
+def _decide_bands(layers: dict) -> dict:
+    """Assign `it.band` for every item in every rank, and return
+    {rank: n_bands}. Only real nodes (kind == "node") count toward
+    ROW_LIMIT and get split across bands; dummies and ghosts always stay in
+    band 0 (see ROW_LIMIT's docstring above for why). Splitting walks the
+    rank's items in their EXISTING order (order_layers's crossing-minimized,
+    group-contiguous order -- this runs strictly after order_layers), and
+    never separates a run of consecutive same-group real nodes: group_sort()
+    already made a group's members contiguous within the rank, so treating
+    each maximal same-group run as one indivisible block guarantees a
+    group's members always land in exactly one band (a group split across
+    bands would force its derived box to span the dead gap between them,
+    which is exactly the "must stay packed" requirement this preserves).
+
+    Only ranks near the diagram's actual cross-axis bottleneck are eligible
+    (BOTTLENECK_FRAC, above): a cheap footprint estimate (every item's own
+    `ce` plus a CROSS_GAP between each, ignoring the finer separation rules
+    assign_cross() applies -- good enough for a RELATIVE ranking across
+    ranks, which is all this needs) stands in for the real cross extent,
+    which is not known yet at this point in the pipeline (assign_cross()
+    runs after this)."""
+    footprint = {
+        r: sum(it.ce for it in items_r) + CROSS_GAP * max(0, len(items_r) - 1)
+        for r, items_r in layers.items() if items_r
+    }
+    bottleneck = max(footprint.values(), default=0.0) * BOTTLENECK_FRAC
+
+    bands_count: dict = {}
+    for r, items_r in layers.items():
+        for it in items_r:
+            it.band = 0
+        reals = [it for it in items_r if it.kind == "node"]
+        if len(reals) <= ROW_LIMIT or footprint.get(r, 0.0) < bottleneck:
+            bands_count[r] = 1
+            continue
+        blocks: list[list] = []
+        for it in reals:
+            # only a run of the SAME non-None group merges into one
+            # indivisible block; consecutive ungrouped (group is None)
+            # items are each their OWN block -- they have no contiguity
+            # requirement, and merging them on "None == None" would lump
+            # an entire ungrouped fan-out into one unsplittable block,
+            # defeating banding for exactly the ranks it helps most.
+            if (blocks and it.group is not None and blocks[-1][0] == it.group):
+                blocks[-1][1].append(it)
+            else:
+                blocks.append([it.group, [it]])
+        n_bands = max(1, math.ceil(len(reals) / ROW_LIMIT))
+        target = len(reals) / n_bands
+        band_idx, band_fill = 0, 0
+        for _gk, blk in blocks:
+            if band_fill > 0 and band_fill + len(blk) > target and band_idx < n_bands - 1:
+                band_idx += 1
+                band_fill = 0
+            for it in blk:
+                it.band = band_idx
+            band_fill += len(blk)
+        bands_count[r] = band_idx + 1
+    return bands_count
+
+
+# ---------------------------------------------------------------------------
 # 4. coordinates
 # ---------------------------------------------------------------------------
 def sep(a, b):
@@ -570,13 +719,31 @@ def enforce_out(layer):
             layer[i].cross = need
 
 
+def _band_groups(items_r):
+    """Partition one rank's item list into per-band sub-lists, preserving
+    relative order within each band. bands_count[r] == 1 (the unbanded,
+    default case) always yields exactly [items_r] -- one group, identical
+    to the pre-banding behavior -- so every caller below degrades to the
+    original single-column logic whenever _decide_bands() never split this
+    rank."""
+    out: dict = {}
+    for it in items_r:
+        out.setdefault(it.band, []).append(it)
+    return [out[b] for b in sorted(out)]
+
+
 def assign_cross(layers, adj, items, passes=16):
+    """Band-aware (docs/diagram-plan.md grid-packing addendum): reads each
+    item's `.band` (set by _decide_bands(), 0 for every item when a rank was
+    never split) via _band_groups(), so a rank with bands_count[r] == 1
+    behaves byte-identically to the pre-banding single-column algorithm."""
     ranks = sorted(layers)
     for r in ranks:
-        c = 0.0
-        for it in layers[r]:
-            it.cross = c + it.ce / 2
-            c = it.cross + it.ce / 2 + CROSS_GAP
+        for grp in _band_groups(layers[r]):
+            c = 0.0
+            for it in grp:
+                it.cross = c + it.ce / 2
+                c = it.cross + it.ce / 2 + CROSS_GAP
     for p in range(passes):
         seqr = ranks[1:] if p % 2 == 0 else list(reversed(ranks[:-1]))
         for r in seqr:
@@ -591,19 +758,28 @@ def assign_cross(layers, adj, items, passes=16):
                                        else (vals[m // 2 - 1] + vals[m // 2]) / 2)
                 else:
                     desired[it.key] = it.cross
-            fixed = []
-            for it in sorted(layers[r],
-                             key=lambda i: (-i.prio, -len(adj.get(i.key, [])), i.seq)):
-                lo, hi = -1e9, 1e9
-                for j in fixed:
-                    if j.order < it.order:
-                        lo = max(lo, j.cross + sep(j, it))
-                    else:
-                        hi = min(hi, j.cross - sep(it, j))
-                d = desired[it.key]
-                it.cross = max(lo, min(hi, d)) if lo <= hi else d
-                fixed.append(it)
-            enforce(layers[r])
+            # each band is its OWN independent cross stack (docs/diagram-
+            # plan.md grid-packing addendum): items in different bands sit
+            # at different flow offsets, so they never need to keep clear of
+            # each other on the cross axis the way same-band neighbors do.
+            # Resolving conflicts per band (rather than across the whole
+            # rank) is what actually SHRINKS the cross extent -- resolving
+            # them together would just reproduce the old single-column
+            # stack with a wasted flow offset next to it.
+            for grp in _band_groups(layers[r]):
+                fixed = []
+                for it in sorted(grp,
+                                 key=lambda i: (-i.prio, -len(adj.get(i.key, [])), i.seq)):
+                    lo, hi = -1e9, 1e9
+                    for j in fixed:
+                        if j.order < it.order:
+                            lo = max(lo, j.cross + sep(j, it))
+                        else:
+                            hi = min(hi, j.cross - sep(it, j))
+                    d = desired[it.key]
+                    it.cross = max(lo, min(hi, d)) if lo <= hi else d
+                    fixed.append(it)
+                enforce(grp)
     lo = min(it.cross - it.ce / 2 for r in ranks for it in layers[r])
     for r in ranks:
         for it in layers[r]:
@@ -660,6 +836,17 @@ def repair_bands(spec, layers, items, lr, rounds=5):
                 if not blk:
                     continue
                 i0, i1 = min(blk), max(blk)
+                # NOTE: the group's drawn box is ONE rectangle spanning its
+                # extreme real members' flow positions (gx/gx2 in
+                # _solve_one), not a per-rank slice -- so a stranger in a
+                # DIFFERENT grid-packing band at this rank is NOT
+                # automatically flow-disjoint from the box (an earlier
+                # version of this comment assumed it was; a hand-built
+                # regression fixture with clutter nodes proved that wrong).
+                # Every stranger at this rank must still be checked,
+                # regardless of band; only the ENFORCE/cascade step below is
+                # band-scoped (each band is its own independent cross stack
+                # -- see assign_cross()).
                 for i, it in enumerate(layer):
                     if it.group == gk:
                         continue
@@ -672,7 +859,8 @@ def repair_bands(spec, layers, items, lr, rounds=5):
                         if d > 0:
                             shove(it, d)
             for r in sorted(layers):
-                enforce_out(layers[r])
+                for grp in _band_groups(layers[r]):
+                    enforce_out(grp)
 
     # Deterministic closing guarantee (docs/diagram-status.md re-audit
     # finding B: "a non-member node renders INSIDE a group boundary"). The
@@ -736,10 +924,19 @@ def repair_bands(spec, layers, items, lr, rounds=5):
                     moved = True
                     # cascade in every rank a member of it's OWN band lives
                     # in (shove() moved the whole band if it.group is set),
-                    # in the direction this specific shove went.
+                    # in the direction this specific shove went -- restricted
+                    # to the grid-packing band(s) actually touched, so the
+                    # cascade never leaks across a band boundary into a
+                    # sibling band's independent cross stack.
                     ranks = {m.rank for m in bygroup[it.group]} if it.group else {it.rank}
+                    moved_keys = ({m.key for m in bygroup[it.group]} if it.group
+                                  else {it.key})
                     for mr in ranks:
-                        (_cascade_fwd if d >= 0 else _cascade_bwd)(layers.get(mr, []))
+                        layer_mr = layers.get(mr, [])
+                        bands_here = {x.band for x in layer_mr if x.key in moved_keys}
+                        for grp in _band_groups(layer_mr):
+                            if grp and grp[0].band in bands_here:
+                                (_cascade_fwd if d >= 0 else _cascade_bwd)(grp)
         if not moved:
             break
 
@@ -750,19 +947,32 @@ def repair_bands(spec, layers, items, lr, rounds=5):
 
 
 def assign_flow(layers, gap):
+    """Band-aware: a rank with N bands (N == 1 unless _decide_bands() split
+    it) lays those bands out as consecutive sub-slots along the flow axis,
+    separated by BAND_GAP, and centers each item within its OWN band's
+    width -- the N == 1 case collapses to exactly the original formula
+    (single slot, width == max(fe), no BAND_GAP added), so every unbanded
+    rank's flow coordinates are byte-identical to before this change."""
     f = 0.0
     for r in sorted(layers):
-        w = max(it.fe for it in layers[r])
-        for it in layers[r]:
-            it.flow = f + (w - it.fe) / 2
-        f += w + gap
+        grps = _band_groups(layers[r])
+        band_w = [max(it.fe for it in grp) for grp in grps]
+        band_x0 = []
+        acc = 0.0
+        for i, w in enumerate(band_w):
+            band_x0.append(acc)
+            acc += w + (BAND_GAP if i < len(band_w) - 1 else 0.0)
+        for grp, x0, w in zip(grps, band_x0, band_w):
+            for it in grp:
+                it.flow = f + x0 + (w - it.fe) / 2
+        f += acc + gap
     return f - gap
 
 
 # ---------------------------------------------------------------------------
 # layout driver
 # ---------------------------------------------------------------------------
-def layout(spec, target_aspect=DEFAULT_TARGET_ASPECT):
+def layout(spec, target_aspect=DEFAULT_TARGET_ASPECT, allow_bands=True):
     """Internal: builds the direction-neutral Item/layer structure `L` that
     route() and place_labels() consume. Not part of the public seam; solve()
     is the public entry point (below). `target_aspect` replaces what used to
@@ -770,7 +980,12 @@ def layout(spec, target_aspect=DEFAULT_TARGET_ASPECT):
     only affects the LR branch of the aspect-control pass; TB keeps its own
     fixed 0.72 widen factor (a TB diagram chasing a 2:1 landscape target would
     just get bizarrely wide; solve()'s auto-flip, not this constant, is what
-    fixes a portrait TB result against a landscape target_aspect)."""
+    fixes a portrait TB result against a landscape target_aspect).
+
+    `allow_bands=False` disables grid packing entirely (every rank stays a
+    single band, the pre-banding behavior) -- used internally by
+    _solve_one()'s banded-vs-unbanded comparison; every real caller leaves
+    this at its default."""
     lr = spec.get("direction", "LR") == "LR"
     keys = [n["key"] for n in spec["nodes"]]
     by = {n["key"]: n for n in spec["nodes"]}
@@ -825,16 +1040,25 @@ def layout(spec, target_aspect=DEFAULT_TARGET_ASPECT):
 
     items, chains = build()
     layers, adj, _ = order_layers(items, chains)
+    if allow_bands:
+        # grid packing (docs/diagram-plan.md addendum): decided before
+        # assign_cross so the ghost-sizing pass below measures the SAME
+        # per-band cross extent the final layout will actually use.
+        _decide_bands(layers)
     assign_cross(layers, adj, items)
-    band = {}
+    group_ce = {}  # each group's own cross extent, used to size GHOST items
+                   # (band-filler placeholders at ranks where a group has no
+                   # real member) -- named to avoid colliding with the
+                   # grid-packing `Item.band` concept, an unrelated axis.
     for g in spec.get("groups", []):
         mem = [items[k] for k in keys if by[k].get("group") == g["key"]]
         if mem:
-            band[g["key"]] = (max(m.cross + m.ce / 2 for m in mem) -
-                              min(m.cross - m.ce / 2 for m in mem))
+            group_ce[g["key"]] = (max(m.cross + m.ce / 2 for m in mem) -
+                                  min(m.cross - m.ce / 2 for m in mem))
 
-    items, chains = build(ghost_ce=band)
+    items, chains = build(ghost_ce=group_ce)
     layers, adj, crossings = order_layers(items, chains)
+    bands_count = _decide_bands(layers) if allow_bands else {r: 1 for r in layers}
     assign_cross(layers, adj, items)
     repair_bands(spec, layers, items, lr)
 
@@ -863,7 +1087,7 @@ def layout(spec, target_aspect=DEFAULT_TARGET_ASPECT):
                 it.x, it.y = it.cross - it.ce / 2, it.flow
                 it.w, it.h = it.ce, it.fe
     return {"lr": lr, "items": items, "layers": layers, "chains": chains,
-            "by": by, "crossings": crossings}
+            "by": by, "crossings": crossings, "bands_count": bands_count}
 
 
 # ---------------------------------------------------------------------------
@@ -898,6 +1122,60 @@ def dedupe(pts):
 
 def route(L):
     lr, items, layers = L["lr"], L["items"], L["layers"]
+    bands_count = L.get("bands_count") or {}
+    banded_ranks = {r for r, n in bands_count.items() if n > 1}
+
+    # grid packing (docs/diagram-plan.md addendum): a banded rank has more
+    # than one node column side by side, so a segment that just cuts
+    # straight across at a fixed cross value (the pre-banding routing below)
+    # can pass through a SIBLING band's node -- the exact "edge enters a
+    # node's silhouette" failure mode. rank_extent gives the full cross span
+    # of every item in a rank (every band together); safe_exit()/
+    # safe_entry() route a banded endpoint's own hop out to a cross-axis
+    # line strictly OUTSIDE that span first (clearing every node in every
+    # band of the rank by construction), via the empty BAND_GAP corridor
+    # just past (or before) the endpoint's own column, before the normal
+    # lane logic ever touches it. A rank with exactly one band (every rank
+    # that _decide_bands() never split) is never in `banded_ranks`, so this
+    # whole mechanism is inert for it -- the per-hop loop below falls
+    # through to the ORIGINAL direct/lane logic unchanged, which is why
+    # every pre-existing fixture (none of which trigger banding) routes
+    # byte-identically to before this change.
+    rank_extent = {}
+    for r, its in layers.items():
+        if not its:
+            continue
+        if lr:
+            rank_extent[r] = (min(it.y for it in its), max(it.y + it.h for it in its))
+        else:
+            rank_extent[r] = (min(it.x for it in its), max(it.x + it.w for it in its))
+
+    def _peers(it):
+        return [p for p in layers.get(it.rank, []) if p.band == it.band]
+
+    def _safe(it, entering: bool):
+        """(flow_clear, cross_altitude) for `it`, a banded-rank endpoint:
+        flow_clear is just past (exiting) or just before (entering) it's OWN
+        column, in the empty inter-band corridor; cross_altitude is outside
+        the WHOLE rank's cross extent, on whichever side is nearer `it` (so
+        the detour is as short as it can be while staying safe)."""
+        peers = _peers(it)
+        if lr:
+            own_cross = it.y + it.h / 2
+            flow_clear = ((min(p.x for p in peers) - BAND_CLEAR) if entering
+                          else (max(p.x + p.w for p in peers) + BAND_CLEAR))
+        else:
+            own_cross = it.x + it.w / 2
+            flow_clear = ((min(p.y for p in peers) - BAND_CLEAR) if entering
+                          else (max(p.y + p.h for p in peers) + BAND_CLEAR))
+        lo, hi = rank_extent[it.rank]
+        cross_alt = (lo - RANK_SAFE_MARGIN if (own_cross - lo) <= (hi - own_cross)
+                     else hi + RANK_SAFE_MARGIN)
+        return flow_clear, cross_alt
+
+    def _mk(flow, cross):
+        return (flow, cross) if lr else (cross, flow)
+
     routes, ports = [], {}
     for ci, (e, chain, rs, rt) in enumerate(L["chains"]):
         if e.get("_virtual"):
@@ -969,12 +1247,30 @@ def route(L):
             else:
                 bpt = (b.x + b.w / 2, b.y if fwd > 0 else b.y + b.h)
             apt = pts[-1]
-            if lr:
-                if abs(apt[1] - bpt[1]) > 1.0:
-                    pts += [(lx, apt[1]), (lx, bpt[1])]
+            a_banded = a.rank in banded_ranks
+            b_banded = b.rank in banded_ranks
+            if not a_banded and not b_banded:
+                if lr:
+                    if abs(apt[1] - bpt[1]) > 1.0:
+                        pts += [(lx, apt[1]), (lx, bpt[1])]
+                else:
+                    if abs(apt[0] - bpt[0]) > 1.0:
+                        pts += [(apt[0], lx), (bpt[0], lx)]
             else:
-                if abs(apt[0] - bpt[0]) > 1.0:
-                    pts += [(apt[0], lx), (bpt[0], lx)]
+                apt_cross = apt[1] if lr else apt[0]
+                bpt_cross = bpt[1] if lr else bpt[0]
+                exit_cross = apt_cross
+                if a_banded:
+                    clear, exit_cross = _safe(a, entering=False)
+                    pts += [_mk(clear, apt_cross), _mk(clear, exit_cross)]
+                entry_cross = bpt_cross
+                if b_banded:
+                    clear_b, entry_cross = _safe(b, entering=True)
+                pts.append(_mk(lx, exit_cross))
+                if abs(exit_cross - entry_cross) > 1.0:
+                    pts.append(_mk(lx, entry_cross))
+                if b_banded:
+                    pts += [_mk(clear_b, entry_cross), _mk(clear_b, bpt_cross)]
             pts.append(bpt)
             if b.kind in ("dummy", "ghost") and b is not chain[-1]:
                 if lr:
@@ -1337,15 +1633,35 @@ def _apply_detail(spec: dict, detail: str) -> dict:
     return out
 
 
-def _solve_one(spec: dict, target_aspect: float, legend: bool = True) -> SolvedDiagram:
-    """One layout attempt at the spec's own `direction`. solve() (below) may
-    call this twice (once per direction) to satisfy target_aspect.
+def _fit_score(s: SolvedDiagram, target_aspect: float) -> float:
+    """Larger is better: the fit scale a caller would get fitting `s` into a
+    virtual (target_aspect, 1.0)-shaped box (docs/diagram-plan.md grid-
+    packing addendum's banded-vs-unbanded comparison, below). Mirrors
+    diagram_pptx._fit()'s own k = min(w_in/canvas_w_in, max_h_in/canvas_h_in)
+    formula exactly, with w_in=target_aspect, max_h_in=1.0 -- since every
+    real caller's own (w_in, max_h_in) box is some scalar multiple of
+    (target_aspect, 1.0) by construction (that IS what target_aspect means
+    to them), this ranks two candidate layouts in the same order any real
+    caller's actual fitted font size would."""
+    if s.width <= 0 or s.height <= 0:
+        return 0.0
+    return min(target_aspect / s.width, 1.0 / s.height)
 
-    `legend` gates whether LEGEND_H px of canvas height is reserved at the
-    bottom (docs/diagram-status.md finding 16: the reserved legend band is a
-    property of the SOLVE, not an unconditional add -- see SolvedDiagram.
-    legend_h)."""
-    L = layout(spec, target_aspect)
+
+def _finish_solve(L: dict, spec: dict, legend: bool) -> SolvedDiagram:
+    """Routing, label placement, group boxes, offset/extent -- everything
+    downstream of an already-built `layout()` result. Split out of
+    _solve_one() so grid packing (docs/diagram-plan.md addendum) can run
+    this SAME pipeline twice -- once banded, once with allow_bands=False --
+    and pick whichever actually produces the better fitted scale; banding a
+    rank is not always a net win (a rank's own cross stack can shrink while
+    an UNRELATED rank's cross stack grows through the shared barycenter-
+    median coupling in assign_cross()'s iterative alignment -- measured on
+    a hand-built fixture, not hypothetical: banding shrank the fan-out
+    rank's own span by 28px but grew a downstream 2-node group's span by
+    88px, a net INCREASE in the diagram's overall cross_total), so
+    _solve_one() below never ships a banded layout that is actually worse
+    than the plain one it would have produced anyway."""
     routes = route(L)
     labels = place_labels(L, routes)
     label_by_ci = {l["ci"]: l for l in labels}
@@ -1442,6 +1758,35 @@ def _solve_one(spec: dict, target_aspect: float, legend: bool = True) -> SolvedD
         nodes=solved_nodes, edges=solved_edges, groups=solved_groups,
         legend=used, direction=("LR" if L["lr"] else "TB"), legend_h=legend_h,
     )
+
+
+def _solve_one(spec: dict, target_aspect: float, legend: bool = True) -> SolvedDiagram:
+    """One layout attempt at the spec's own `direction`. solve() (below) may
+    call this twice (once per direction) to satisfy target_aspect.
+
+    `legend` gates whether LEGEND_H px of canvas height is reserved at the
+    bottom (docs/diagram-status.md finding 16: the reserved legend band is a
+    property of the SOLVE, not an unconditional add -- see SolvedDiagram.
+    legend_h).
+
+    Grid packing safety net (docs/diagram-plan.md addendum): if banding
+    actually split any rank, ALSO solve the same spec with allow_bands=False
+    and keep whichever candidate scores better on _fit_score() -- banding
+    can regress an UNRELATED rank through assign_cross()'s shared
+    barycenter coupling (see _finish_solve()'s own docstring for the
+    measured case), and this guarantees grid packing is a strict
+    improvement-or-no-op from every caller's point of view, never a
+    regression. Costs a second layout() pass only when a rank was actually
+    split (the common case -- most diagrams never trip ROW_LIMIT -- pays
+    nothing extra)."""
+    L = layout(spec, target_aspect)
+    solved = _finish_solve(L, spec, legend)
+    if any(n > 1 for n in L["bands_count"].values()):
+        L_plain = layout(spec, target_aspect, allow_bands=False)
+        solved_plain = _finish_solve(L_plain, spec, legend)
+        if _fit_score(solved_plain, target_aspect) > _fit_score(solved, target_aspect):
+            return solved_plain
+    return solved
 
 
 def _check_no_duplicate_ids(d: Diagram) -> None:

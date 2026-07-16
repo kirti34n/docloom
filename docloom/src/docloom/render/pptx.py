@@ -135,6 +135,42 @@ LOGO_MAX_W = SLIDE_W * 0.28  # width guard: caps a very wide (e.g. horizontal wo
 # when it decides a slide is overfull (docs/diagram-plan.md section 6).
 DIAGRAM_H_IN = 4.6
 
+# Named so lint.py's own mirrored copies (plain literals -- lint.py must stay
+# import-light and layout-agnostic, see the comment above its SLIDE_BODY_H_IN)
+# can be pinned against a real name via test_reaudit_lint.py instead of a
+# bare, easy-to-drift number sprinkled across both files. These four used to
+# be unnamed literals scattered through this module (0.26 in three different
+# functions, 0.3 in a fourth, 0.12 in a fifth) and lint.py's geometry model
+# mirrored NONE of them -- the direct cause of the audit's silent-drop
+# repro: a subtitle (SUBTITLE_PAD_IN + the estimated line) shrinks the real
+# body height, and a chart's own caption (CAPTION_H_IN) adds to its real
+# footprint, neither of which lint's SLIDE_BODY_H_IN/CHART_H_IN accounted
+# for, so a slide that silently dropped its trailing block still scored as
+# safe.
+CAPTION_H_IN = 0.26       # table/chart/diagram/placeholder caption strip
+IMAGE_CAPTION_H_IN = 0.3  # _place_picture's own (slightly taller) image caption
+QUOTE_ATTR_H_IN = 0.28    # quote attribution line
+SUBTITLE_PAD_IN = 0.12    # _subtitle_line's fixed pad below its estimated lines
+# The floor below which a block isn't worth giving its own shape -- and, as
+# of the fix for the "ponytail" class (see _body), the minimum every block is
+# now RESERVED ahead of time so an earlier block can never silently eat a
+# later authored block's entire share of the slide.
+MIN_BLOCK_RESERVE_IN = 0.3
+# "Shrink, never drop" (the MIN_BLOCK_RESERVE_IN fix above) stops content
+# from vanishing with zero trace, but reserving only 0.3in for a VISUAL block
+# (an image, artifact, diagram, chart, or stat row) does not give it a
+# legible size -- it gives it a speck. Measured live: a diagram squeezed to
+# its 0.3in reserve rendered a 2208x1894 raster picture into a 0.47x0.40in
+# box (~4735 effective dpi), a fix wearing a silent failure's clothes: lint
+# DOES warn (deck/overflow), but the renderer still emitted something no
+# viewer could ever read. Below this floor, a visual block is DROPPED with a
+# warning naming it instead -- this is the one place in this file where
+# "drop" is the correct answer over "shrink to fit", because a visual block
+# has no legible degraded form the way text does (text can still be read at
+# a smaller size; a diagram at 0.4in tall cannot).
+MIN_VISUAL_BLOCK_H_IN = 1.2
+_VISUAL_BLOCKS = (Image, Artifact, Diagram, Chart, StatRow)
+
 
 def _safe_href(url: str) -> str | None:
     try:
@@ -160,6 +196,19 @@ def _shade(color: str, f: float) -> str:
     return "#%02X%02X%02X" % tuple(round(c * (1 - f)) for c in (r, g, b))
 
 
+def _mix(color: str, toward: str, f: float) -> str:
+    """Blend `color` toward an arbitrary target color by fraction f (0..1).
+    Unlike _tint/_shade (which always move toward white/black), this blends
+    toward whatever color is actually behind the mix -- used for the callout
+    fill wash below, which needs to land near theme.background whether that
+    background is light or dark, not near a hardcoded white."""
+    r1, g1, b1 = hex_to_rgb(color)
+    r2, g2, b2 = hex_to_rgb(toward)
+    return "#%02X%02X%02X" % tuple(
+        round(a + (c - a) * f) for a, c in ((r1, r2), (g1, g2), (b1, b2))
+    )
+
+
 def _hue_shift(color: str, hue_deg: float) -> str:
     """Recolor `color` to hue `hue_deg` (0-360) while preserving its own
     saturation and lightness, so a derived tone still reads as part of this
@@ -183,6 +232,65 @@ def _callout_edge_color(style: str, theme: Theme) -> str:
     if style == "danger":
         return _hue_shift(theme.accent, _DANGER_HUE)
     return theme.primary  # info, and any unrecognized style
+
+
+# Finding D: all four callout fills were the flat theme.surface gray, so only
+# the 4px edge bar actually carried the style's color -- across a room, a
+# danger callout read exactly as loud as an info one. A heavy wash of the
+# edge color itself (not a fixed light/dark stock hex) lets the whole card
+# signal urgency while staying inside this theme's own palette.
+_CALLOUT_FILL_WASH = 0.86  # fraction of the way from the edge color to theme.background
+
+
+def _callout_fill_color(style: str, theme: Theme) -> str:
+    """A tinted wash of `style`'s own edge color, blended toward
+    theme.background (not a fixed white) so it reads correctly on a dark
+    theme too, unlike _tint which always moves toward literal white."""
+    return _mix(_callout_edge_color(style, theme), theme.background, _CALLOUT_FILL_WASH)
+
+
+def _band_theme(theme: Theme, fill: str) -> Theme:
+    """Theme tokens recolored for blocks drawn on top of an inverted band --
+    a solid rectangle painted `fill` that covers part or all of the slide
+    (hero's dark title strip, fill=theme.text; section's full-bleed cover,
+    fill=theme.primary) -- so any block placed on that band resolves its OWN
+    fill/foreground choices against what is ACTUALLY painted behind it,
+    instead of against the document's still-light theme.background.
+
+    This is the hero contrast regression's actual root cause: the old swap
+    (just {"text": theme.background, "muted": theme.surface}) recolored the
+    FOREGROUND tokens a block reads for its text, but left "background"
+    pointed at the document's own light color. A callout mixes its wash via
+    _callout_fill_color(style, theme) -> _mix(edge_color, theme.background,
+    0.86): with only text/muted swapped, that wash still lands near-white
+    (mixed toward the document's real light background) while the callout's
+    own text, now theme.background too, ALSO renders near-white -- white on
+    white, measured 1.1-1.3:1, not just low contrast but genuinely
+    invisible. Swapping "background" (and "surface", its lighter sibling) to
+    the band's own paint fixes this for ANY block that mixes toward
+    "background" -- not just callouts: a diagram edge-label pill (drawn
+    filled with theme.background in diagram_pptx.py) and a code block's own
+    surface rect are exactly the same seam, fixed once here instead of
+    patched per block type.
+
+    "primary" only remaps to "accent" when the band's own fill genuinely IS
+    theme.primary (section's full-bleed cover): a bullet marker or group
+    label drawn in "primary" would otherwise be theme.primary on a
+    theme.primary background -- literally invisible, not just low contrast
+    (the original, narrower fix this generalizes). Doing that swap
+    unconditionally (for hero's fill=theme.text too) was tried and rejected:
+    it collapsed _callout_edge_color's info (theme.primary) and success
+    (theme.accent) onto the same accent hex on every hero band, trading one
+    contrast bug for a color-distinctness one."""
+    update = {
+        "background": fill,
+        "surface": _mix(fill, theme.background, 0.12),
+        "text": theme.background,
+        "muted": theme.surface,
+    }
+    if fill == theme.primary:
+        update["primary"] = theme.accent
+    return theme.model_copy(update=update)
 
 
 def _divider_color(theme: Theme) -> str:
@@ -454,16 +562,24 @@ def _list_block(slide, b, theme, numbers, x, y, w, max_h, ordered: bool,
 
 
 def _quote_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
+    # Reserve the attribution's own strip BEFORE laying out the quote text
+    # (mirroring _place_picture's already-correct caption-reserved-upfront
+    # pattern), so an authored attribution is never silently dropped just
+    # because the quote text itself used up the whole box -- the same class
+    # of silent loss as the trailing-block "ponytail" bug in _body, one
+    # field down.
+    attr_h = QUOTE_ATTR_H_IN if b.attribution else 0.0
     h = _text_block(
-        slide, b.text, theme, numbers, x, y, w, max_h, size=15, italic=True, indent=0.4
+        slide, b.text, theme, numbers, x, y, w, max(0.1, max_h - attr_h),
+        size=15, italic=True, indent=0.4,
     )
-    if b.attribution and h + 0.28 <= max_h:
+    if b.attribution:
         tf = _box(slide, x + 0.4, y + h + 0.04, w - 0.4, 0.24)
         _runs(
             tf.paragraphs[0], "\u2014 " + b.attribution, theme, numbers,
             12, theme.muted, theme.font_body,
         )
-        h += 0.28
+        h += QUOTE_ATTR_H_IN
     return h
 
 
@@ -522,7 +638,7 @@ def _table_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
     cols = max(len(header), 1)
     tw = min(w, max(3.0, cols * 2.5))
     tx = x + (w - tw) / 2 if tw < w else x  # center a narrower-than-column table
-    cap_h = 0.26 if b.caption else 0.0
+    cap_h = CAPTION_H_IN if b.caption else 0.0
     budget = max(_table_row_h(TABLE_MIN_PT), max_h - cap_h)
 
     # shrink the font (down to a floor) until every row fits at that size,
@@ -540,6 +656,20 @@ def _table_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
     if len(rows) + 1 > room:
         keep = max(0, room - 2)  # header row + the notice row both cost a slot
         more = len(rows) - keep
+        # The "+N more rows" notice IS visible (never a blank gap), but the
+        # dropped rows' own cell text carries no trace anywhere else in the
+        # deck -- this used to be a genuinely silent loss with zero warning,
+        # caught only by rendering-and-reading the actual XML, not by any
+        # structural test (none asserted on truncated row CONTENT, only
+        # counts).
+        ident = f" (id={b.id!r})" if b.id else ""
+        warnings.warn(
+            f"pptx: table{ident} truncated to {keep} of {len(rows)} rows to "
+            f"fit; the dropped rows are summarized by a \"+{more} more "
+            "row(s)\" notice but their own cell text is not rendered -- "
+            "move the full table to the report or a sheet",
+            stacklevel=2,
+        )
         rows = rows[:keep]
 
     n_rows = len(rows) + 1 + (1 if more else 0)
@@ -591,13 +721,17 @@ def _table_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
             theme, numbers, size, theme.muted, theme.font_body, italic=True,
         )
     h = th
-    if b.caption and h + 0.26 <= max_h:
+    # cap_h was already reserved above (before the row/font-shrink budget
+    # was even computed), so the caption always fits and is always drawn --
+    # not gated on "if there happens to be room left over", which is exactly
+    # the pattern that let a caption vanish silently when a slide ran tight.
+    if b.caption:
         tf = _box(slide, tx, y + h + 0.04, tw, 0.22)
         _runs(
             tf.paragraphs[0], b.caption, theme, numbers,
             11, theme.muted, theme.font_body, italic=True,
         )
-        h += 0.26
+        h += CAPTION_H_IN
     return h
 
 
@@ -606,7 +740,7 @@ def _callout_block(slide, b, theme, numbers, x, y, w, max_h,
     size, pad, edge_w = 13 * scale, 0.14, 0.08
     est = _est_lines(plain(b.text), size, w - edge_w - 2 * pad) * _line_h(size) + 2 * pad
     h = min(max_h, est)
-    _rect(slide, x, y, w, h, theme.surface)
+    _rect(slide, x, y, w, h, _callout_fill_color(b.style, theme))
     _rect(slide, x, y, edge_w, h, _callout_edge_color(b.style, theme))
     tf = _box(slide, x + edge_w + pad, y + pad, w - edge_w - 2 * pad, h - 2 * pad)
     _runs(tf.paragraphs[0], b.text, theme, numbers, size, theme.text, theme.font_body)
@@ -619,7 +753,12 @@ def _placeholder_block(slide, x, y, w, max_h, theme, alt: str, caption: str | No
     decode), so content never silently disappears from the deck (P5 audit
     defect 1). Mirrors the DOCX placeholder paragraph's intent, as a native
     PPTX shape with its alt text and caption legible on the slide."""
-    h = min(max_h, 1.6)
+    # Reserve the caption's own strip BEFORE sizing the placeholder box
+    # (same upfront-reservation fix as _quote_block/_table_block/
+    # _chart_block above), so a caption on a placeholder is never silently
+    # dropped just because max_h was tight.
+    cap_h = CAPTION_H_IN if caption else 0.0
+    h = min(max(0.1, max_h - cap_h), 1.6)
     box = slide.shapes.add_shape(
         MSO_SHAPE.ROUNDED_RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h)
     )
@@ -640,14 +779,32 @@ def _placeholder_block(slide, x, y, w, max_h, theme, alt: str, caption: str | No
     run.font.italic = True
     run.font.name = theme.font_body
     run.font.color.rgb = _rgb(theme.muted)
-    if caption and h + 0.26 <= max_h:
+    if caption:
         cap_tf = _box(slide, x, y + h + 0.04, w, 0.22)
         _runs(
             cap_tf.paragraphs[0], caption, theme, {}, 11, theme.muted, theme.font_body,
             italic=True,
         )
-        h += 0.26
+        h += CAPTION_H_IN
     return h
+
+
+def _set_alt(pic, alt: str) -> None:
+    """Set a picture's accessible description from Image.alt. python-pptx
+    exposes no high-level alt-text setter (the same reason diagram_pptx.py's
+    raster fallback reaches into the oxml element directly), so this writes
+    the docPr descr attribute by hand. Previously nothing set it at all: an
+    Image/Artifact's alt text reached HTML (alt=) and Markdown (![alt]) but
+    never PPTX, a genuine accessibility gap invisible to every existing
+    structural test because alt was never expected to render as slide TEXT
+    in the first place. Best-effort: a metadata hiccup here must never fail
+    the embed itself."""
+    if not alt:
+        return
+    try:
+        pic._element.nvPicPr.cNvPr.set("descr", alt)
+    except Exception:
+        pass
 
 
 def _add_png(slide, png: bytes | None, x, y):
@@ -686,7 +843,7 @@ def _add_picture(slide, path: Path, theme, x, y):
 def _place_picture(slide, pic, caption, theme, x, y, w, max_h) -> float:
     """Fit an already-added picture into the (w, max_h) slot, center it, and
     draw its caption. Returns the height consumed, in inches."""
-    cap_h = 0.3 if caption else 0.0
+    cap_h = IMAGE_CAPTION_H_IN if caption else 0.0
     scale = min(
         Inches(w) / pic.width, Inches(max(0.4, max_h - cap_h)) / pic.height, 1.0
     )
@@ -724,6 +881,7 @@ def _image_block(slide, b, theme, x, y, w, max_h) -> float:
     pic = _add_picture(slide, path, theme, x, y)
     if pic is None:
         return 0.0
+    _set_alt(pic, b.alt)
     return _place_picture(slide, pic, b.caption, theme, x, y, w, max_h)
 
 
@@ -792,7 +950,7 @@ def _chart_table(b: Chart) -> Table:
 
 def _chart_block(slide, b: Chart, theme, numbers, x, y, w, max_h,
                  solo: bool = False) -> float:
-    cap_h = 0.26 if b.caption else 0.0
+    cap_h = CAPTION_H_IN if b.caption else 0.0
     try:
         data = _chart_data(b)
         room = max_h - cap_h
@@ -849,13 +1007,16 @@ def _chart_block(slide, b: Chart, theme, numbers, x, y, w, max_h,
         if pic is not None:  # docloom's own chart painter, rasterized
             return _place_picture(slide, pic, b.caption, theme, x, y, w, max_h)
         return _table_block(slide, _chart_table(b), theme, numbers, x, y, w, max_h)
-    if b.caption and h + 0.26 <= max_h:
+    # cap_h was already reserved above (room = max_h - cap_h), so this always
+    # fits and is always drawn -- see the same fix on _table_block/
+    # _quote_block/_placeholder_block above.
+    if b.caption:
         tf = _box(slide, x, y + h + 0.04, w, 0.22)
         _runs(
             tf.paragraphs[0], b.caption, theme, numbers,
             11, theme.muted, theme.font_body, italic=True,
         )
-        h += 0.26
+        h += CAPTION_H_IN
     return h
 
 
@@ -991,32 +1152,33 @@ def _natural_h(b: Block, w: float, scale: float = 1.0) -> float:
         )
     if isinstance(b, Quote):
         h = _est_lines(plain(b.text), 15, w - 0.4) * _line_h(15)
-        return h + (0.28 if b.attribution else 0.0)
+        return h + (QUOTE_ATTR_H_IN if b.attribution else 0.0)
     if isinstance(b, Code):
         return len(b.code.split("\n")) * _line_h(12) + 0.24
     if isinstance(b, Table):
         _, rows = normalize_table(b.header, b.rows)
-        return (len(rows) + 1) * _table_row_h(TABLE_PT) + (0.26 if b.caption else 0.0)
+        return (len(rows) + 1) * _table_row_h(TABLE_PT) + (CAPTION_H_IN if b.caption else 0.0)
     if isinstance(b, Callout):
         s = 13 * scale
         return _est_lines(plain(b.text), s, w - 0.08 - 0.28) * _line_h(s) + 0.28
     if isinstance(b, StatRow):
         return LAYOUT["stat_card_h_in"] if b.items else 0.0
     if isinstance(b, Chart):
-        return LAYOUT["chart_max_h_in"] + (0.26 if b.caption else 0.0)
+        return LAYOUT["chart_max_h_in"] + (CAPTION_H_IN if b.caption else 0.0)
     if isinstance(b, Diagram):
-        return DIAGRAM_H_IN + (0.26 if b.caption else 0.0)
+        return DIAGRAM_H_IN + (CAPTION_H_IN if b.caption else 0.0)
     if isinstance(b, (Image, Artifact)):
         # a resolved image tends to fill much of the content area; estimate high
         # so a lone image centers near the top instead of floating low.
+        cap = IMAGE_CAPTION_H_IN if b.caption else 0.0
         if b.path and Path(b.path).is_file():
-            return 4.6
+            return 4.6 + cap
         # An unresolved Artifact still renders a real placeholder box now
         # (P5 audit defect 1), never nothing, so it must reserve real
         # layout room too -- an unresolved Image slot, unlike an Artifact,
         # stays a deliberate, genuinely weightless no-op (see
         # _image_block_or_placeholder), so it alone keeps the 0.0 estimate.
-        return 1.6 if isinstance(b, Artifact) else 0.0
+        return (1.6 + cap) if isinstance(b, Artifact) else 0.0
     if isinstance(b, Divider):
         return 0.14
     return _line_h(BODY_PT * scale)
@@ -1084,7 +1246,7 @@ def _body(slide, blocks: list[Block], theme, numbers, x, y, w,
     solo_chart = n == 1 and isinstance(blocks[0], Chart)
     nat = [max(0.0, _natural_h(b, w)) for b in blocks]
     if solo_chart:
-        cap_h = 0.26 if blocks[0].caption else 0.0
+        cap_h = CAPTION_H_IN if blocks[0].caption else 0.0
         nat[0] = max(nat[0], avail - cap_h)
     text_h = sum(h for b, h in zip(blocks, nat) if isinstance(b, _GROWABLE_BLOCKS))
     fixed_h = sum(nat) - text_h
@@ -1112,12 +1274,51 @@ def _body(slide, blocks: list[Block], theme, numbers, x, y, w,
         used = scaled_text_h + fixed_h + sum(seam_gaps)
         y0 = y + max(0.0, (avail - used) * 0.42)
 
+    # Finding A: this loop used to hand each block whatever remained after
+    # its predecessors ("greedy" allocation), then drop the current block
+    # outright ("break") the moment that remainder fell under 0.3in -- an
+    # authored block (a chart's own trailing sibling, a subtitle-shrunk
+    # slide's last paragraph) could vanish from the XML with zero trace and
+    # no lint signal, because an EARLIER fixed-size block (a chart, capped
+    # at its own max) was free to eat the entire budget first.
+    #
+    # Fix: reserve MIN_BLOCK_RESERVE_IN (+ its seam gap) for every block
+    # still to come, so the block being laid out right now can never be
+    # given more room than leaves its successors with nothing. A block that
+    # only needs less than its reservation still gets exactly what it needs
+    # (this only lowers the CEILING offered to the current block, not its
+    # actual rendered size), so a comfortably-fitting slide is unaffected --
+    # this only bites when the slide is genuinely too full, in which case an
+    # earlier block (a chart, a table, a placeholder) shrinks/self-clamps to
+    # the smaller ceiling instead of starving a later block to nothing.
+    total_nat = sum(nat) + GAP * (n - 1) if n > 1 else sum(nat)
+    if total_nat > avail + 0.01:
+        warnings.warn(
+            f"pptx: slide content (~{total_nat:.2f}in) exceeds the available "
+            f"body height (~{avail:.2f}in); blocks are shrunk/squeezed to fit "
+            "instead of being dropped -- consider splitting the slide",
+            stacklevel=2,
+        )
     yy = y0
     for i, b in enumerate(blocks):
         remaining = bottom - yy
-        if remaining < 0.3:
-            break  # ponytail: overflow blocks dropped; paginate if decks need it
-        yy += _block(slide, b, theme, numbers, x, yy, w, remaining, scale, solo=solo_chart)
+        n_later = n - i - 1
+        reserve = n_later * (MIN_BLOCK_RESERVE_IN + GAP)
+        block_max_h = max(MIN_BLOCK_RESERVE_IN, remaining - reserve)
+        if isinstance(b, _VISUAL_BLOCKS) and block_max_h < MIN_VISUAL_BLOCK_H_IN:
+            # Squeezed past the point of legibility: drop it (never shrink
+            # it into a speck) and say so by name, rather than emit a
+            # picture/diagram/chart/stat row no one could ever read.
+            ident = f" (id={b.id!r})" if getattr(b, "id", None) else ""
+            warnings.warn(
+                f"pptx: dropping a {type(b).__name__.lower()} block{ident} "
+                f"that would render at only {block_max_h:.2f}in tall (floor "
+                f"{MIN_VISUAL_BLOCK_H_IN}in) -- too small to be legible; "
+                "split the slide or move it to its own slide",
+                stacklevel=2,
+            )
+            continue  # no shape drawn, no space consumed
+        yy += _block(slide, b, theme, numbers, x, yy, w, block_max_h, scale, solo=solo_chart)
         if i < n - 1:
             yy += seam_gaps[i]
     return yy
@@ -1156,6 +1357,7 @@ def _logo(
         pic = slide.shapes.add_picture(str(img.path), 0, 0)
     except Exception:
         return  # unreadable image (e.g. an unembeddable SVG): skip, don't fail the render
+    _set_alt(pic, img.alt)
     scale = min(Inches(max_h) / pic.height, Inches(LOGO_MAX_W) / pic.width)
     pic.width = int(pic.width * scale)
     pic.height = int(pic.height * scale)
@@ -1269,19 +1471,34 @@ def _subtitle_line(slide, subtitle: str | None, theme: Theme, x: float, y: float
     if not subtitle:
         return 0.0
     size = 15
-    h = _est_lines(subtitle, size, w) * _line_h(size) + 0.12
+    h = _est_lines(subtitle, size, w) * _line_h(size) + SUBTITLE_PAD_IN
     tf = _box(slide, x, y, w, h)
     _runs(tf.paragraphs[0], subtitle, theme, {}, size, theme.muted, theme.font_body)
     return h
 
 
-def _title_slide(slide, s: Slide, doc: Document, theme: Theme, accent: str) -> None:
+def _title_slide(slide, s: Slide, doc: Document, theme: Theme,
+                 numbers: dict[str, int], accent: str) -> None:
     _rect(slide, 0, 0, 0.3, SLIDE_H, accent)
     # brand logo (or any title-slide image) → corner; fall back to doc.logo
     # so a logo bound after generation still shows up here at export time
     logo_img = s.image if _usable_image(s.image) else doc.logo
     if _usable_image(logo_img):
         _logo(slide, logo_img, theme)
+        if logo_img.caption:
+            # This slot is deliberately treated as a small corner logo, not
+            # a captioned figure -- there is no legible place to put a
+            # caption next to a 0.5in mark. Warn by name instead of
+            # silently dropping it (matching the "drawn, or warned about"
+            # invariant), rather than squeeze illegible caption text next
+            # to the logo just to say something got drawn.
+            warnings.warn(
+                f"pptx: title slide image caption {logo_img.caption!r} is "
+                "not rendered (the image is shown as a small corner logo, "
+                "not a captioned figure); move it into a body block if it "
+                "must appear on the slide",
+                stacklevel=2,
+            )
     tx, ty, title_pt = 1.1, 2.5, 40
     tw = SLIDE_W - tx - MARGIN
     title_text = s.title or doc.title
@@ -1302,6 +1519,27 @@ def _title_slide(slide, s: Slide, doc: Document, theme: Theme, accent: str) -> N
         by_y = max(6.3, y + 0.3)
         tf = _box(slide, tx, by_y, tw, 0.35)
         _runs(tf.paragraphs[0], byline, theme, {}, 14, theme.muted, theme.font_body)
+        y = by_y + 0.35
+    # Finding 2: _title_slide never read s.blocks/s.right at all -- unlike
+    # every other layout (including section and quote, both fixed in
+    # earlier audit passes), a title slide's entire body block list vanished
+    # from the deck with zero trace. There is no established "body zone" on
+    # a cover slide, so give it the remaining room below whatever was
+    # actually drawn (subtitle and/or byline), down to the slide's own
+    # bottom margin, using the same _body layout every content-bearing
+    # layout already uses.
+    blocks = s.blocks + s.right
+    if blocks:
+        body_y = y + 0.25
+        if body_y < SLIDE_H - MARGIN - MIN_BLOCK_RESERVE_IN:
+            _body(slide, blocks, theme, numbers, tx, body_y, tw)
+        else:
+            warnings.warn(
+                f"pptx: title slide has no room left for its {len(blocks)} "
+                "body block(s) below the title/subtitle/byline; move them "
+                "to a content slide",
+                stacklevel=2,
+            )
 
 
 def _section_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int]) -> None:
@@ -1330,10 +1568,8 @@ def _section_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int]) -> No
     # contrast, caught by actually rendering and looking at this fix.
     blocks = s.blocks + s.right
     if blocks:
-        section_theme = theme.model_copy(
-            update={"text": theme.background, "muted": theme.surface, "primary": theme.accent}
-        )
-        _body(slide, blocks, section_theme, numbers, MARGIN, y, SLIDE_W - 2 * MARGIN)
+        _body(slide, blocks, _band_theme(theme, theme.primary), numbers,
+              MARGIN, y, SLIDE_W - 2 * MARGIN)
 
 
 def _quote_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int]) -> None:
@@ -1359,7 +1595,18 @@ def _quote_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int]) -> None
         # A block-authored quote can still carry a slide title as a small
         # eyebrow label above it (e.g. title="Customer voice"); s.subtitle
         # only ever fills in as the attribution when the block itself didn't
-        # set one, so it is never silently dropped either way.
+        # set one, so it is never silently dropped either way -- except when
+        # BOTH are authored: the block's own attribution wins and s.subtitle
+        # is genuinely unused here (report renderers still keep it via
+        # flatten_slides, so silence would be a cross-format drop). Warn by
+        # name rather than let it vanish with no trace.
+        if q.attribution and s.subtitle:
+            warnings.warn(
+                f"pptx: quote slide subtitle {s.subtitle!r} is not rendered "
+                "(the Quote block already has its own attribution, which "
+                "takes precedence); drop one of the two",
+                stacklevel=2,
+            )
         quote_text, attribution, label = q.text, q.attribution or s.subtitle, s.title
     else:
         # The obvious `title=`/`subtitle=` authoring with no Quote block:
@@ -1465,6 +1712,7 @@ def _hero_slide(slide, s: Slide, doc: Document, theme: Theme, numbers: dict[str,
         except Exception:
             pic = None  # unreadable file: fall back to the solid-fill hero below
     if pic is not None:
+        _set_alt(pic, s.image.alt)
         _cover_fit(pic, 0.0, 0.0, SLIDE_W, SLIDE_H)
     else:
         slide.background.fill.solid()
@@ -1481,7 +1729,34 @@ def _hero_slide(slide, s: Slide, doc: Document, theme: Theme, numbers: dict[str,
         _est_lines(s.title, title_pt, tw) * _line_h(title_pt) if s.title else 0.0
     )
     sub_h = _est_lines(s.subtitle, 20, tw) * _line_h(20) + 0.08 if s.subtitle else 0.0
-    band_h = min(SLIDE_H * 0.6, 2 * pad + title_h + sub_h + (1.7 if blocks else 0.0))
+    # Finding 1 (strongest case of the silent-drop invariant): s.image.caption
+    # is genuine authored content -- DOCX/HTML/MD all keep it (flatten_slides
+    # turns a deck-only document's s.image into a real Image block for the
+    # report renderers) -- but this function never drew it at all. Only
+    # meaningful when there IS a picture (pic is not None); reserve its strip
+    # up front like every other caption in this file.
+    cap_h = 0.0
+    if pic is not None and s.image.caption:
+        cap_h = _est_lines(s.image.caption, 11, tw) * _line_h(11) + 0.08
+    if pic is not None or not blocks:
+        # A photo-backed hero (or an imageless one with no blocks at all)
+        # keeps the original short caption-strip sizing: capped at 60% of
+        # the slide so most of the photo stays visible, and a flat 1.7in
+        # guess for blocks since they are meant to be a brief takeaway
+        # layered over the photo, not a full body.
+        band_h = min(SLIDE_H * 0.6, 2 * pad + title_h + sub_h + cap_h + (1.7 if blocks else 0.0))
+    else:
+        # Finding C: an imageless hero WITH blocks used to get the same
+        # flat 1.7in guess meant for a short caption over a photo. There is
+        # no photo to protect here (the whole slide is already a solid
+        # theme.primary fill), so give blocks their real estimated height
+        # -- the same formula every other layout uses -- instead of
+        # crushing a diagram into a box so small its label font fell below
+        # the legibility floor and silently degraded to an unreadable
+        # raster image. Capped only by the slide's own bottom margin.
+        blocks_h = sum(max(0.0, _natural_h(b, tw)) for b in blocks)
+        blocks_h += GAP * max(0, len(blocks) - 1)
+        band_h = min(SLIDE_H - MARGIN, 2 * pad + title_h + sub_h + cap_h + blocks_h)
     band_y = SLIDE_H - band_h
     _rect(slide, 0, band_y, SLIDE_W, band_h, theme.text)
     y = band_y + pad
@@ -1497,12 +1772,26 @@ def _hero_slide(slide, s: Slide, doc: Document, theme: Theme, numbers: dict[str,
         tf = _box(slide, MARGIN, y, tw, min(sub_h, SLIDE_H - pad - y))
         _runs(tf.paragraphs[0], s.subtitle, theme, {}, 20, theme.surface, theme.font_body)
         y += sub_h
+    if cap_h > 0:
+        # band_h already reserved exactly this much room (see cap_h above),
+        # so clamp-and-draw like the subtitle above rather than gate on a
+        # fixed epsilon: a hardcoded threshold here previously skipped the
+        # caption on the exact boundary case band_h itself computed as
+        # fitting (off by float slack, not a real space shortage).
+        box_h = max(0.0, min(cap_h - 0.08, SLIDE_H - pad - y))
+        if box_h > 0.02:
+            tf = _box(slide, MARGIN, y, tw, box_h)
+            _runs(
+                tf.paragraphs[0], s.image.caption, theme, {}, 11, theme.surface,
+                theme.font_body, italic=True,
+            )
+        y += cap_h
     if blocks:
-        # light-on-dark swap so band body text stays readable
-        band_theme = theme.model_copy(
-            update={"text": theme.background, "muted": theme.surface}
-        )
-        _body(slide, blocks, band_theme, numbers, MARGIN, y, tw)
+        # blocks resolve their own fills/foregrounds against the band's
+        # actual paint (theme.text), not the document's light background --
+        # see _band_theme's docstring for why the old text/muted-only swap
+        # shipped a contrast regression.
+        _body(slide, blocks, _band_theme(theme, theme.text), numbers, MARGIN, y, tw)
 
 
 def _image_side_slide(slide, s: Slide, doc: Document, theme: Theme,
@@ -1515,6 +1804,7 @@ def _image_side_slide(slide, s: Slide, doc: Document, theme: Theme,
     except Exception:  # unembeddable file: behave like content layout
         _content_slide(slide, s, doc, theme, numbers, accent)
         return
+    _set_alt(pic, s.image.alt)
     # Contain-fit, not cover-fit: a side image is often a diagram or chart, and
     # cropping its edge would silently drop content. Never upscale past native.
     _contain_fit(pic, px, 0.0, pane_w, SLIDE_H, max_scale=1.0)
@@ -1525,12 +1815,32 @@ def _image_side_slide(slide, s: Slide, doc: Document, theme: Theme,
     # centered the picture within the full-height box, so a matte band the
     # same height as the fitted image, centered the same way, encloses it
     # with a deliberate pad instead of a near-empty pane.
+    #
+    # Finding B: this layout never drew s.image.caption at all -- DOCX/HTML/
+    # MD all keep it (flatten_slides turns a deck-only document's s.image
+    # into a real Image block for the report renderers), only PPTX silently
+    # dropped it. Reserve a caption strip below the image (same cap_h
+    # literal _place_picture uses) inside the matte, instead of only
+    # bracketing the image itself.
     fitted_h = pic.height / 914400
     pad = 0.35
-    matte_h = min(SLIDE_H, fitted_h + 2 * pad)
+    cap_h = IMAGE_CAPTION_H_IN if s.image.caption else 0.0
+    matte_h = min(SLIDE_H, fitted_h + 2 * pad + cap_h)
     matte_y = (SLIDE_H - matte_h) / 2
     matte = _rect(slide, px, matte_y, pane_w, matte_h, theme.surface)
     pic._element.addprevious(matte._element)  # matte behind the picture
+    # Re-anchor the picture to the top of its own pad within the (now
+    # possibly taller) matte -- _contain_fit centered it across the full
+    # SLIDE_H box, which no longer matches once cap_h grows the matte
+    # asymmetrically to make room for the caption strip below.
+    pic.top = Inches(matte_y + pad)
+    if s.image.caption:
+        cap_tf = _box(slide, px, matte_y + pad + fitted_h + 0.05, pane_w, 0.22)
+        cap_tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        _runs(
+            cap_tf.paragraphs[0], s.image.caption, theme, {}, 11, theme.muted,
+            theme.font_body, italic=True,
+        )
     tx = pane_w + MARGIN if left_side else MARGIN
     tw = SLIDE_W - pane_w - 2 * MARGIN
     logo_present = _usable_image(doc.logo)
@@ -1564,7 +1874,7 @@ def _render_slide(prs, blank, s: Slide, doc: Document, theme: Theme,
     slide.background.fill.fore_color.rgb = _rgb(theme.background)
     accent = _slide_accent(s, theme)
     if s.layout == "title":
-        _title_slide(slide, s, doc, theme, accent)
+        _title_slide(slide, s, doc, theme, numbers, accent)
     elif s.layout == "section":
         _section_slide(slide, s, theme, numbers)
     elif s.layout == "quote":

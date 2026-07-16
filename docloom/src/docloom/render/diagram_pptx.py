@@ -38,6 +38,7 @@ from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
 
 from ..ir import Diagram, diagram_hash
+from ..theme import contrast_ratio
 from . import raster
 from .diagram_svg import (
     BAR,
@@ -65,6 +66,24 @@ LABEL_PX, SUB_PX, TAG_PX, ELAB_PX, TITLE_PX = 14.5, 10.5, 9.2, 10.5, 21.0
 MIN_LABEL_PT = 8.0          # docs/diagram-plan.md section 4b font floor
 FONT_FLOOR_PT = 5.0         # absolute safety net for sub/tag/edge-label text
 DETAIL_LADDER = ("full", "label+sub", "label")
+# Grid packing (diagram_svg.py's ROW_LIMIT/BAND_GAP, 2026-07-16) does NOT
+# make this ladder -- or _raster_fallback below -- unnecessary. Measured: it
+# turns a purpose-built hub-fanout fixture from 6.0pt/RASTER to 8.5pt/NATIVE
+# (a rank whose real nodes all converge on the same one or two downstream
+# neighbors, so banding actually compresses the cross stack instead of just
+# relabeling it -- see diagram_svg.py's ROW_LIMIT docstring), but it is a
+# genuinely conditional win, not a universal one: none of the 5 bake-off
+# specs benefit at all (their widest ranks are either one indivisible group,
+# which grid packing can never split, or dominated by long-edge dummy
+# congestion elsewhere in the diagram, which is a different problem this
+# does not touch), and a pure N-deep chain (one node per rank, the
+# _dense_diagram fixture below) has nothing to band in the first place.
+# solve()'s own banded-vs-unbanded comparison (_fit_score in diagram_svg.py)
+# guarantees grid packing is never a net loss, but "never a loss" is not
+# "always clears the floor" -- this ladder, and the raster/placeholder
+# fallback past it, are still the only thing standing between a genuinely
+# dense diagram and either an illegible native render or (with no raster
+# extra installed) nothing at all. Keep it.
 
 DIAGRAM_RASTER_PX = 1600    # matches docx.py's DIAGRAM_RASTER_PX
 
@@ -124,6 +143,29 @@ _DASH_MAP = {
 def _rgb(hexcolor: str) -> RGBColor:
     h = hexcolor.lstrip("#")
     return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def _readable_fg(theme, fill_hex: str) -> str:
+    """theme.text or theme.background, whichever contrasts more against
+    `fill_hex` -- mirrors render/pptx.py's own _label_fg (chart data
+    labels), reimplemented locally because pptx.py imports THIS module (a
+    reverse import would be circular).
+
+    Node/sublabel text used to hardcode theme.text (label) / theme.muted
+    (sublabel) regardless of what is actually painted behind them.
+    kind_palette's node fills (diagram_svg.py) are derived from hue alone at
+    a fixed ~0.955 lightness -- always near-white -- independent of
+    theme.background/surface, so on an inverted band (pptx.py's
+    _band_theme, where "theme.text" becomes the band's own light
+    foreground) the hardcoded choice put equally-light text on that
+    already-near-white fill: the measured "Go 1.23"/"PostgreSQL 16"
+    invisible-sublabel bug. Resolving against the fill actually behind the
+    text, instead of trusting the caller's "text" token to always mean
+    dark, fixes this independent of whatever band the diagram happens to be
+    drawn on."""
+    if contrast_ratio(theme.background, fill_hex) >= contrast_ratio(theme.text, fill_hex):
+        return theme.background
+    return theme.text
 
 
 def theme_dict(theme) -> dict:
@@ -449,6 +491,72 @@ def _bar_span(n) -> tuple[float, float] | None:
     return n.y + 8, n.y + n.h - 8
 
 
+def _site_point(n, idx: int) -> tuple[float, float]:
+    """Canvas-space (x, y) of connection-site `idx` on node `n`, matching
+    the SAME index convention _CXN_BEGIN_END / _STORE_CXN_BEGIN_END encode
+    (0=top,1=left,2=bottom,3=right for a plain rectangle-like preset; a
+    store/cylinder has no right-mid site at all, so its own table only ever
+    passes 0, 2, or 3 -- see _STORE_CXN_BEGIN_END's docstring). Used only to
+    PREDICT where PowerPoint's own default elbow routing would draw a
+    connector (see _default_elbow_crosses_obstacle below); it never
+    influences the actual glued connector, which still uses begin_connect/
+    end_connect's own site indices exactly as before."""
+    if n.type == "store":
+        return {0: (n.x + n.w / 2, n.y), 2: (n.x, n.y + n.h / 2),
+                3: (n.x + n.w / 2, n.y + n.h)}.get(idx, (n.x + n.w / 2, n.y + n.h / 2))
+    return {0: (n.x + n.w / 2, n.y), 1: (n.x, n.y + n.h / 2),
+            2: (n.x + n.w / 2, n.y + n.h), 3: (n.x + n.w, n.y + n.h / 2)}[idx]
+
+
+def _default_elbow_crosses_obstacle(begin, end, obstacles) -> bool:
+    """True if an unrelated node's rect (`obstacles`: every OTHER node's
+    rect -- never the edge's own source or target, which the caller has
+    already excluded) overlaps the axis-aligned bounding box of `begin` and
+    `end`.
+
+    Why a bounding-box test, not a predicted exact path: an early version
+    of this function predicted PowerPoint's default elbow bend (a single
+    bend at the literal midpoint of the first axis -- the OOXML
+    bentConnector's documented adj1=50% default) and only flagged an edge
+    whose PREDICTED path crossed an obstacle. Verified by rendering that
+    this under-caught: LibreOffice's actual rendered bend for spec3's Card
+    Vault -> Card Network edge did not land at the predicted 50% midpoint,
+    so the predicted 2-segment path missed the Postgres Replica cylinder by
+    ~6px while the ACTUAL rendered connector cut straight through it. The
+    bounding-box test does not depend on knowing which exact bend rule any
+    given renderer uses: an orthogonal (horizontal/vertical-only) elbow
+    between two points can never leave the axis-aligned rectangle those two
+    points define, REGARDLESS of where its bend(s) land, so "does an
+    unrelated node overlap that rectangle at all" is a sound, renderer-
+    agnostic upper bound for "could this connector visually cross it" --
+    zero false negatives (never misses a real crossing), at the cost of
+    occasionally flagging an edge that a specific renderer's actual bend
+    choice would have dodged (losing that one edge's glue is a strictly
+    better failure mode than shipping a broken-looking connector).
+
+    Why this exists (docs/diagram-status.md re-audit, native-emitter
+    routing finding): attached-mode connectors are GLUED (begin_connect/
+    end_connect) but NOT given custom bend geometry, so PowerPoint/
+    LibreOffice draw their own default elbow between the two connection
+    points with zero awareness of any other shape on the slide -- unlike
+    the shared solve()'s own route(), which threads every edge through
+    dummy-node lanes specifically to avoid this. solve()'s own routed
+    polyline (SolvedEdge.pts) already avoids every node by construction; an
+    edge flagged here falls back to that polyline via build_freeform
+    instead of add_connector (see _emit_native part 4) -- unglued for just
+    that one edge, but visually correct, rather than glued and broken."""
+    bx0, bx1 = sorted((begin[0], end[0]))
+    by0, by1 = sorted((begin[1], end[1]))
+    box = (bx0, by0, bx1 - bx0, by1 - by0)
+    return any(_rects_overlap(box, rect) for rect in obstacles)
+
+
+def _rects_overlap(r1, r2) -> bool:
+    x1, y1, w1, h1 = r1
+    x2, y2, w2, h2 = r2
+    return not (x1 + w1 <= x2 or x2 + w2 <= x1 or y1 + h1 <= y2 or y2 + h2 <= y1)
+
+
 def _emit_native(slide, d: Diagram, s: SolvedDiagram, theme, td: dict,
                  x_in: float, y_in: float, w_in: float, max_h_in: float,
                  k: float, canvas_w_in: float, canvas_h_in: float,
@@ -543,20 +651,27 @@ def _emit_native(slide, d: Diagram, s: SolvedDiagram, theme, td: dict,
         tf.vertical_anchor = MSO_ANCHOR.MIDDLE
         m = Emu(max(1, int(0.04 * EMU_IN)))
         tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = m
+        # Resolve label/sublabel text color against the node's OWN fill,
+        # not a hardcoded theme.text/theme.muted: kind_palette's fills stay
+        # near-white regardless of the caller's theme (see _readable_fg's
+        # docstring), so on an inverted band the old hardcoded choice
+        # produced near-invisible text -- the measured "Go 1.23"/
+        # "PostgreSQL 16" bug.
+        label_fg = _readable_fg(theme, p["fill"])
         p0 = tf.paragraphs[0]
         p0.alignment = PP_ALIGN.CENTER
         r0 = p0.add_run()
         r0.text = n.label
         r0.font.size = Pt(PT(LABEL_PX, floor=MIN_LABEL_PT))
         r0.font.bold = True
-        r0.font.color.rgb = _rgb(theme.text)
+        r0.font.color.rgb = _rgb(label_fg)
         if n.sublabel:
             p1 = tf.add_paragraph()
             p1.alignment = PP_ALIGN.CENTER
             r1 = p1.add_run()
             r1.text = n.sublabel
             r1.font.size = Pt(PT(SUB_PX))
-            r1.font.color.rgb = _rgb(theme.muted)
+            r1.font.color.rgb = _rgb(label_fg)
         if n.tag:
             p2 = tf.add_paragraph()
             p2.alignment = PP_ALIGN.CENTER
@@ -584,6 +699,7 @@ def _emit_native(slide, d: Diagram, s: SolvedDiagram, theme, td: dict,
     # ---- 4. connectors. Connection-site index depends on the endpoint's
     # node kind: the cylinder (store) preset has no right-mid site, so it
     # gets its own table (docs/diagram-status.md finding 10). ----
+    node_by_id = {n.id: n for n in s.nodes}
     for e in s.edges:
         a, b = shp_by_id.get(e.source), shp_by_id.get(e.target)
         if a is None or b is None:
@@ -598,11 +714,25 @@ def _emit_native(slide, d: Diagram, s: SolvedDiagram, theme, td: dict,
         color = {"muted": theme.muted, "primary": theme.primary,
                  "accent": theme.accent}.get(ck, theme.muted)
         weight = 2.3 if e.style == "emphasis" else (1.9 if e.style == "secure" else 1.5)
+        use_freeform = mode == "freeform"
         if mode == "attached":
-            conn = slide.shapes.add_connector(MSO_CONNECTOR.ELBOW, X(0), Y(0), X(10), Y(10))
-            conn.begin_connect(a, beg)
-            conn.end_connect(b, end)
-        else:
+            # Only take the glued connector if an unrelated node's rect does
+            # NOT overlap the bounding box between the two connection
+            # points -- otherwise fall through to solve()'s own obstacle-
+            # avoiding polyline instead (see _default_elbow_crosses_
+            # obstacle's docstring for the verified repro and why a
+            # bounding-box test, not a predicted exact bend). This trades
+            # glue for correctness on the rare edge where they conflict;
+            # every other edge is unaffected and stays fully glued.
+            src_node, tgt_node = node_by_id.get(e.source), node_by_id.get(e.target)
+            if src_node is not None and tgt_node is not None:
+                obstacles = [(n.x, n.y, n.w, n.h) for n in s.nodes
+                            if n.id not in (e.source, e.target)]
+                begin_pt = _site_point(src_node, beg)
+                end_pt = _site_point(tgt_node, end)
+                if _default_elbow_crosses_obstacle(begin_pt, end_pt, obstacles):
+                    use_freeform = True
+        if use_freeform:
             pts = e.pts
             if len(pts) < 2:
                 continue
@@ -610,6 +740,10 @@ def _emit_native(slide, d: Diagram, s: SolvedDiagram, theme, td: dict,
             fb.add_line_segments([(X(px), Y(py)) for px, py in pts[1:]], close=False)
             conn = fb.convert_to_shape()
             conn.fill.background()
+        else:
+            conn = slide.shapes.add_connector(MSO_CONNECTOR.ELBOW, X(0), Y(0), X(10), Y(10))
+            conn.begin_connect(a, beg)
+            conn.end_connect(b, end)
         _set_line(conn, color, dash=dash, weight=weight, arrow=True)
         conn.shadow.inherit = False
         all_shapes.append(conn)
@@ -719,6 +853,13 @@ def _emit_native(slide, d: Diagram, s: SolvedDiagram, theme, td: dict,
     try:
         grp = slide.shapes.add_group_shape(all_shapes)
         grp.name = hash_name
+        # d.alt reaches HTML (aria-label on the inlined SVG) and the raster
+        # fallback below (pic descr), but the native path never carried it
+        # anywhere at all -- an accessibility gap for exactly the same
+        # reason Image.alt was (see pptx.py's _set_alt), just for the one
+        # emitter that groups its own shapes instead of adding one picture.
+        if d.alt:
+            grp._element.nvGrpSpPr.cNvPr.set("descr", d.alt)
     except Exception:
         # Grouping is a stretch task (docs/diagram-plan.md section 4b), not
         # a dependency: if it ever fails, stamp the hash on a node shape
