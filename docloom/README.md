@@ -35,7 +35,15 @@ Not on PyPI yet; install from source. From a clone of the repository, `docloom` 
 pip install -e "./docloom"            # pptx, docx, xlsx, html, md
 pip install -e "./docloom[pdf]"       # + PDF via bundled Typst compiler
 pip install -e "./docloom[mcp]"       # + MCP server for agents
+pip install -e "./docloom[diagrams]"  # + SVG rasterizer (resvg): charts and SVG
+                                      #   diagrams embed as real pictures in
+                                      #   PPTX/DOCX instead of a data table
 ```
+
+Without `[diagrams]` everything still renders: a chart in DOCX falls back to a
+titled data table and an SVG image is skipped, exactly as before. On a slim
+Linux image, install a font too (`fonts-dejavu-core`), because the rasterizer
+draws labels with system fonts.
 
 Once published, `pip install "docloom[pdf]"` will work directly.
 

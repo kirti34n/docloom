@@ -36,7 +36,17 @@ dependencies = [
 [project.optional-dependencies]
 pdf = ["typst>=0.13"]
 mcp = ["mcp>=1.2"]
-dev = ["pytest>=8"]
+# SVG rasterizer (resvg): lets PPTX/DOCX embed charts and SVG diagrams as real
+# pictures instead of falling back to a data table or a text placeholder.
+# Optional on purpose: without it every format still renders, just as before.
+diagrams = ["resvg-py>=0.3.3"]
+# lxml is a dev-only test oracle (tests/test_drawio.py validates .drawio
+# output against the official jgraph mxfile.xsd via lxml.etree), never a
+# runtime dependency of docloom itself. Without it here, a fresh venv makes
+# that XSD-validation test SILENTLY SKIP (pytest.importorskip) instead of
+# actually running -- the suite still reports green with zero signal from
+# the oracle. Listed explicitly so `pip install -e .[dev]` always runs it.
+dev = ["pytest>=8", "lxml>=5"]
 
 [project.scripts]
 docloom = "docloom.cli:main"

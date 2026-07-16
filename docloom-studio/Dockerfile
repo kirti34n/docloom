@@ -25,8 +25,11 @@ FROM python:3.12-slim AS runtime
 WORKDIR /app
 
 # System libs some renderers/parsers need at runtime (PDF, images).
+# fonts-dejavu-core is not optional: the SVG rasterizer (docloom[diagrams])
+# draws chart and diagram labels with SYSTEM fonts, and python:3.12-slim ships
+# none, so without it every label would rasterize invisible.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # The engine isn't on PyPI: install it from the sibling directory first so
@@ -34,7 +37,7 @@ RUN apt-get update \
 # reaching out to the index. Dropped afterward; only the installed package
 # is needed in the final image.
 COPY docloom/ ./docloom-src/
-RUN pip install --no-cache-dir "./docloom-src[pdf]" && rm -rf ./docloom-src
+RUN pip install --no-cache-dir "./docloom-src[pdf,diagrams]" && rm -rf ./docloom-src
 
 COPY docloom-studio/pyproject.toml docloom-studio/README.md ./
 COPY docloom-studio/server/ ./server/
