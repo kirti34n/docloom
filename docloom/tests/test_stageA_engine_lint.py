@@ -12,6 +12,10 @@ from docloom import (
     Artifact, BulletList, Chart, Document, Heading, Image, ListItem,
     Paragraph, Series, Slide, Stat, StatRow, Table, has_errors, lint,
 )
+# Diagram/DiagramNode/DiagramEdge/DiagramGroup are not yet re-exported from
+# docloom/__init__.py (that file is out of scope for this change; see the
+# handoff note), so these come from the ir submodule directly.
+from docloom.ir import Diagram, DiagramEdge, DiagramGroup, DiagramNode
 
 
 def _rules(findings):
@@ -394,4 +398,410 @@ def test_well_formed_deck_and_report_trigger_none_of_the_new_warnings():
         "chart/unlabeled", "visual/unlabeled", "doc/no-summary",
     }
     assert not (new_rules & _rules(findings))
+    assert not has_errors(findings)
+
+
+# ------------------------------------------------------------- diagram/* rules
+#
+# docs/diagram-plan.md section 6. llm_schema() strips minLength/maxLength/
+# pattern (see llm.py), so every diagram length limit below is enforceable
+# only as a lint rule, never as a Pydantic field constraint.
+
+
+def _star_diagram(n_leaves):
+    """One hub node fanning out to n_leaves leaves: depth is always 2
+    regardless of n_leaves, isolating the node-count threshold of
+    diagram/too-dense from the depth threshold."""
+    nodes = [DiagramNode(id="hub", label="Hub")] + [
+        DiagramNode(id=f"leaf{i}", label=f"Leaf {i}") for i in range(n_leaves)
+    ]
+    edges = [DiagramEdge(source="hub", target=f"leaf{i}") for i in range(n_leaves)]
+    return Diagram(caption="A hub fans out to its leaves.", nodes=nodes, edges=edges)
+
+
+def _chain_diagram(n_nodes):
+    """A straight n_nodes-long path: depth equals n_nodes, isolating the
+    depth threshold of diagram/too-dense from the node-count threshold."""
+    nodes = [DiagramNode(id=f"n{i}", label=f"Node {i}") for i in range(n_nodes)]
+    edges = [
+        DiagramEdge(source=f"n{i}", target=f"n{i + 1}") for i in range(n_nodes - 1)
+    ]
+    return Diagram(caption="A single chain of steps.", nodes=nodes, edges=edges)
+
+
+def _too_dense(findings):
+    return [f for f in findings if f.rule == "diagram/too-dense"]
+
+
+# --------------------------------------------------------------- diagram/empty
+
+
+def test_diagram_with_no_nodes_flags_diagram_empty():
+    doc = Document(title="T", blocks=[Diagram(caption="c")])
+    findings = lint(doc)
+    assert "diagram/empty" in _rules(findings)
+    assert has_errors(findings)
+
+
+def test_diagram_with_nodes_does_not_flag_diagram_empty():
+    doc = Document(title="T", blocks=[
+        Diagram(caption="c", nodes=[DiagramNode(id="a", label="A")]),
+    ])
+    findings = lint(doc)
+    assert "diagram/empty" not in _rules(findings)
+
+
+# ---------------------------------------------------------- diagram/duplicate-id
+
+
+def test_duplicate_node_id_flags_diagram_duplicate_id():
+    doc = Document(title="T", blocks=[Diagram(caption="c", nodes=[
+        DiagramNode(id="a", label="A"),
+        DiagramNode(id="a", label="A again"),
+    ])])
+    findings = lint(doc)
+    assert "diagram/duplicate-id" in _rules(findings)
+    assert has_errors(findings)
+
+
+def test_duplicate_group_id_flags_diagram_duplicate_id():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        groups=[DiagramGroup(id="g", label="G1"), DiagramGroup(id="g", label="G2")],
+        nodes=[DiagramNode(id="a", label="A", group="g")],
+    )])
+    findings = lint(doc)
+    assert "diagram/duplicate-id" in _rules(findings)
+    assert has_errors(findings)
+
+
+def test_unique_node_and_group_ids_do_not_flag_diagram_duplicate_id():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        groups=[DiagramGroup(id="g", label="G")],
+        nodes=[DiagramNode(id="a", label="A", group="g"),
+               DiagramNode(id="b", label="B", group="g")],
+    )])
+    findings = lint(doc)
+    assert "diagram/duplicate-id" not in _rules(findings)
+
+
+# ----------------------------------------------------------- diagram/dangling-edge
+
+
+def test_edge_to_unknown_node_flags_dangling_edge():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        nodes=[DiagramNode(id="a", label="A")],
+        edges=[DiagramEdge(source="a", target="ghost")],
+    )])
+    findings = lint(doc)
+    assert "diagram/dangling-edge" in _rules(findings)
+    assert has_errors(findings)
+
+
+def test_edge_from_unknown_node_flags_dangling_edge():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        nodes=[DiagramNode(id="a", label="A")],
+        edges=[DiagramEdge(source="ghost", target="a")],
+    )])
+    findings = lint(doc)
+    assert "diagram/dangling-edge" in _rules(findings)
+    assert has_errors(findings)
+
+
+def test_edge_between_known_nodes_does_not_flag_dangling_edge():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        nodes=[DiagramNode(id="a", label="A"), DiagramNode(id="b", label="B")],
+        edges=[DiagramEdge(source="a", target="b")],
+    )])
+    findings = lint(doc)
+    assert "diagram/dangling-edge" not in _rules(findings)
+
+
+# ----------------------------------------------------------- diagram/unknown-group
+
+
+def test_node_referencing_unknown_group_flags_unknown_group():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        nodes=[DiagramNode(id="a", label="A", group="ghost")],
+    )])
+    findings = lint(doc)
+    assert "diagram/unknown-group" in _rules(findings)
+    assert has_errors(findings)
+
+
+def test_node_referencing_real_group_does_not_flag_unknown_group():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        groups=[DiagramGroup(id="g", label="G")],
+        nodes=[DiagramNode(id="a", label="A", group="g")],
+    )])
+    findings = lint(doc)
+    assert "diagram/unknown-group" not in _rules(findings)
+
+
+# ------------------------------------------------------------- diagram/empty-group
+
+
+def test_group_with_no_members_flags_empty_group():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        groups=[DiagramGroup(id="g", label="G")],
+        nodes=[DiagramNode(id="a", label="A")],
+    )])
+    findings = lint(doc)
+    assert "diagram/empty-group" in _rules(findings)
+    assert not has_errors(findings)
+
+
+def test_group_with_a_member_does_not_flag_empty_group():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        groups=[DiagramGroup(id="g", label="G")],
+        nodes=[DiagramNode(id="a", label="A", group="g")],
+    )])
+    findings = lint(doc)
+    assert "diagram/empty-group" not in _rules(findings)
+
+
+# ----------------------------------------------------------------- diagram/self-loop
+
+
+def test_self_loop_edge_flags_self_loop():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        nodes=[DiagramNode(id="a", label="A")],
+        edges=[DiagramEdge(source="a", target="a")],
+    )])
+    findings = lint(doc)
+    assert "diagram/self-loop" in _rules(findings)
+    assert not has_errors(findings)
+
+
+def test_non_self_loop_edge_does_not_flag_self_loop():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        nodes=[DiagramNode(id="a", label="A"), DiagramNode(id="b", label="B")],
+        edges=[DiagramEdge(source="a", target="b")],
+    )])
+    findings = lint(doc)
+    assert "diagram/self-loop" not in _rules(findings)
+
+
+# ----------------------------------------------------------- diagram/disconnected-node
+
+
+def test_node_with_no_edges_flags_disconnected_node():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        nodes=[DiagramNode(id="a", label="A"), DiagramNode(id="b", label="B")],
+    )])
+    findings = lint(doc)
+    assert "diagram/disconnected-node" in _rules(findings)
+    assert not has_errors(findings)
+
+
+def test_node_with_an_edge_does_not_flag_disconnected_node():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        nodes=[DiagramNode(id="a", label="A"), DiagramNode(id="b", label="B")],
+        edges=[DiagramEdge(source="a", target="b")],
+    )])
+    findings = lint(doc)
+    assert "diagram/disconnected-node" not in _rules(findings)
+
+
+# ---------------------------------------------------------- diagram/label-too-long
+
+
+def test_node_label_over_40_chars_flags_label_too_long():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        nodes=[DiagramNode(id="a", label="x" * 41)],
+    )])
+    findings = lint(doc)
+    assert "diagram/label-too-long" in _rules(findings)
+    assert not has_errors(findings)
+
+
+def test_node_label_at_40_chars_does_not_flag_label_too_long():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        nodes=[DiagramNode(id="a", label="x" * 40)],
+    )])
+    findings = lint(doc)
+    assert "diagram/label-too-long" not in _rules(findings)
+
+
+def test_node_sublabel_over_40_chars_flags_label_too_long():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        nodes=[DiagramNode(id="a", label="A", sublabel="x" * 41)],
+    )])
+    findings = lint(doc)
+    assert "diagram/label-too-long" in _rules(findings)
+
+
+def test_node_tag_over_12_chars_flags_label_too_long():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        nodes=[DiagramNode(id="a", label="A", tag="x" * 13)],
+    )])
+    findings = lint(doc)
+    assert "diagram/label-too-long" in _rules(findings)
+
+
+def test_edge_label_over_30_chars_flags_label_too_long():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        nodes=[DiagramNode(id="a", label="A"), DiagramNode(id="b", label="B")],
+        edges=[DiagramEdge(source="a", target="b", label="x" * 31)],
+    )])
+    findings = lint(doc)
+    assert "diagram/label-too-long" in _rules(findings)
+
+
+def test_group_label_over_40_chars_flags_label_too_long():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        groups=[DiagramGroup(id="g", label="x" * 41)],
+        nodes=[DiagramNode(id="a", label="A", group="g")],
+    )])
+    findings = lint(doc)
+    assert "diagram/label-too-long" in _rules(findings)
+
+
+def test_short_labels_do_not_flag_label_too_long():
+    doc = Document(title="T", blocks=[Diagram(caption="c",
+        groups=[DiagramGroup(id="g", label="Core")],
+        nodes=[DiagramNode(id="a", label="API", sublabel="FastAPI", tag="v2",
+                            group="g")],
+        edges=[],
+    )])
+    findings = lint(doc)
+    assert "diagram/label-too-long" not in _rules(findings)
+
+
+# -------------------------------------------------------------- diagram/too-dense
+#
+# REPIN NOTE (docs/diagram-status.md finding 6, fixed here): diagram/too-dense
+# used to escalate to severity="error" past DIAGRAM_MAX_NODES_ERROR=14 /
+# DIAGRAM_MAX_DEPTH_ERROR=7, and an "error" finding makes has_errors() true,
+# which makes `docloom render` refuse the WHOLE deck (exit 2, no output at
+# all, not even --diagram-sources sidecars) over one crowded diagram. Five
+# independent, ordinary 13-14 node reference-architecture bake-off specs
+# measured real depths of 5, 6, 8, 8, 10 through this exact rule -- three of
+# five would have hard-blocked their deck under the old depth>7 error
+# threshold, for a diagram no denser than a normal AWS reference
+# architecture. The four tests below that used to assert severity=="error"
+# and has_errors(findings) are true are repinned to assert severity==
+# "warning" and NOT has_errors(findings): diagram density is now always a
+# non-blocking warning (see the DIAGRAM_MAX_*_DENSE comment in lint.py for
+# the full reasoning), and a fifth test is added to lock in the "never
+# blocks a render, no matter how dense" contract directly.
+
+
+def test_many_nodes_shallow_depth_flags_too_dense_soft_warning():
+    doc = Document(title="T", blocks=[_star_diagram(8)])  # 9 nodes, depth 2
+    findings = lint(doc)
+    dense = _too_dense(findings)
+    assert dense and dense[0].severity == "warning"
+    assert not has_errors(findings)
+
+
+def test_many_nodes_flags_too_dense_at_the_stronger_tier_but_still_warning():
+    doc = Document(title="T", blocks=[_star_diagram(14)])  # 15 nodes, depth 2
+    findings = lint(doc)
+    dense = _too_dense(findings)
+    assert dense and dense[0].severity == "warning"
+    assert "very dense" in dense[0].message
+    assert not has_errors(findings)
+
+
+def test_deep_chain_flags_too_dense_soft_warning():
+    doc = Document(title="T", blocks=[_chain_diagram(6)])  # depth 6
+    findings = lint(doc)
+    dense = _too_dense(findings)
+    assert dense and dense[0].severity == "warning"
+    assert not has_errors(findings)
+
+
+def test_deep_chain_at_the_old_error_threshold_is_now_only_a_soft_warning():
+    # depth 8 used to be > the old DIAGRAM_MAX_DEPTH_ERROR of 7 and errored;
+    # the bake-off evidence above shows depth 8 is ordinary, so it now sits
+    # below the raised DIAGRAM_MAX_DEPTH_DENSE (12) and gets only the soft
+    # (first-tier) warning message, same as test_deep_chain_flags_too_dense_
+    # soft_warning above.
+    doc = Document(title="T", blocks=[_chain_diagram(8)])  # depth 8
+    findings = lint(doc)
+    dense = _too_dense(findings)
+    assert dense and dense[0].severity == "warning"
+    assert "very dense" not in dense[0].message
+    assert not has_errors(findings)
+
+
+def test_very_deep_chain_flags_too_dense_at_the_stronger_tier_but_still_warning():
+    doc = Document(title="T", blocks=[_chain_diagram(13)])  # depth 13
+    findings = lint(doc)
+    dense = _too_dense(findings)
+    assert dense and dense[0].severity == "warning"
+    assert "very dense" in dense[0].message
+    assert not has_errors(findings)
+
+
+def test_small_shallow_diagram_does_not_flag_too_dense():
+    doc = Document(title="T", blocks=[_star_diagram(4)])  # 5 nodes, depth 2
+    findings = lint(doc)
+    assert "diagram/too-dense" not in _rules(findings)
+    assert not has_errors(findings)
+
+
+def test_diagram_too_dense_never_blocks_a_render_no_matter_how_dense():
+    # docs/diagram-status.md finding 6: severity="error" here used to make
+    # `docloom render` refuse the entire deck over one crowded diagram. This
+    # locks in that no diagram, however dense, can push has_errors() true
+    # through diagram/too-dense alone -- an extreme 40-node/depth-40 chain
+    # still gets only a (strongly worded) warning.
+    doc = Document(title="T", blocks=[_chain_diagram(40)])
+    findings = lint(doc)
+    dense = _too_dense(findings)
+    assert dense and dense[0].severity == "warning"
+    assert not has_errors(findings)
+
+
+# ----------------------------------------------------------- diagram/crowded-slide
+
+
+def _diagram_slide(*extra_blocks):
+    d = Diagram(caption="c",
+                nodes=[DiagramNode(id="a", label="A"), DiagramNode(id="b", label="B")],
+                edges=[DiagramEdge(source="a", target="b")])
+    return Slide(layout="content", title="System overview shows the architecture",
+                 blocks=[d, *extra_blocks])
+
+
+def test_diagram_with_two_other_blocks_flags_crowded_slide():
+    doc = Document(title="T", slides=[_diagram_slide(
+        Paragraph(text="Some context."),
+        BulletList(items=[ListItem(text="a supporting point")]),
+    )])
+    findings = lint(doc)
+    assert "diagram/crowded-slide" in _rules(findings)
+    assert not has_errors(findings)
+
+
+def test_diagram_alone_on_a_slide_does_not_flag_crowded_slide():
+    doc = Document(title="T", slides=[_diagram_slide()])
+    findings = lint(doc)
+    assert "diagram/crowded-slide" not in _rules(findings)
+
+
+def test_diagram_with_one_other_block_does_not_flag_crowded_slide():
+    doc = Document(title="T", slides=[_diagram_slide(Paragraph(text="Some context."))])
+    findings = lint(doc)
+    assert "diagram/crowded-slide" not in _rules(findings)
+
+
+# ------------------------------------------------------- comprehensive good diagram
+
+
+def test_well_formed_diagram_triggers_none_of_the_diagram_rules():
+    d = Diagram(
+        title="Service topology", caption="Two services talk over one edge.",
+        groups=[DiagramGroup(id="g", label="Core services")],
+        nodes=[
+            DiagramNode(id="a", label="API", type="service", group="g"),
+            DiagramNode(id="b", label="Database", type="store", group="g"),
+        ],
+        edges=[DiagramEdge(source="a", target="b", label="writes")],
+    )
+    doc = Document(title="T", blocks=[d])
+    findings = lint(doc)
+    assert not {f.rule for f in findings if f.rule.startswith("diagram/")}
+    assert "visual/unlabeled" not in _rules(findings)
     assert not has_errors(findings)

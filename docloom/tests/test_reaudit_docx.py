@@ -2,14 +2,20 @@
 large-number fidelity. The old f"{v:g}" formatting capped at 6 significant
 figures and flipped to scientific notation (1234567 -> "1.23457e+06"),
 diverging from the SVG axis and silently changing the displayed value.
+
+The data table is now the fallback taken only when the optional SVG rasterizer
+(docloom[diagrams]) is absent, so the test poisons that import to reach it.
 """
+
+import sys
 
 from docloom import Chart, Document, Series, render
 
 
-def test_docx_chart_table_keeps_large_numbers(tmp_path):
+def test_docx_chart_table_keeps_large_numbers(tmp_path, monkeypatch):
     import docx as docx_lib
 
+    monkeypatch.setitem(sys.modules, "resvg_py", None)  # force the table fallback
     doc = Document(
         title="Numbers",
         blocks=[

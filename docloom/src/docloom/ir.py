@@ -11,6 +11,7 @@ Design constraints (deliberate, do not "fix"):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -194,10 +195,77 @@ class Artifact(BaseModel):
     caption: SafeStr | None = None
 
 
+class DiagramNode(BaseModel):
+    """One box in an architecture diagram. Coordinate-free: the renderer
+    computes layout. `type` uses the painter's vocabulary (more general than
+    a web-app framing): service, client, store, queue, security, cloud,
+    external."""
+
+    id: SafeStr
+    label: SafeStr
+    type: Literal[
+        "service", "client", "store", "queue", "security", "cloud", "external",
+    ] = "service"
+    sublabel: SafeStr | None = Field(
+        None, description='tech/detail line, e.g. "PostgreSQL 16"'
+    )
+    tag: SafeStr | None = Field(
+        None, description='tiny corner annotation, e.g. "v2", "PCI"'
+    )
+    group: SafeStr | None = Field(
+        None, description="id of the DiagramGroup this node sits inside"
+    )
+
+
+class DiagramEdge(BaseModel):
+    source: SafeStr
+    target: SafeStr
+    label: SafeStr | None = None
+    style: Literal["solid", "dashed", "emphasis", "secure"] = "solid"
+
+
+class DiagramGroup(BaseModel):
+    """A boundary box drawn around its member nodes. Geometry is derived
+    (bbox of members plus padding), never authored."""
+
+    id: SafeStr
+    label: SafeStr
+    kind: Literal["region", "security-group"] = "region"
+
+
+class Diagram(BaseModel):
+    """Architecture diagram. Structure only: nodes, edges, groups. Layout,
+    coordinates, routing, and colors are computed by the renderer (see
+    ir.py module docstring / Slide docstring on layout intent vs geometry).
+    No row/col/pos/size/route/via/labelAt-style hand-placement fields, ever:
+    those are exactly the geometry this IR forbids. Length/count limits
+    (label length, node count, ...) are enforced by lint, not here: see
+    llm_schema()'s constraint-stripping note in llm.py."""
+
+    type: Literal["diagram"] = "diagram"
+    id: SafeStr | None = None
+    title: SafeStr | None = None
+    direction: Literal["LR", "TB"] = "LR"
+    nodes: list[DiagramNode] = Field(default_factory=list)
+    edges: list[DiagramEdge] = Field(default_factory=list)
+    groups: list[DiagramGroup] = Field(default_factory=list)
+    caption: SafeStr | None = None
+    alt: SafeStr = ""
+
+
+def diagram_hash(d: Diagram) -> str:
+    """Canonical content hash of a Diagram: sha1 of its JSON, first 12 hex
+    chars. Used to stamp every emitted diagram (PPTX group/shape name, a
+    .drawio XML comment, SVG `data-docloom-hash`) so a derived export can be
+    mechanically identified as generated-from, and never read back, this
+    exact Tier 1 IR content (see docs/diagram-plan.md section 1)."""
+    return hashlib.sha1(d.model_dump_json(exclude_none=True).encode()).hexdigest()[:12]
+
+
 Block = Union[
     Heading, Paragraph, BulletList, NumberedList,
     Quote, Code, Table, Image, Callout, Divider,
-    Chart, StatRow, Artifact,
+    Chart, StatRow, Artifact, Diagram,
 ]
 
 

@@ -3,8 +3,8 @@
 import json
 
 from docloom import (
-    Artifact, Chart, Document, Image, Paragraph, Series, Slide, Stat,
-    StatRow, ensure_ids, lint, llm_schema, parse_llm_output,
+    Artifact, Chart, Diagram, Document, Image, Paragraph, Series, Slide,
+    Stat, StatRow, ensure_ids, lint, llm_schema, parse_llm_output,
 )
 
 
@@ -35,6 +35,14 @@ def test_old_documents_still_load():
 
 
 def test_llm_schema_strips_bookkeeping_but_keeps_source_id():
+    # Source.id, DiagramNode.id, and DiagramGroup.id are all legitimately
+    # required fields (an LLM must name a node/group to reference it from an
+    # edge or a node's `group`), so llm_schema()'s close() correctly leaves
+    # "id" in place for all three: it only strips "id" when the field is
+    # optional bookkeeping (node in props but not in required). This used
+    # to assume "only Source may have a required id"; that assumption went
+    # stale the moment DiagramNode/DiagramGroup landed with required ids.
+    REQUIRES_ID = {"Source", "DiagramNode", "DiagramGroup"}
     schema = llm_schema()
     text = json.dumps(schema)
     assert '"oneOf"' not in text
@@ -42,7 +50,7 @@ def test_llm_schema_strips_bookkeeping_but_keeps_source_id():
     for name, node in defs.items():
         props = node.get("properties", {})
         required = node.get("required", [])
-        if name == "Source":
+        if name in REQUIRES_ID:
             assert "id" in props and "id" in required
         else:
             assert "id" not in props, name
@@ -69,6 +77,36 @@ def test_new_block_aliases_parse():
     }))
     assert type(doc.blocks[0]).__name__ == "StatRow"
     assert type(doc.blocks[1]).__name__ == "Chart"
+
+
+def test_diagram_block_roundtrips_through_parse_llm_output():
+    # Regression for the "diagram" -> "artifact" alias that used to live in
+    # _TYPE_ALIASES: it rewrote the tag before validation ever saw it, so
+    # parse_llm_output silently returned Artifact(kind='diagram', path=None)
+    # and every node/edge/group the model wrote was discarded, with no error
+    # and no warning. This must come back as a real Diagram with its
+    # structure intact.
+    doc = parse_llm_output(json.dumps({
+        "title": "T",
+        "blocks": [{
+            "type": "diagram",
+            "title": "Architecture",
+            "direction": "LR",
+            "nodes": [
+                {"id": "a", "label": "Client", "type": "client"},
+                {"id": "b", "label": "API", "type": "service"},
+            ],
+            "edges": [{"source": "a", "target": "b", "label": "request"}],
+            "groups": [],
+            "caption": "System overview",
+            "alt": "A diagram showing client to API",
+        }],
+    }))
+    block = doc.blocks[0]
+    assert isinstance(block, Diagram)
+    assert [n.id for n in block.nodes] == ["a", "b"]
+    assert len(block.edges) == 1
+    assert block.edges[0].source == "a" and block.edges[0].target == "b"
 
 
 def test_lint_new_rules():

@@ -8,9 +8,28 @@ hard-block the CLI render and the studio export (HTTP 422).
   - title/section slides render only their title/subtitle, so their
     (ignored) blocks must not fire a deck/overflow error, only the
     existing deck/ignored-blocks warning.
+
+Also covers docs/diagram-status.md finding 13: lint.py mirrors several
+render/pptx.py layout constants as plain duplicated literals (lint.py must
+stay import-light and layout-agnostic; see the comment above SLIDE_BODY_H_IN
+in lint.py for why this is a literal, not an import). CHART_H_IN and the
+unresolved-Artifact height silently drifted from pptx.py's real values once;
+the tests below import pptx.py's real constants and assert equality, so the
+next drift fails CI instead of silently shipping a lint rule that scores the
+wrong slide as safe.
 """
 
-from docloom import Document, Image, Paragraph, Slide, has_errors, lint
+from docloom import Artifact, Chart, Document, Image, Paragraph, Series, Slide, has_errors, lint
+# docloom/__init__.py does `from .lint import lint`, which rebinds the
+# `docloom.lint` ATTRIBUTE to the lint() function itself, shadowing the
+# submodule -- so `import docloom.lint as x` would silently grab the
+# function, not the module. Importing names directly out of the submodule
+# sidesteps that shadowing.
+from docloom.lint import (
+    ARTIFACT_PLACEHOLDER_H_IN, CHART_H_IN, DIAGRAM_H_IN,
+    estimate_depth as lint_estimate_depth,
+)
+from docloom.render import pptx as pptx_mod
 
 
 def test_hero_slide_with_450_char_body_has_no_overflow_error():
@@ -43,3 +62,64 @@ def test_section_slide_over_800_char_blocks_has_no_overflow_error():
     )
     assert any(f.rule == "deck/ignored-blocks" for f in findings)
     assert not has_errors(findings)
+
+
+# ------------------------------------------------ finding 13: mirror constants
+#
+# lint.py duplicates several render/pptx.py layout numbers as literals so it
+# can estimate physical slide height without importing the layout engine.
+# These tests pin lint.py's copies against pptx.py's real values directly, so
+# a future edit to one side without the other fails here instead of silently
+# shipping deck/overflow findings that no longer match what the renderer
+# actually does.
+
+
+def test_chart_h_in_mirrors_pptx_chart_max_h_in():
+    assert CHART_H_IN == pptx_mod.LAYOUT["chart_max_h_in"]
+
+
+def test_diagram_h_in_mirrors_pptx_diagram_h_in():
+    assert DIAGRAM_H_IN == pptx_mod.DIAGRAM_H_IN
+
+
+def test_artifact_placeholder_h_in_mirrors_pptx_unresolved_artifact_estimate():
+    # pptx.py has no named constant for this (it's the literal 1.6 in both
+    # _natural_h's unresolved-Artifact branch and _artifact_block's own
+    # `min(max_h, 1.6)` placeholder-height cap), so this pins against that
+    # literal directly rather than importing a name that doesn't exist.
+    assert ARTIFACT_PLACEHOLDER_H_IN == 1.6
+
+
+def test_unresolved_artifact_beside_a_chart_now_flags_height_overflow():
+    # docs/diagram-status.md finding 13, second half: an unresolved Artifact
+    # used to score 0.0in here, but pptx.py now draws it a real 1.6in
+    # placeholder box (P5 audit defect 1). A chart (CHART_H_IN=4.8) plus that
+    # placeholder plus the inter-block gap comfortably exceeds
+    # SLIDE_BODY_H_IN (5.48), so this slide must now be flagged -- before the
+    # fix it scored 4.8 + 0.0 + gap and stayed under budget, silently passing
+    # a slide that overflows.
+    doc = Document(title="T", slides=[Slide(
+        layout="content", title="Quarterly view combines chart and diagram",
+        blocks=[
+            Chart(chart="bar", title="Revenue", labels=["Q1"],
+                  series=[Series(name="Revenue", values=[1.0])], caption="c"),
+            Artifact(kind="diagram", caption="c"),  # unresolved: no path/artifact_id
+        ],
+    )])
+    findings = lint(doc)
+    assert any(
+        f.rule == "deck/overflow" and f.where == "slides[0]" for f in findings
+    )
+
+
+# --------------------------------------------------- finding 16: no lint-local
+# duplicate of the depth algorithm
+
+
+def test_lint_estimate_depth_is_the_real_painter_function_not_a_copy():
+    # docs/diagram-status.md finding 16: lint.py used to carry its own
+    # reimplementation of the painter's layering algorithm as an ImportError
+    # fallback, which could silently diverge from the real one. Now it must
+    # be the exact same function object, not merely equivalent behavior.
+    from docloom.render.diagram_svg import estimate_depth as real_estimate_depth
+    assert lint_estimate_depth is real_estimate_depth

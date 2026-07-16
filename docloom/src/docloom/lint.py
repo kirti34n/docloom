@@ -17,11 +17,37 @@ from typing import Literal
 from pydantic import BaseModel
 
 from .ir import (
-    Artifact, Block, BulletList, Callout, Chart, Code, Document, Formula,
-    Heading, Image, NumberedList, Paragraph, Quote, Slide, StatRow, Table,
-    cited_ids, plain, spans,
+    Artifact, Block, BulletList, Callout, Chart, Code, Diagram, Document,
+    Formula, Heading, Image, NumberedList, Paragraph, Quote, Slide, StatRow,
+    Table, cited_ids, plain, spans,
 )
 from .theme import Theme, contrast_ratio
+
+# render/diagram_svg.py (the painter) owns estimate_depth; rank_nodes there
+# computes the identical layering internally for layout, so this is the one
+# real implementation, not a lint-local copy. Contract this lint call site
+# relies on: estimate_depth(node_ids: list[str],
+# edges: list[tuple[str, str]]) -> int -- longest path on the acyclic
+# projection (back edges from a DFS cycle-break dropped), returned as a
+# layer COUNT (1 for a single node).
+#
+# A lint-local reimplementation of this algorithm used to live here (finding
+# 16, docs/diagram-status.md): it was dead weight once diagram_svg.py landed
+# for real, and a second copy of a layering algorithm is exactly the kind of
+# thing that silently diverges from the original over time. The try/except
+# stays only as an import guard -- diagram_svg.py is pure stdlib with no
+# optional dependency that could plausibly fail to import, so hitting this
+# branch means something is actually broken and should fail loud, not fall
+# back to a shadow copy of the algorithm that could quietly disagree with it.
+try:
+    from .render.diagram_svg import estimate_depth  # type: ignore[import-not-found]
+except ImportError as _diagram_svg_import_error:  # pragma: no cover - should not happen
+    raise ImportError(
+        "docloom.lint requires docloom.render.diagram_svg.estimate_depth "
+        "(the diagram painter's layering algorithm) to import; a lint-local "
+        "duplicate used to mask this, but it silently diverged from the "
+        "real algorithm and was removed (docs/diagram-status.md finding 16)"
+    ) from _diagram_svg_import_error
 
 Severity = Literal["error", "warning", "info"]
 
@@ -48,11 +74,30 @@ MIN_CONTRAST_BODY = 4.5  # WCAG AA
 # a block's character count is tiny: a chart or resolved image is a near-
 # fixed ~4.5-4.6in tall no matter how short its title/caption is, which the
 # char budget above cannot see. Keep these numbers in sync with render/pptx.py.
+#
+# These are plain duplicated literals, not an import, because render/pptx.py
+# is the actual layout engine (fonts, python-pptx, LibreOffice quirks) and
+# lint.py must stay import-light and layout-agnostic (deck.block_variety,
+# citations, etc. run with no renderer available at all). That duplication is
+# exactly how finding 13 (docs/diagram-status.md) happened: CHART_H_IN and
+# the unresolved-Artifact height silently drifted from pptx.py's real values.
+# Rather than trust a comment to catch the next drift, test_reaudit_lint.py
+# imports render/pptx.py's real constants and asserts equality with the
+# mirrors below, so a future edit to one side without the other fails CI
+# instead of silently drifting again.
 SLIDE_BODY_H_IN = 5.48   # slide height 7.5 - margin 0.6 - title band 1.42
 FULL_BODY_W_IN = 12.13   # slide width 13.333 - 2 x margin 0.6
 NARROW_BODY_W_IN = FULL_BODY_W_IN / 2  # two_column column / image-slot pane
-CHART_H_IN = 4.5         # render/pptx.py LAYOUT["chart_max_h_in"]
+CHART_H_IN = 4.8         # render/pptx.py LAYOUT["chart_max_h_in"]
 IMAGE_H_IN = 4.6         # render/pptx.py _natural_h's resolved image/artifact estimate
+DIAGRAM_H_IN = 4.6       # render/pptx.py DIAGRAM_H_IN / _natural_h's diagram estimate
+# render/pptx.py _natural_h returns this for an UNRESOLVED Artifact (no
+# path/artifact_id yet): it now draws a real placeholder box (P5 audit
+# defect 1), not nothing, so it reserves real layout room and this rule must
+# score it accordingly -- see _block_height below. An unresolved Image slot
+# is unaffected (stays the deliberate 0.0 no-op): only Artifact renders a
+# placeholder.
+ARTIFACT_PLACEHOLDER_H_IN = 1.6  # render/pptx.py _natural_h's unresolved-Artifact estimate
 STATS_H_IN = 1.4         # render/pptx.py LAYOUT["stat_card_h_in"]
 STATS_MAX_CARDS = 5      # render/pptx.py LAYOUT["stat_max_cards"]
 TABLE_ROW_H_IN = 0.36    # render/pptx.py _table_block's row height cap
@@ -147,6 +192,53 @@ MIN_SLIDES_FOR_VARIETY_CHECK = 6
 MIN_DISTINCT_BLOCK_TYPES = 3
 MAX_CONSECUTIVE_BULLET_SLIDES = 2
 
+# diagram/* rules (docs/diagram-plan.md section 6). llm_schema() strips
+# minLength/maxLength/pattern (see llm.py), so every one of these length
+# limits is enforceable only here, never as a Pydantic field constraint.
+DIAGRAM_NODE_LABEL_MAX = 40
+DIAGRAM_SUBLABEL_MAX = 40
+DIAGRAM_TAG_MAX = 12
+DIAGRAM_EDGE_LABEL_MAX = 30
+DIAGRAM_GROUP_LABEL_MAX = 40
+# density budget: the rule that actually fixes "will not be legible on a
+# 16:9 slide" for diagrams. depth is the longest path on the acyclic
+# projection (estimate_depth).
+#
+# Both tiers below are severity="warning", never "error" (finding 6,
+# docs/diagram-status.md). A dense diagram is an aesthetic/legibility
+# problem, not a correctness defect: every render path (native PPTX shapes,
+# the raster fallback, SVG/DOCX/HTML/typst/markdown) still produces a valid
+# file past every threshold here, it just gets visually tight -- that is a
+# genuinely different failure class from diagram/dangling-edge or
+# diagram/duplicate-id, which really would leave broken output, and only
+# those keep severity="error". A crowded-but-otherwise-fine diagram must
+# never carry error severity, because has_errors() drives `docloom render`
+# refusing the ENTIRE deck (exit 2, no output, not even --diagram-sources
+# sidecars) over one diagram, which is not a proportionate response to
+# "this one block looks tight." The DIAGRAM_MAX_*_DENSE tier exists only to
+# escalate the message's wording for genuinely extreme cases, not to escalate
+# severity -- there is no line at which lint should be allowed to block a
+# whole deck's render for this rule, because any such line eventually sits
+# inside the range real diagrams occupy: that is exactly what happened to
+# the old depth>7 error threshold below.
+#
+# Evidence for the DEPTH numbers: 5 independent, ordinary 13-14 node
+# reference-architecture bake-off specs (scratchpad/bakeoff/specs/*.json,
+# each a plausible AWS-style system diagram, not an adversarial stress case)
+# measured through this exact estimate_depth() give depths 5, 6, 8, 8, 10.
+# The old error threshold of >7 already sat inside that range (3 of 5 specs
+# exceeded it) and would have hard-blocked those decks; DIAGRAM_MAX_DEPTH_DENSE
+# below is set with headroom above the deepest of those five (10) so no
+# ordinary reference architecture reaches even the stronger-worded tier.
+DIAGRAM_MAX_NODES_WARN = 8
+DIAGRAM_MAX_DEPTH_WARN = 5
+DIAGRAM_MAX_NODES_DENSE = 14  # unaffected by finding 6: node count was never
+                              # the reported trigger, only depth was
+DIAGRAM_MAX_DEPTH_DENSE = 12  # raised from the old error threshold of 7
+# crowded-slide: a diagram sharing a slide with more than this many other
+# non-Heading blocks gets squeezed regardless of its own node count.
+DIAGRAM_MAX_OTHER_BLOCKS = 1
+
 
 def _block_chars(block: Block) -> int:
     if isinstance(block, (Heading, Paragraph, Quote, Callout)):
@@ -165,6 +257,12 @@ def _block_chars(block: Block) -> int:
         return sum(len(plain(c)) for c in block.header) + sum(
             len(plain(c)) for row in block.rows for c in row
         )
+    if isinstance(block, Diagram):
+        # title + caption only, mirroring Image/Artifact's caption-only
+        # accounting: node/edge content is governed by diagram/too-dense
+        # instead, so counting every label here would double-regulate it
+        # against the same MAX_SLIDE_CHARS budget.
+        return len(block.title or "") + len(block.caption or "")
     return 0
 
 
@@ -176,7 +274,17 @@ def _block_height(block: Block, width_in: float) -> float:
     if isinstance(block, Chart):
         return CHART_H_IN
     if isinstance(block, (Image, Artifact)):
-        return IMAGE_H_IN if block.path and Path(block.path).is_file() else 0.0
+        if block.path and Path(block.path).is_file():
+            return IMAGE_H_IN
+        # An unresolved Artifact still draws a real placeholder box in PPTX
+        # (P5 audit defect 1), so it reserves real layout room; an
+        # unresolved Image slot stays the deliberate 0.0 no-op (finding 13,
+        # docs/diagram-status.md -- this used to score every unresolved
+        # Artifact at 0.0, letting deck/overflow pass slides that now
+        # overflow once pptx.py started drawing the placeholder).
+        return ARTIFACT_PLACEHOLDER_H_IN if isinstance(block, Artifact) else 0.0
+    if isinstance(block, Diagram):
+        return DIAGRAM_H_IN if block.nodes else 0.0
     if isinstance(block, StatRow):
         return STATS_H_IN if block.items else 0.0
     if isinstance(block, Table):
@@ -269,6 +377,15 @@ def _block_texts(block: Block) -> list[str]:
         if block.caption:
             texts.append(block.caption)
         return texts
+    if isinstance(block, Diagram):
+        texts = [block.title or "", block.caption or "", block.alt or ""]
+        for n in block.nodes:
+            texts.extend([n.label, n.sublabel or "", n.tag or ""])
+        for e in block.edges:
+            texts.append(e.label or "")
+        for g in block.groups:
+            texts.append(g.label)
+        return texts
     return []
 
 
@@ -359,6 +476,23 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
                     message=f"table is {len(b.rows)}x{cols} "
                             f"(max {MAX_TABLE_ROWS_ON_SLIDE}x{MAX_TABLE_COLS_ON_SLIDE} "
                             "on a slide); move it to the report or a sheet",
+                ))
+
+    # diagram/crowded-slide: a diagram squeezed beside several other blocks
+    # loses the room it needs to stay legible, independent of its own node
+    # count (which diagram/too-dense already governs).
+    for bi, b in enumerate(all_blocks):
+        if isinstance(b, Diagram):
+            others = sum(
+                1 for oi, ob in enumerate(all_blocks)
+                if oi != bi and not isinstance(ob, Heading)
+            )
+            if others > DIAGRAM_MAX_OTHER_BLOCKS:
+                out.append(Finding(
+                    rule="diagram/crowded-slide", severity="warning", where=where,
+                    message=f"diagram shares this slide with {others} other "
+                            "block(s); it will be squeezed. Give it its own "
+                            "slide or drop a neighboring block",
                 ))
 
     # two_column slides get half the width per column, so each column gets
@@ -453,6 +587,154 @@ def _is_numeric(s: str) -> bool:
     return True
 
 
+def _lint_diagram(d: Diagram, where: str, out: list[Finding]) -> None:
+    """diagram/* rules (docs/diagram-plan.md section 6). Geometric checks
+    (overlap, routing, label placement) are NOT here: lint runs on the
+    coordinate-free IR before any layout exists; those live in the painter's
+    check()/layout_report() (P0, exercised in its own tests)."""
+    if not d.nodes:
+        out.append(Finding(
+            rule="diagram/empty", severity="error", where=where,
+            message="diagram has no nodes",
+        ))
+
+    node_ids: set[str] = set()
+    for i, n in enumerate(d.nodes):
+        if n.id in node_ids:
+            out.append(Finding(
+                rule="diagram/duplicate-id", severity="error",
+                where=f"{where}.nodes[{i}]",
+                message=f'duplicate node id "{n.id}"; node ids must be unique',
+            ))
+        node_ids.add(n.id)
+        if len(n.label) > DIAGRAM_NODE_LABEL_MAX:
+            out.append(Finding(
+                rule="diagram/label-too-long", severity="warning",
+                where=f"{where}.nodes[{i}]",
+                message=f'node label "{n.label}" is {len(n.label)} chars '
+                        f"(max {DIAGRAM_NODE_LABEL_MAX})",
+            ))
+        if n.sublabel and len(n.sublabel) > DIAGRAM_SUBLABEL_MAX:
+            out.append(Finding(
+                rule="diagram/label-too-long", severity="warning",
+                where=f"{where}.nodes[{i}]",
+                message=f'node sublabel "{n.sublabel}" is {len(n.sublabel)} '
+                        f"chars (max {DIAGRAM_SUBLABEL_MAX})",
+            ))
+        if n.tag and len(n.tag) > DIAGRAM_TAG_MAX:
+            out.append(Finding(
+                rule="diagram/label-too-long", severity="warning",
+                where=f"{where}.nodes[{i}]",
+                message=f'node tag "{n.tag}" is {len(n.tag)} chars '
+                        f"(max {DIAGRAM_TAG_MAX})",
+            ))
+
+    group_ids: set[str] = set()
+    for i, g in enumerate(d.groups):
+        if g.id in group_ids:
+            out.append(Finding(
+                rule="diagram/duplicate-id", severity="error",
+                where=f"{where}.groups[{i}]",
+                message=f'duplicate group id "{g.id}"; group ids must be unique',
+            ))
+        group_ids.add(g.id)
+        if len(g.label) > DIAGRAM_GROUP_LABEL_MAX:
+            out.append(Finding(
+                rule="diagram/label-too-long", severity="warning",
+                where=f"{where}.groups[{i}]",
+                message=f'group label "{g.label}" is {len(g.label)} chars '
+                        f"(max {DIAGRAM_GROUP_LABEL_MAX})",
+            ))
+
+    for i, n in enumerate(d.nodes):
+        if n.group is not None and n.group not in group_ids:
+            out.append(Finding(
+                rule="diagram/unknown-group", severity="error",
+                where=f"{where}.nodes[{i}]",
+                message=f'node "{n.id}" references group "{n.group}", which '
+                        "does not exist",
+            ))
+
+    members = {n.group for n in d.nodes if n.group is not None}
+    for i, g in enumerate(d.groups):
+        if g.id not in members:
+            out.append(Finding(
+                rule="diagram/empty-group", severity="warning",
+                where=f"{where}.groups[{i}]",
+                message=f'group "{g.id}" has no member nodes',
+            ))
+
+    connected: set[str] = set()
+    for i, e in enumerate(d.edges):
+        if e.source not in node_ids:
+            out.append(Finding(
+                rule="diagram/dangling-edge", severity="error",
+                where=f"{where}.edges[{i}]",
+                message=f'edge source "{e.source}" is not a node id',
+            ))
+        if e.target not in node_ids:
+            out.append(Finding(
+                rule="diagram/dangling-edge", severity="error",
+                where=f"{where}.edges[{i}]",
+                message=f'edge target "{e.target}" is not a node id',
+            ))
+        if e.source == e.target:
+            out.append(Finding(
+                rule="diagram/self-loop", severity="warning",
+                where=f"{where}.edges[{i}]",
+                message=f'edge from "{e.source}" to itself; the painter does '
+                        "not draw self-loops well",
+            ))
+        if e.label and len(e.label) > DIAGRAM_EDGE_LABEL_MAX:
+            out.append(Finding(
+                rule="diagram/label-too-long", severity="warning",
+                where=f"{where}.edges[{i}]",
+                message=f'edge label "{e.label}" is {len(e.label)} chars '
+                        f"(max {DIAGRAM_EDGE_LABEL_MAX})",
+            ))
+        connected.add(e.source)
+        connected.add(e.target)
+
+    for i, n in enumerate(d.nodes):
+        if n.id not in connected:
+            out.append(Finding(
+                rule="diagram/disconnected-node", severity="info",
+                where=f"{where}.nodes[{i}]",
+                message=f'node "{n.id}" has no edges',
+            ))
+
+    n_nodes = len(d.nodes)
+    depth = estimate_depth(
+        [n.id for n in d.nodes], [(e.source, e.target) for e in d.edges]
+    )
+    # Both tiers are severity="warning" -- see the DIAGRAM_MAX_*_DENSE
+    # comment above for why this rule never blocks a render (finding 6).
+    if n_nodes > DIAGRAM_MAX_NODES_DENSE or depth > DIAGRAM_MAX_DEPTH_DENSE:
+        density_msg: str | None = (
+            f"{n_nodes} nodes, depth {depth}; very dense for a 16:9 slide "
+            "and unlikely to stay legible; split it into multiple diagrams "
+            "or move detail to sublabels"
+        )
+    elif n_nodes > DIAGRAM_MAX_NODES_WARN or depth > DIAGRAM_MAX_DEPTH_WARN:
+        density_msg = (
+            f"{n_nodes} nodes, depth {depth}; getting dense for a 16:9 "
+            "slide; consider splitting it or moving detail to sublabels"
+        )
+    else:
+        density_msg = None
+    if density_msg:
+        out.append(Finding(
+            rule="diagram/too-dense", severity="warning", where=where,
+            message=density_msg,
+        ))
+
+    if not (d.caption and d.caption.strip()):
+        out.append(Finding(
+            rule="visual/unlabeled", severity="warning", where=where,
+            message="diagram has no caption; add a one-line takeaway caption",
+        ))
+
+
 def _lint_block_refs(b: Block, where: str, out: list[Finding]) -> None:
     # anti-placeholder: scan every literal string this block carries; one
     # finding per block is plenty, so stop at the first hit.
@@ -544,6 +826,8 @@ def _lint_block_refs(b: Block, where: str, out: list[Finding]) -> None:
                 message=f"{len(b.items)} stat cards (PPTX fits at most "
                         f"{STATS_MAX_CARDS} per row); the rest are dropped",
             ))
+    elif isinstance(b, Diagram):
+        _lint_diagram(b, where, out)
 
 
 def lint(doc: Document, theme: Theme | None = None) -> list[Finding]:

@@ -9,6 +9,7 @@ import shutil
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import diagram_svg
 from ..ir import (
     Artifact,
     Block,
@@ -17,6 +18,7 @@ from ..ir import (
     Cell,
     Chart,
     Code,
+    Diagram,
     Divider,
     Document,
     Formula,
@@ -184,6 +186,21 @@ class _AssetCopier:
         self._copied[src] = rel
         return rel
 
+    def write(self, name: str, text: str) -> str | None:
+        """Write generated text content (a diagram SVG; there is no source
+        file to copy) into `<out-stem>_files/<name>` and return the path
+        relative to the output file, or None if the write fails. Unlike
+        dest(), there is no original-location fallback: this content did not
+        exist before this render, so a failed write must be treated as
+        "nothing to embed", not as "leave the reference as-is"."""
+        name = _unique_name(name, self._used_names)
+        try:
+            self._target_dir.mkdir(parents=True, exist_ok=True)
+            (self._target_dir / name).write_text(text, encoding="utf-8")
+        except OSError:
+            return None
+        return f"{self._dir_name}/{name}"
+
 
 def _image_md(
     path: str | None, alt: str, caption: str | None, copier: _AssetCopier | None = None
@@ -235,6 +252,52 @@ def _chart_md(b: Chart, copier: _AssetCopier | None = None) -> str:
     if b.title:
         return f"#### {_esc_md(_one_line(b.title))}\n\n{table}"
     return table
+
+
+def _diagram_theme(theme: Theme) -> dict:
+    """diagram_svg's paint/solve pipeline takes a plain dict overlay, not the
+    docloom Theme model (docs/diagram-plan.md section 3: "the docloom Theme
+    model is adapted by callers"). Every renderer that embeds a diagram
+    builds this same six-key adapter."""
+    return {
+        "primary": theme.primary,
+        "accent": theme.accent,
+        "surface": theme.surface,
+        "text": theme.text,
+        "muted": theme.muted,
+        "background": theme.background,
+    }
+
+
+def _diagram_md(b: Diagram, index: int, theme: Theme, writer: _AssetCopier | None) -> str:
+    """Diagrams have no pre-rendered file (coordinate-free IR): the painter's
+    SVG is generated fresh and written to `<out-stem>_files/diagram-{n}.svg`
+    beside the output, then linked like any other image. There is no
+    original-location fallback the way `_image_md` has for a real source
+    path, so a failed generation (solve() raises on anything lint would
+    flag) or a failed write (writer is None, or the filesystem refuses)
+    degrades to a labeled placeholder line instead of silently dropping the
+    diagram from the document."""
+    if not b.nodes:  # genuinely nothing to draw: skip silently, like a pathless Image
+        return ""
+    label = _one_line(b.alt or b.title or "diagram")
+    svg = ""
+    if writer is not None:
+        try:
+            svg = diagram_svg.render_svg(b, _diagram_theme(theme))
+        except Exception:
+            svg = ""
+    rel = writer.write(f"diagram-{index}.svg", svg) if svg and writer is not None else None
+    if rel:
+        img_alt = label.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+        out = f"![{img_alt}]({rel})"
+    else:
+        # the diagram had content but generation or the write failed: a
+        # placeholder line, never a silent drop
+        out = f"*[diagram: {_esc_md(label)}]*"
+    if b.caption:
+        out += f"\n\n{_wrap_flank(_esc_md(_one_line(b.caption)), '*')}"
+    return out
 
 
 def _stats_md(b: StatRow) -> str:
@@ -340,7 +403,12 @@ def _footnotes_md(doc: Document, numbers: dict[str, int]) -> str:
     return "\n".join(defs)
 
 
-def to_markdown(doc: Document, copier: _AssetCopier | None = None) -> str:
+def to_markdown(
+    doc: Document,
+    theme: Theme,
+    copier: _AssetCopier | None = None,
+    diagram_writer: _AssetCopier | None = None,
+) -> str:
     numbers = source_numbers(doc)
     parts = []
     logo = _logo_md(doc.logo, copier)
@@ -352,8 +420,17 @@ def to_markdown(doc: Document, copier: _AssetCopier | None = None) -> str:
     )
     if meta:
         parts.append(_wrap_flank(_esc_md(_one_line(meta)), "*"))
+    diagram_n = 0
     for b in report_blocks(doc):
-        rendered = _block_md(b, numbers, copier)
+        # Diagram is handled outside _block_md's dispatch because it alone
+        # needs theme (to paint), a writer (it has no source file to copy,
+        # unlike every other asset block), and a stable per-document index
+        # (diagram-1.svg, diagram-2.svg, ...) for its sidecar filename.
+        if isinstance(b, Diagram):
+            diagram_n += 1
+            rendered = _diagram_md(b, diagram_n, theme, diagram_writer)
+        else:
+            rendered = _block_md(b, numbers, copier)
         if rendered:
             parts.append(rendered)
     parts.extend(_sheet_md(s) for s in doc.sheets)
@@ -366,8 +443,18 @@ def render(doc: Document, theme: Theme, out_path: Path, assets: bool = True) -> 
     """assets=True (default) copies referenced local images into
     `<out-stem>_files/` next to `out_path` and rewrites their references
     relative, so a downloaded .md keeps working images instead of pointing
-    at the generating machine's filesystem."""
+    at the generating machine's filesystem.
+
+    Diagram blocks are exempt from assets=False: they have no pre-existing
+    file to leave in place the way Image/Chart paths do (the IR is
+    coordinate-free, section 2 of docs/diagram-plan.md), so skipping their
+    write would silently drop the diagram from the document instead of just
+    changing where its picture lives. They always get their own
+    `<out-stem>_files/diagram-{n}.svg`, reusing the same copier/directory as
+    everything else when assets=True.
+    """
     out = Path(out_path)
     copier = _AssetCopier(out) if assets else None
-    out.write_text(to_markdown(doc, copier), encoding="utf-8")
+    diagram_writer = copier if copier is not None else _AssetCopier(out)
+    out.write_text(to_markdown(doc, theme, copier, diagram_writer), encoding="utf-8")
     return out

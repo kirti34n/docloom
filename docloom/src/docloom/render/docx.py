@@ -19,7 +19,7 @@ from docx.oxml.ns import qn
 from docx.shared import Emu, Inches, Pt, RGBColor
 from docx.text.run import Run
 
-from . import chart_svg
+from . import chart_svg, diagram_svg, raster
 from ..ir import (
     Artifact,
     Block,
@@ -27,6 +27,7 @@ from ..ir import (
     Callout,
     Chart,
     Code,
+    Diagram,
     Divider,
     Document,
     Formula,
@@ -54,6 +55,13 @@ HEADING_SIZES = {1: 20, 2: 16, 3: 13, 4: 12}
 BULLET_STYLES = ("List Bullet", "List Bullet 2", "List Bullet 3")
 CALLOUT_TOKEN = {"info": "primary", "success": "accent", "warning": "muted", "danger": "text"}
 MAX_IMAGE_WIDTH = Inches(6)
+# rasterize charts/diagrams at 2x the SVG's own width so the embedded picture
+# stays crisp when Word scales it to MAX_IMAGE_WIDTH (and when it is printed)
+CHART_RASTER_PX = chart_svg.DEFAULT_WIDTH * 2
+# diagrams solve to a wider landscape canvas than a chart (target_aspect
+# 2.0 by default) and carry more small text (node labels, sublabels, tags),
+# so they get a higher raster width floor to stay legible at MAX_IMAGE_WIDTH
+DIAGRAM_RASTER_PX = 1600
 _SAFE_SCHEMES = {"http", "https", "mailto"}  # matches html.py
 
 
@@ -332,12 +340,34 @@ def _render_image_or_placeholder(docx_doc, block: Image, theme: Theme) -> None:
         cap_run.font.color.rgb = _rgb(theme.muted)
 
 
-def _rasterize_chart_svg(svg: str) -> bytes | None:
-    """Upgrade path for a future PNG embed: python-docx cannot embed SVG
-    directly, and no rasterizer (e.g. cairosvg) is bundled here, so this is
-    a no-op today. Wire one in and _render_chart below embeds the result
-    automatically instead of falling back to a data table."""
-    return None
+def _embed_png(docx_doc, png: bytes, caption: str | None, theme: Theme) -> bool:
+    """Add PNG bytes as a centered picture (plus caption). False if python-docx
+    refuses the bytes, so the caller can still fall back."""
+    par = docx_doc.add_paragraph()
+    par.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    try:
+        par.add_run().add_picture(io.BytesIO(png), width=MAX_IMAGE_WIDTH)
+    except Exception:
+        return False
+    if caption:
+        cap = docx_doc.add_paragraph()
+        cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        cap_run = cap.add_run(caption)
+        cap_run.italic = True
+        cap_run.font.size = Pt(9)
+        cap_run.font.color.rgb = _rgb(theme.muted)
+    return True
+
+
+def _rasterize_chart_svg(svg: str, theme: Theme) -> bytes | None:
+    """PNG bytes for a chart SVG, or None when the optional rasterizer extra
+    (docloom[diagrams]) is not installed. None keeps the data-table fallback
+    in _render_chart below, so a core install renders exactly as before."""
+    return raster.svg_to_png(
+        svg,
+        width=CHART_RASTER_PX,
+        font_files=raster.theme_font_files(theme),
+    )
 
 
 def _render_chart(
@@ -350,26 +380,25 @@ def _render_chart(
         run.bold = True
         run.font.size = Pt(12)
         run.font.color.rgb = _rgb(theme.primary)
+    png: bytes | None = None
     if block.path and Path(block.path).is_file():
         if _render_image(docx_doc, Image(path=block.path, caption=block.caption), theme):
             return
-        # image present but unembeddable (SVG/corrupt): fall through
-    raster = _rasterize_chart_svg(chart_svg.render_svg(block, theme))
-    if raster is not None:  # dead until a rasterizer is wired into the hook above
-        par = docx_doc.add_paragraph()
-        par.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        par.add_run().add_picture(io.BytesIO(raster))
-        if block.caption:
-            cap = docx_doc.add_paragraph()
-            cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            cap_run = cap.add_run(block.caption)
-            cap_run.italic = True
-            cap_run.font.size = Pt(9)
-            cap_run.font.color.rgb = _rgb(theme.muted)
+        # image present but unembeddable by python-docx: an SVG can still be
+        # rasterized, anything else (corrupt file) falls through
+        if raster.is_svg(block.path):
+            png = raster.svg_file_to_png(
+                block.path,
+                width=CHART_RASTER_PX,
+                font_files=raster.theme_font_files(theme),
+            )
+    if png is None:
+        png = _rasterize_chart_svg(chart_svg.render_svg(block, theme), theme)
+    if png is not None and _embed_png(docx_doc, png, block.caption, theme):
         return
-    # python-docx cannot embed the chart_svg SVG directly and no rasterizer
-    # is wired in: a titled, captioned data table stands in for the chart
-    # instead of a bare, unlabeled one.
+    # no rasterizer available (docloom[diagrams] not installed): a titled,
+    # captioned data table stands in for the chart instead of a bare,
+    # unlabeled one.
     rows = [
         [s.name] + ["" if chart_svg._finite(v) is None else chart_svg._fmt(v) for v in s.values]
         for s in block.series
@@ -380,6 +409,59 @@ def _render_chart(
         theme,
         numbers,
     )
+
+
+def _diagram_theme(theme: Theme) -> dict:
+    """diagram_svg's paint/solve pipeline takes a plain dict overlay, not the
+    docloom Theme model (docs/diagram-plan.md section 3: "the docloom Theme
+    model is adapted by callers"). Every renderer that embeds a diagram
+    builds this same six-key adapter."""
+    return {
+        "primary": theme.primary,
+        "accent": theme.accent,
+        "surface": theme.surface,
+        "text": theme.text,
+        "muted": theme.muted,
+        "background": theme.background,
+    }
+
+
+def _render_diagram(docx_doc, block: Diagram, theme: Theme) -> None:
+    """Diagrams have no pre-rendered file (coordinate-free IR): the painter's
+    SVG is the only source, and python-docx cannot embed SVG directly, so
+    this always goes through raster.svg_to_png (unlike _render_chart, which
+    can embed a pre-rendered picture path first). When the optional
+    [diagrams] extra is absent (svg_to_png returns None), or the diagram
+    itself is empty/malformed (solve() raises on anything lint would flag,
+    e.g. a dangling edge), a labeled placeholder paragraph stands in instead
+    of the figure just vanishing -- this function must never raise."""
+    if not block.nodes:
+        return
+    try:
+        svg = diagram_svg.render_svg(block, _diagram_theme(theme))
+    except Exception:
+        svg = ""
+    png = (
+        raster.svg_to_png(
+            svg, width=DIAGRAM_RASTER_PX, font_files=raster.theme_font_files(theme)
+        )
+        if svg
+        else None
+    )
+    if png is not None and _embed_png(docx_doc, png, block.caption, theme):
+        return
+    par = docx_doc.add_paragraph()
+    par.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = par.add_run(f"[diagram: {block.alt}]" if block.alt else "[diagram]")
+    run.italic = True
+    run.font.color.rgb = _rgb(theme.muted)
+    if block.caption:
+        cap = docx_doc.add_paragraph()
+        cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        cap_run = cap.add_run(block.caption)
+        cap_run.italic = True
+        cap_run.font.size = Pt(9)
+        cap_run.font.color.rgb = _rgb(theme.muted)
 
 
 def _render_stats(docx_doc, block: StatRow, theme: Theme) -> None:
@@ -442,6 +524,8 @@ def _render_block(
         _render_callout(docx_doc, block, theme, numbers)
     elif isinstance(block, Chart):
         _render_chart(docx_doc, block, theme, numbers)
+    elif isinstance(block, Diagram):
+        _render_diagram(docx_doc, block, theme)
     elif isinstance(block, StatRow):
         _render_stats(docx_doc, block, theme)
     elif isinstance(block, Artifact):

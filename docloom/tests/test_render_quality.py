@@ -1,7 +1,15 @@
 """Render-quality regression tests: the dependency-free chart SVG painter,
 its wiring into html/typst/docx/markdown, the docx figure/placeholder
-fallbacks and header-link color, and the markdown emphasis-boundary and
-assets-mode fixes."""
+fallbacks and header-link color, the markdown emphasis-boundary and
+assets-mode fixes, and the P5 PPTX quality-audit fixes (silent block drops,
+section-slide data loss, image_right title/body misalignment, the grow-pass
+runaway, heading-seam spacing, solo-chart fill, image-pane letterboxing,
+table column weighting, the invisible divider, the sources slide, stat
+card legibility, and the pie chart percent-label bug). Also covers the
+post-diagram-wave fixes: _content_slide/_image_side_slide/two_column
+silently dropping s.subtitle, an imageless hero falling through to the
+plain content layout instead of getting its own full-bleed treatment, and
+warning/danger callouts rendering as uncolored gray/near-black."""
 
 from __future__ import annotations
 
@@ -10,8 +18,10 @@ import xml.dom.minidom as minidom
 import pytest
 
 from docloom import (
-    Artifact, Chart, Document, Image as ImageBlock, Paragraph, Series, Span,
-    Table as TableBlock, Theme, render,
+    Artifact, BulletList, Chart, Code, Diagram, DiagramEdge, DiagramNode,
+    Document, Heading, Image as ImageBlock, ListItem, Paragraph, Quote,
+    Series, Slide, Source, Span, Stat, StatRow, Table as TableBlock, Theme,
+    render,
 )
 from docloom.render import chart_svg
 
@@ -155,9 +165,15 @@ def test_markdown_chart_title_is_a_heading_caption_below(tmp_path):
     assert md.index("Revenue") < md.index("source: internal")
 
 
-def test_docx_chart_without_prerendered_path_is_titled_captioned_table(tmp_path):
+def test_docx_chart_without_prerendered_path_is_titled_captioned_table(tmp_path, monkeypatch):
+    import sys
+
     import docx as docx_lib
 
+    # with the optional rasterizer (docloom[diagrams]) installed the chart is a
+    # real picture instead; this test pins the no-extra fallback, so it poisons
+    # the import. The picture path is covered in tests/test_raster.py.
+    monkeypatch.setitem(sys.modules, "resvg_py", None)
     out = render(_chart_doc(caption="source: internal"), "docx", tmp_path / "c.docx")
     d = docx_lib.Document(str(out))
     paragraphs = [p.text for p in d.paragraphs]
@@ -353,3 +369,541 @@ def test_xlsx_sources_sheet_dedupes_duplicate_ids(tmp_path):
     with zipfile.ZipFile(out) as z:
         shared = z.read("xl/sharedStrings.xml").decode("utf-8")
     assert "AlphaDup" not in shared
+
+
+# ------------------------------------------------ P5: pptx quality audit
+
+
+def _png(path, w=40, h=40, color="blue"):
+    from PIL import Image as PILImage
+
+    PILImage.new("RGB", (w, h), color).save(path)
+    return str(path)
+
+
+def _shapes_text(slide) -> str:
+    return " ".join(sh.text_frame.text for sh in slide.shapes if sh.has_text_frame)
+
+
+def test_pptx_unresolved_artifact_gets_placeholder_not_silent_drop(tmp_path):
+    # P5 audit defect 1, proven live: an Artifact with no path used to
+    # render nothing at all, with no trace and no warning.
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            Artifact(kind="diagram", alt="Rollout architecture", caption="Fig 1"),
+        ]),
+    ])
+    with pytest.warns(UserWarning, match="unresolved artifact"):
+        out = render(doc, "pptx", tmp_path / "a.pptx")
+    text = _shapes_text(Presentation(str(out)).slides[0])
+    assert "Rollout architecture" in text
+    assert "Fig 1" in text
+
+
+def test_pptx_image_missing_file_gets_placeholder_and_warns(tmp_path):
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            ImageBlock(path=str(tmp_path / "does_not_exist.png"), alt="ghost image"),
+        ]),
+    ])
+    with pytest.warns(UserWarning, match="could not be embedded"):
+        out = render(doc, "pptx", tmp_path / "i.pptx")
+    assert "ghost image" in _shapes_text(Presentation(str(out)).slides[0])
+
+
+def test_pptx_image_with_no_path_stays_silent(tmp_path):
+    # Unlike Artifact, an Image slot with no path is a deliberate,
+    # not-yet-resolved slot (matches the docx renderer's convention): it
+    # must stay silent, not sprout a placeholder box on every slide with an
+    # unbound image slot.
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[ImageBlock(alt="never shown")]),
+    ])
+    out = render(doc, "pptx", tmp_path / "i2.pptx")
+    assert "never shown" not in _shapes_text(Presentation(str(out)).slides[0])
+
+
+def test_pptx_section_slide_renders_its_blocks(tmp_path):
+    # P5 audit defect 2: a section slide rendered only title/subtitle and
+    # silently dropped every block the author put in s.blocks/s.right.
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="section", title="Section", blocks=[
+            BulletList(items=[ListItem(text="SECMARK point one")]),
+        ]),
+    ])
+    out = render(doc, "pptx", tmp_path / "s.pptx")
+    assert "SECMARK point one" in _shapes_text(Presentation(str(out)).slides[0])
+
+
+def test_pptx_image_right_title_shares_the_bodys_left_edge(tmp_path):
+    # P5 audit defect 3: image_right carved the title's x (not just its
+    # width) to dodge the top-left logo, staggering it 0.66in right of the
+    # body text it introduces.
+    from pptx.util import Inches
+    from pptx import Presentation
+
+    doc = Document(
+        title="D", logo=ImageBlock(path=_png(tmp_path / "logo.png")),
+        slides=[Slide(
+            layout="image_right", title="TITLEMARK",
+            image=ImageBlock(path=_png(tmp_path / "pic.png", 400, 300)),
+            blocks=[Paragraph(text="BODYMARK text")],
+        )],
+    )
+    out = render(doc, "pptx", tmp_path / "ir.pptx")
+    slide = Presentation(str(out)).slides[0]
+    title_box = next(s for s in slide.shapes if s.has_text_frame and "TITLEMARK" in s.text_frame.text)
+    body_box = next(s for s in slide.shapes if s.has_text_frame and "BODYMARK" in s.text_frame.text)
+    assert abs(title_box.left - body_box.left) < Inches(0.01)
+
+
+def test_pptx_grow_pass_suppressed_next_to_a_fixed_size_block(tmp_path):
+    # P5 audit defect 4: growing only the prose beside a fixed-size block
+    # (here, code) is what produced 23.8pt paragraphs beside 12pt code.
+    from pptx import Presentation
+
+    from docloom.render.pptx import BODY_PT
+
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            Paragraph(text="short prose"),
+            Code(code="x = 1"),
+        ]),
+    ])
+    out = render(doc, "pptx", tmp_path / "g.pptx")
+    slide = Presentation(str(out)).slides[0]
+    para = next(s for s in slide.shapes if s.has_text_frame and "short prose" in s.text_frame.text)
+    assert para.text_frame.paragraphs[0].runs[0].font.size.pt == BODY_PT
+
+
+def test_pptx_heading_seam_tighter_than_other_seams_when_sparse(tmp_path):
+    # P5 audit defect 5: a uniform slack-distributed gap gave the
+    # heading-to-body seam the same treatment as every other seam,
+    # orphaning a heading from the very content it introduces.
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            Heading(level=2, text="HEADMARK"),
+            Paragraph(text="FIRSTMARK short"),
+            Paragraph(text="SECONDMARK short"),
+        ]),
+    ])
+    out = render(doc, "pptx", tmp_path / "seam.pptx")
+    slide = Presentation(str(out)).slides[0]
+
+    def _span(marker):
+        for sh in slide.shapes:
+            if sh.has_text_frame and marker in sh.text_frame.text:
+                return sh.top, sh.top + sh.height
+        raise AssertionError(marker)
+
+    _, head_bottom = _span("HEADMARK")
+    first_top, first_bottom = _span("FIRSTMARK")
+    second_top, _ = _span("SECONDMARK")
+    assert (first_top - head_bottom) < (second_top - first_bottom)
+
+
+def test_pptx_solo_chart_fills_the_slide_body(tmp_path):
+    # P5 audit defect 6: a chart alone on its slide stopped at a fixed cap,
+    # leaving a permanent dead void below it.
+    from pptx import Presentation
+
+    from docloom.render.pptx import LAYOUT
+
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            Chart(chart="column", labels=["A", "B"], series=[Series(name="s", values=[1.0, 2.0])]),
+        ]),
+    ])
+    out = render(doc, "pptx", tmp_path / "chart.pptx")
+    slide = Presentation(str(out)).slides[0]
+    chart_shape = next(s for s in slide.shapes if s.has_chart)
+    # exceeds the shared-slide cap, proving the solo-fill path (not the cap) fired
+    assert chart_shape.height / 914400 > LAYOUT["chart_max_h_in"]
+
+
+def test_pptx_image_side_matte_hugs_a_wide_short_image(tmp_path):
+    # P5 audit defect 7: a wide/short image contain-fit into a tall pane
+    # left ~80% of the pane as dead gray around a sliver of image.
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from pptx import Presentation
+
+    from docloom.render.pptx import LAYOUT
+
+    doc = Document(title="T", slides=[
+        Slide(layout="image_left", title="T2",
+              image=ImageBlock(path=_png(tmp_path / "wide.png", 2400, 300)),
+              blocks=[Paragraph(text="x")]),
+    ])
+    out = render(doc, "pptx", tmp_path / "wide.pptx")
+    slide = Presentation(str(out)).slides[0]
+    matte = next(
+        s for s in slide.shapes
+        if s.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE and s.left == 0
+    )
+    assert matte.height / 914400 < LAYOUT["slide_h_in"] * 0.6
+
+
+def test_pptx_table_columns_are_weighted_not_equal(tmp_path):
+    # P5 audit defect 8: an equal tw/cols split gave a long label and a
+    # short value the same track width.
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            TableBlock(
+                header=["A very long vendor name column", "$"],
+                rows=[["Cascade (open source)", "18"]],
+            ),
+        ]),
+    ])
+    out = render(doc, "pptx", tmp_path / "tbl.pptx")
+    slide = Presentation(str(out)).slides[0]
+    tbl = next(s for s in slide.shapes if s.has_table).table
+    widths = [c.width for c in tbl.columns]
+    assert widths[0] > widths[1] * 1.3
+
+
+def test_pptx_empty_and_ragged_tables_do_not_crash_column_weighting(tmp_path):
+    # Regression: the weighted-column-width helper (defect 8) divided by
+    # sum(raw) unconditionally; a genuinely empty table (header=[], rows=[])
+    # has zero columns to weight and raised ZeroDivisionError. A ragged
+    # table (a row shorter than the header) must not raise either.
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            TableBlock(header=[], rows=[]),
+            TableBlock(header=["a", "b"], rows=[["1", "2", "3"], ["1"]]),
+        ]),
+    ])
+    out = render(doc, "pptx", tmp_path / "empty_tbl.pptx")
+    assert out.exists()
+
+
+def test_pptx_divider_color_clears_a_real_contrast_ratio(tmp_path):
+    # P5 audit defect 9: the default divider color measured a ~1.1 contrast
+    # ratio against the background -- a near-invisible ghost.
+    from docloom.render.pptx import _divider_color
+    from docloom.theme import contrast_ratio
+
+    theme = Theme()
+    assert contrast_ratio(_divider_color(theme), theme.background) >= 1.5
+
+
+def test_pptx_sources_slide_has_logo_and_larger_font(tmp_path):
+    # P5 audit defect 10: the sources slide was the one layout with no
+    # brand logo, at a footnote-scale 12pt.
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from pptx import Presentation
+
+    doc = Document(
+        title="T", logo=ImageBlock(path=_png(tmp_path / "logo.png")),
+        slides=[Slide(layout="content", title="T2",
+                      blocks=[Paragraph(text=[Span(text="claim", cite="a")])])],
+        sources=[Source(id="a", title="Alpha")],
+    )
+    out = render(doc, "pptx", tmp_path / "src.pptx")
+    sources_slide = Presentation(str(out)).slides[-1]
+    pics = [s for s in sources_slide.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
+    assert len(pics) == 1
+    body = next(s for s in sources_slide.shapes if s.has_text_frame and "Alpha" in s.text_frame.text)
+    assert body.text_frame.paragraphs[0].runs[0].font.size.pt == 13
+
+
+def test_pptx_stat_card_label_and_delta_are_larger(tmp_path):
+    # P5 audit defect 12: label/delta at 11/10pt read as footnotes on a
+    # 13.3in slide.
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            StatRow(items=[Stat(label="LABELMARK", value="$1", delta="+1 pt")]),
+        ]),
+    ])
+    out = render(doc, "pptx", tmp_path / "stat.pptx")
+    slide = Presentation(str(out)).slides[0]
+
+    def _size(marker):
+        for sh in slide.shapes:
+            if sh.has_text_frame and marker in sh.text_frame.text:
+                return sh.text_frame.paragraphs[0].runs[0].font.size.pt
+        raise AssertionError(marker)
+
+    assert _size("LABELMARK") == 13
+    assert _size("+1 pt") == 12
+
+
+def test_pptx_pie_point_labels_show_percent_not_raw_value(tmp_path):
+    # P5 audit defect 14: materializing a per-point data label font (to
+    # recolor each slice's label) silently created a per-point c:dLbl that
+    # defaulted to showVal=1/showPercent=0, overriding the plot-level
+    # show_percentage=True and turning "54%" back into "5.4".
+    import re
+    import zipfile
+
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            Chart(chart="pie", labels=["A", "B"], series=[Series(name="s", values=[30.0, 70.0])]),
+        ]),
+    ])
+    out = render(doc, "pptx", tmp_path / "pie.pptx")
+    with zipfile.ZipFile(out) as z:
+        chart_xml = next(n for n in z.namelist() if n.startswith("ppt/charts/chart"))
+        xml = z.read(chart_xml).decode("utf-8")
+    point_dlbls = re.findall(r"<c:dLbl>.*?</c:dLbl>", xml, re.S)
+    assert point_dlbls, "expected a per-point dLbl (from the label recolor loop)"
+    for d in point_dlbls:
+        assert 'c:showPercent val="1"' in d
+        assert 'c:showVal val="0"' in d
+
+
+# ---------------------------------------------------- finding 8: quote slide
+
+
+def test_pptx_quote_slide_from_title_subtitle_shows_both(tmp_path):
+    # Finding 8: `Slide(layout="quote", title=..., subtitle=...)` with no
+    # Quote block used to render s.title as a stray 16pt caption top-left
+    # and never touch s.subtitle at all -- the attribution was gone from the
+    # XML entirely and the slide was ~95% blank white.
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="quote", title="QUOTEMARK the future is native",
+              subtitle="ATTRIBUTIONMARK, CEO"),
+    ])
+    out = render(doc, "pptx", tmp_path / "q.pptx")
+    slide = Presentation(str(out)).slides[0]
+    text = _shapes_text(slide)
+    assert "QUOTEMARK" in text
+    assert "ATTRIBUTIONMARK" in text
+
+
+def test_pptx_quote_slide_from_title_subtitle_uses_display_scale(tmp_path):
+    # The title-as-quote shape must land on the same pull-quote treatment as
+    # a real Quote block (real display-scale type), not the old 16pt muted
+    # caption size the title used to get stuck at.
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="quote", title="Short quote", subtitle="Someone"),
+    ])
+    out = render(doc, "pptx", tmp_path / "q2.pptx")
+    slide = Presentation(str(out)).slides[0]
+    quote_shape = next(
+        s for s in slide.shapes
+        if s.has_text_frame and "Short quote" in s.text_frame.text
+    )
+    assert quote_shape.text_frame.paragraphs[0].runs[0].font.size.pt >= 20
+
+
+def test_pptx_quote_slide_with_quote_block_keeps_working(tmp_path):
+    # A real Quote block must still render correctly (unaffected regression
+    # guard for the finding-8 fix), including a slide title used as a small
+    # eyebrow label above it.
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="quote", title="LABELMARK",
+              blocks=[Quote(text="BLOCKQUOTEMARK", attribution="BLOCKATTRMARK")]),
+    ])
+    out = render(doc, "pptx", tmp_path / "q3.pptx")
+    text = _shapes_text(Presentation(str(out)).slides[0])
+    assert "LABELMARK" in text
+    assert "BLOCKQUOTEMARK" in text
+    assert "BLOCKATTRMARK" in text
+
+
+def test_pptx_quote_slide_block_attribution_falls_back_to_subtitle(tmp_path):
+    # A Quote block without its own attribution still picks up s.subtitle
+    # instead of leaving it stranded and unused.
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="quote", subtitle="SUBATTRMARK",
+              blocks=[Quote(text="no inline attribution here")]),
+    ])
+    out = render(doc, "pptx", tmp_path / "q4.pptx")
+    assert "SUBATTRMARK" in _shapes_text(Presentation(str(out)).slides[0])
+
+
+# -------------------------------------------------- finding 12: diagram grow
+
+
+def _small_diagram() -> Diagram:
+    return Diagram(
+        nodes=[DiagramNode(id="a", label="A"), DiagramNode(id="b", label="B")],
+        edges=[DiagramEdge(source="a", target="b")],
+    )
+
+
+def test_pptx_grow_pass_suppressed_next_to_a_diagram(tmp_path):
+    # Finding 12: _FIXED_SIZE_BLOCKS omitted Diagram, so a paragraph sharing
+    # a slide with a diagram grew past BODY_PT (measured live: 15.57pt),
+    # while the same paragraph next to a table (an already-fixed block type)
+    # correctly stayed at BODY_PT. A diagram's size is fixed by its own
+    # solved layout, exactly like a table's is fixed by its row count.
+    from pptx import Presentation
+
+    from docloom.render.pptx import BODY_PT
+
+    diagram_doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            _small_diagram(),
+            Paragraph(text="short prose"),
+        ]),
+    ])
+    table_doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            TableBlock(header=["h"], rows=[["v"]]),
+            Paragraph(text="short prose"),
+        ]),
+    ])
+
+    def _prose_size(doc, name):
+        out = render(doc, "pptx", tmp_path / name)
+        slide = Presentation(str(out)).slides[0]
+        para = next(s for s in slide.shapes if s.has_text_frame and "short prose" in s.text_frame.text)
+        return para.text_frame.paragraphs[0].runs[0].font.size.pt
+
+    diagram_size = _prose_size(diagram_doc, "diag.pptx")
+    table_size = _prose_size(table_doc, "tbl2.pptx")
+    assert diagram_size == BODY_PT
+    assert diagram_size == table_size
+
+
+# ---------------------------------------------- finding A: dropped subtitle
+
+
+def test_pptx_content_slide_renders_subtitle(tmp_path):
+    # _content_slide was the only layout function that never read s.subtitle
+    # at all -- the subtitle was gone from the XML entirely, even though
+    # it is present in the IR.
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", subtitle="SUBCONTENTMARK detail line",
+              blocks=[Paragraph(text="body text")]),
+    ])
+    out = render(doc, "pptx", tmp_path / "content_sub.pptx")
+    text = _shapes_text(Presentation(str(out)).slides[0])
+    assert "SUBCONTENTMARK" in text
+
+
+def test_pptx_image_side_slide_renders_subtitle(tmp_path):
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="image_left", title="T2", subtitle="SUBIMGMARK caption line",
+              image=ImageBlock(path=_png(tmp_path / "pic.png")),
+              blocks=[Paragraph(text="body text")]),
+    ])
+    out = render(doc, "pptx", tmp_path / "imgside_sub.pptx")
+    text = _shapes_text(Presentation(str(out)).slides[0])
+    assert "SUBIMGMARK" in text
+
+
+def test_pptx_two_column_slide_renders_subtitle(tmp_path):
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="two_column", title="T2", subtitle="SUBCOLMARK detail line",
+              blocks=[Paragraph(text="left")], right=[Paragraph(text="right")]),
+    ])
+    out = render(doc, "pptx", tmp_path / "twocol_sub.pptx")
+    text = _shapes_text(Presentation(str(out)).slides[0])
+    assert "SUBCOLMARK" in text
+
+
+def test_pptx_hero_slide_without_image_gets_hero_treatment_not_content(tmp_path):
+    # Finding A, part 2: the dispatcher gated _hero_slide on
+    # _usable_image(s.image), so a hero slide with NO image never reached
+    # _hero_slide (which does handle subtitle correctly) and fell through to
+    # _content_slide instead -- rendering ~90% blank with the subtitle gone
+    # entirely (same defect class as finding 8's quote-slide bug). An
+    # imageless hero must still get the hero's own full-bleed treatment (a
+    # solid theme.primary backdrop), not the generic title-band layout.
+    from pptx import Presentation
+
+    theme = Theme()
+    doc = Document(title="T", slides=[
+        Slide(layout="hero", title="HEROMARK the ask", subtitle="SUBHEROMARK context"),
+    ])
+    out = render(doc, "pptx", tmp_path / "hero_no_img.pptx", theme=theme)
+    slide = Presentation(str(out)).slides[0]
+    text = _shapes_text(slide)
+    assert "HEROMARK" in text
+    assert "SUBHEROMARK" in text  # must not be dropped
+    bg = str(slide.background.fill.fore_color.rgb).upper()
+    assert bg == theme.primary.lstrip("#").upper()  # the hero's own full-bleed fill, not the page background
+
+
+def test_pptx_hero_slide_with_image_still_covers_the_slide(tmp_path):
+    # Regression guard: fixing the imageless case must not disturb the
+    # existing image-backed hero behavior.
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="hero", title="HEROIMGMARK", image=ImageBlock(path=_png(tmp_path / "bg.png", 800, 600))),
+    ])
+    out = render(doc, "pptx", tmp_path / "hero_img.pptx")
+    slide = Presentation(str(out)).slides[0]
+    pics = [s for s in slide.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
+    assert len(pics) == 1
+    assert "HEROIMGMARK" in _shapes_text(slide)
+
+
+# --------------------------------------- finding B: uncolored callout edges
+
+
+def test_pptx_warning_and_danger_callouts_are_not_gray_or_black(tmp_path):
+    # warning used to map to theme.muted (gray) and danger to theme.text
+    # (near-black) -- the two styles that most need to signal urgency
+    # signaled nothing at all.
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    from docloom import Callout
+
+    theme = Theme()
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            Callout(style="warning", text="warn"),
+            Callout(style="danger", text="danger"),
+        ]),
+    ])
+    out = render(doc, "pptx", tmp_path / "callouts.pptx", theme=theme)
+    slide = Presentation(str(out)).slides[0]
+    # the two colored edge bars are thin AUTO_SHAPE rectangles distinguishable
+    # from the wide theme.surface backing rect by their narrow width
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    edges = [
+        s for s in slide.shapes
+        if s.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE and s.width < Inches(0.2)
+    ]
+    edge_colors = {str(s.fill.fore_color.rgb).upper() for s in edges}
+    assert theme.muted.lstrip("#").upper() not in edge_colors
+    assert theme.text.lstrip("#").upper() not in edge_colors
+
+
+def test_pptx_callout_edge_color_derives_from_theme_accent(tmp_path):
+    from docloom.render.pptx import _callout_edge_color
+
+    theme = Theme(accent="#0E9F6E")
+    warning = _callout_edge_color("warning", theme)
+    danger = _callout_edge_color("danger", theme)
+    # distinct from each other, from the raw accent, and from the old
+    # gray/near-black mapping
+    assert len({warning, danger, theme.accent, theme.muted, theme.text}) == 5
+    # still hex colors within the theme's own tonal family (same saturation
+    # class as accent), not an unrelated hardcoded stoplight hex
+    assert warning.startswith("#") and danger.startswith("#")

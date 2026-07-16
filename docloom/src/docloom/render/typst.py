@@ -17,12 +17,13 @@ from __future__ import annotations
 import re
 import shutil
 import tempfile
+import warnings
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from PIL import Image as PILImage
 
-from . import chart_svg
+from . import chart_svg, diagram_svg
 from ..ir import (
     Artifact,
     Block,
@@ -30,6 +31,7 @@ from ..ir import (
     Callout,
     Chart,
     Code,
+    Diagram,
     Divider,
     Document,
     Formula,
@@ -203,6 +205,36 @@ def _table(b: Table, theme: Theme, numbers: dict[str, int]) -> list[str]:
     return lines
 
 
+def _diagram_theme(theme: Theme) -> dict:
+    """diagram_svg's paint/solve pipeline takes a plain dict overlay, not the
+    docloom Theme model (docs/diagram-plan.md section 3: "the docloom Theme
+    model is adapted by callers"). Every renderer that embeds a diagram
+    builds this same six-key adapter."""
+    return {
+        "primary": theme.primary,
+        "accent": theme.accent,
+        "surface": theme.surface,
+        "text": theme.text,
+        "muted": theme.muted,
+        "background": theme.background,
+    }
+
+
+def _diagram_placeholder(b: Diagram, theme: Theme) -> list[str]:
+    """A visible stand-in for a diagram that had nodes but failed to render
+    (matching docx's `[diagram: alt]` paragraph and markdown's `*[diagram:
+    alt]*` line): the block never just vanishes from the PDF."""
+    display = f"[diagram: {b.alt}]" if b.alt else "[diagram]"
+    lines = [
+        f'#align(center, block(fill: rgb("{theme.surface}"), inset: 14pt, '
+        f'radius: 4pt, width: 100%)[#text(fill: rgb("{theme.muted}"), '
+        f'style: "italic")[{_esc(display)}]])'
+    ]
+    if b.caption:
+        lines.append(_caption(b.caption, theme))
+    return lines
+
+
 def _callout_color(style: str, theme: Theme) -> str:
     return {
         "info": theme.primary,
@@ -269,6 +301,40 @@ def _block(b: Block, theme: Theme, numbers: dict[str, int]) -> list[str]:
             theme,
             numbers,
         )
+    if isinstance(b, Diagram):
+        # Diagrams have no pre-rendered path (coordinate-free IR): the SVG is
+        # generated fresh and embedded as bytes straight in the .typ source,
+        # exactly like Chart's no-path fallback above -- true vector, no
+        # rasterizer, and it works from standalone to_typst() output too
+        # (this module's own docstring promise), not just the compiled
+        # render() path that copies files into a temp dir. The diagram's own
+        # title is already painted inside the SVG by paint_svg, so unlike
+        # Chart, no separate #text(...) title line is added here.
+        #
+        # A diagram with no nodes at all is a deliberate empty slot and
+        # skipped silently, matching every other renderer's pathless-block
+        # convention. A diagram that HAD nodes but failed to render (solve()
+        # raises on anything lint would flag, e.g. a dangling edge) degrades
+        # to a visible placeholder plus a warning, never a silent drop
+        # (finding 14): this branch used to `return []` here with zero
+        # trace, unlike docx/markdown/pptx, which all show something.
+        if not b.nodes:
+            return []
+        try:
+            svg = diagram_svg.render_svg(b, _diagram_theme(theme))
+        except Exception:
+            svg = ""
+        if not svg:
+            warnings.warn(
+                f"typst: diagram {b.id!r} could not be rendered; "
+                "placeholder shown",
+                stacklevel=2,
+            )
+            return _diagram_placeholder(b, theme)
+        lines = [f'#image(bytes({_str(svg)}), format: "svg", width: 100%)']
+        if b.caption:
+            lines.append(_caption(b.caption, theme))
+        return lines
     if isinstance(b, StatRow):
         if not b.items:
             return []

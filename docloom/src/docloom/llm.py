@@ -14,14 +14,14 @@ from .ir import Document
 _VALID_TYPES = {
     "heading", "paragraph", "bullets", "numbered", "quote",
     "code", "table", "image", "callout", "divider",
-    "chart", "stats", "artifact",
+    "chart", "stats", "artifact", "diagram",
 }
 _TAG_TO_MODEL = {
     "heading": "Heading", "paragraph": "Paragraph", "bullets": "BulletList",
     "numbered": "NumberedList", "quote": "Quote", "code": "Code",
     "table": "Table", "image": "Image", "callout": "Callout",
     "divider": "Divider", "chart": "Chart", "stats": "StatRow",
-    "artifact": "Artifact",
+    "artifact": "Artifact", "diagram": "Diagram",
 }
 _MODEL_NAMES = set(_TAG_TO_MODEL.values())
 # tag variants observed from real (mostly local) models
@@ -36,7 +36,7 @@ _TYPE_ALIASES = {
     "kpi": "stats", "kpis": "stats", "metric": "stats", "metrics": "stats",
     "stat": "stats", "graph": "chart", "barchart": "chart",
     "linechart": "chart", "piechart": "chart", "chart_block": "chart",
-    "diagram": "artifact", "infographic": "artifact",
+    "infographic": "artifact",
 }
 
 
@@ -282,4 +282,8 @@ You write documents as docloom JSON (schema provided). Rules:
 - Images: emit an "image" block (or a slide `image` for hero/image_left/
   image_right layouts) with a short `query` describing the ideal picture.
   Never invent file paths.
+- Diagrams: use a "diagram" block for architecture/flow/system diagrams
+  (nodes, edges, optional groups). Never invent coordinates, positions,
+  or routing; the renderer lays it out. Keep it under about 14 nodes and
+  7 hops deep so it stays legible on a slide.
 """

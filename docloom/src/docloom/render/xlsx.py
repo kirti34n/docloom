@@ -110,6 +110,14 @@ def _sources_sheet(doc: Document) -> Sheet:
 
 
 def render(doc: Document, theme: Theme, out_path: Path) -> Path:
+    # Only Table and Chart blocks become sheets; every other report block
+    # (Image, Artifact, Diagram, ...) has no spreadsheet representation and
+    # is intentionally skipped here (a workbook has no cell for a picture).
+    # This includes the new Diagram block: like Image, it never appears in
+    # _tables_as_sheets/_charts_as_sheets, so a document that mixes diagrams
+    # with real tables/sheets still renders normally, just without the
+    # diagram; a document with only diagrams and no tables/sheets hits the
+    # "no sheets or tables" RenderError below, same as one with only images.
     sheets = list(doc.sheets) or _tables_as_sheets(doc) + _charts_as_sheets(doc)
     if not sheets:
         raise RenderError("document has no sheets or tables; add sheets[] to render xlsx")

@@ -8,10 +8,11 @@ import base64
 import html
 import mimetypes
 import re
+import warnings
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import chart_svg
+from . import chart_svg, diagram_svg
 from ..ir import (
     Artifact,
     Block,
@@ -20,6 +21,7 @@ from ..ir import (
     Cell,
     Chart,
     Code,
+    Diagram,
     Divider,
     Document,
     Formula,
@@ -80,6 +82,8 @@ figcaption{color:var(--muted);font-size:.85rem;margin-top:.35rem}
 hr{border:none;border-top:1px solid var(--surface);margin:2rem 0}
 .chart-title{font-weight:600;margin:1.25rem 0 .25rem}
 svg.docloom-chart{max-width:100%;height:auto;display:block;margin:0 auto}
+figure.diagram svg{max-width:100%;height:auto;display:block;margin:0 auto}
+.diagram-placeholder{background:var(--surface);color:var(--muted);font-style:italic;text-align:center;padding:2.5rem 1rem;border-radius:6px}
 .stats{display:flex;flex-wrap:wrap;gap:1rem;margin:1.25rem 0}
 .stat{flex:1 1 10rem;background:var(--surface);border-radius:6px;padding:.85rem 1.1rem}
 .stat .value{font-size:1.5rem;font-weight:700;color:var(--primary);line-height:1.2}
@@ -284,6 +288,63 @@ def _chart_html(b: Chart, numbers: dict[str, int], theme: Theme) -> str:
     return out + _table_html(header, rows, b.caption, numbers)
 
 
+def _diagram_theme(theme: Theme) -> dict:
+    """diagram_svg's paint/solve pipeline takes a plain dict overlay, not the
+    docloom Theme model (docs/diagram-plan.md section 3: "the docloom Theme
+    model is adapted by callers"). Every renderer that embeds a diagram
+    builds this same six-key adapter."""
+    return {
+        "primary": theme.primary,
+        "accent": theme.accent,
+        "surface": theme.surface,
+        "text": theme.text,
+        "muted": theme.muted,
+        "background": theme.background,
+    }
+
+
+def _diagram_placeholder_html(b: Diagram) -> str:
+    """A visible stand-in for a diagram that had nodes but failed to render
+    (matching docx's `[diagram: alt]` paragraph and markdown's `*[diagram:
+    alt]*` line): the block never just vanishes from the page."""
+    text = f"diagram: {b.alt}" if b.alt else "diagram"
+    attrs = ' role="img" aria-label="%s"' % _esc(b.alt) if b.alt else ""
+    out = f'<figure class="diagram"{attrs}><div class="diagram-placeholder">[{_esc(text)}]</div>'
+    if b.caption:
+        out += f"<figcaption>{_esc(b.caption)}</figcaption>"
+    return out + "</figure>"
+
+
+def _diagram_html(b: Diagram, theme: Theme) -> str:
+    """Diagrams have no pre-rendered file (coordinate-free IR): the painter's
+    SVG is inlined directly, vector and self-contained, same convention as
+    _chart_html. solve() raises on a diagram lint would reject (no nodes, a
+    dangling edge, ...); this renderer never assumes lint already ran. A
+    diagram with no nodes at all is a deliberate empty slot and skipped
+    silently, matching every other renderer's pathless-block convention; a
+    diagram that HAD nodes but failed to render degrades to a visible
+    placeholder plus a warning, never a silent drop (finding 14). The
+    diagram's own title is already painted inside the SVG by paint_svg, so
+    it is not duplicated here."""
+    if not b.nodes:
+        return ""
+    try:
+        svg = diagram_svg.render_svg(b, _diagram_theme(theme))
+    except Exception:
+        svg = ""
+    if not svg:
+        warnings.warn(
+            f"html: diagram {b.id!r} could not be rendered; placeholder shown",
+            stacklevel=2,
+        )
+        return _diagram_placeholder_html(b)
+    attrs = ' role="img" aria-label="%s"' % _esc(b.alt) if b.alt else ""
+    out = f"<figure class=\"diagram\"{attrs}>{svg}"
+    if b.caption:
+        out += f"<figcaption>{_esc(b.caption)}</figcaption>"
+    return out + "</figure>"
+
+
 def _stats_html(b: StatRow) -> str:
     if not b.items:
         return ""
@@ -323,6 +384,8 @@ def _block_html(b: Block, numbers: dict[str, int], theme: Theme) -> str:
         return _figure_html(b.path, b.alt, b.caption)
     if isinstance(b, Chart):
         return _chart_html(b, numbers, theme)
+    if isinstance(b, Diagram):
+        return _diagram_html(b, theme)
     if isinstance(b, StatRow):
         return _stats_html(b)
     if isinstance(b, Artifact):
