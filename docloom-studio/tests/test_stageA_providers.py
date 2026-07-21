@@ -49,7 +49,7 @@ _SAMPLE_SCHEMA = {
 
 def test_provider_config_defaults_max_tokens_and_thinking():
     cfg = ProviderConfig()
-    assert cfg.max_tokens == 16384
+    assert cfg.max_tokens == 32768
     assert cfg.thinking == "auto"
 
 

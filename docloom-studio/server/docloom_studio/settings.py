@@ -28,7 +28,7 @@ DEFAULTS: dict[str, Any] = {
         "base_url": "http://localhost:11434",
         "api_key": "",
         "model": "qwen3.5:9b",
-        "max_tokens": 16384,  # raised from 8192 so large docs/sections don't truncate
+        "max_tokens": 32768,  # generous headroom so large docs/sections don't truncate
     },
     "provider.embeddings": {
         "kind": "ollama",

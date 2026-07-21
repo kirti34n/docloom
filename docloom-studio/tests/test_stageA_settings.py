@@ -22,15 +22,15 @@ def _db():
     execute("DELETE FROM settings")
 
 
-def test_defaults_declare_the_16384_token_cap():
-    assert DEFAULTS["provider.generation"]["max_tokens"] == 16384
+def test_defaults_declare_the_generous_token_cap():
+    assert DEFAULTS["provider.generation"]["max_tokens"] == 32768
 
 
 def test_get_setting_default_round_trips_into_provider_config():
     # No row saved yet: get_setting falls back to DEFAULTS, which now carries
     # max_tokens, and ProviderConfig must accept and keep it.
     cfg = ProviderConfig(**get_setting("provider.generation"))
-    assert cfg.max_tokens == 16384
+    assert cfg.max_tokens == 32768
 
 
 def test_old_saved_config_without_max_tokens_still_gets_the_default():
@@ -44,4 +44,4 @@ def test_old_saved_config_without_max_tokens_still_gets_the_default():
     assert "max_tokens" not in stored  # confirms this exercises the back-compat path, not DEFAULTS
 
     cfg = ProviderConfig(**stored)
-    assert cfg.max_tokens == 16384
+    assert cfg.max_tokens == 32768

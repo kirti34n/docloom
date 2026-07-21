@@ -45,11 +45,13 @@ from pydantic import BaseModel
 T = TypeVar("T")
 
 TIMEOUT = httpx.Timeout(600.0, connect=10.0)
-DEFAULT_MAX_TOKENS = 16384  # anthropic requires an explicit cap; also complete()'s
-# default. Raised from 8192: a dense slide/section or a large document's outline
-# was truncating (Gemini raises TruncatedOutput, others silently cut off). 16384
-# is safe across every provider's model ceiling; the per-PC config can go higher
-# (gemini-2.5-flash allows 65536 output tokens) via the provider.generation setting.
+DEFAULT_MAX_TOKENS = 32768  # anthropic requires an explicit cap; also complete()'s
+# default. Raised 8192 -> 16384 -> 32768: a dense slide/section or a large
+# document's outline was truncating (Gemini raises TruncatedOutput, others
+# silently cut off), so we want generous headroom. 32768 stays within every
+# current provider's output ceiling (Gemini 2.5, GPT-5.x, Claude 4.5/5 all
+# allow >= 32k); a Gemini-only PC can push the per-PC provider.generation
+# setting all the way to gemini-2.5's 65536 output-token max.
 
 
 class ProviderConfig(BaseModel):

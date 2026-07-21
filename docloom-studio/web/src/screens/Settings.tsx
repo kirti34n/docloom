@@ -299,13 +299,13 @@ export function Settings() {
                 type="number"
                 min={1}
                 step={1}
-                value={settings['provider.generation'].max_tokens ?? 8192}
+                value={settings['provider.generation'].max_tokens ?? 32768}
                 onChange={(e) => {
                   const v = e.target.valueAsNumber
                   // ProviderConfig.max_tokens is a pydantic int; coerce to a
                   // positive whole number so a fractional/blank entry cannot
                   // crash every generation call server-side
-                  setGen({ max_tokens: Number.isNaN(v) ? 8192 : Math.max(1, Math.floor(v)) })
+                  setGen({ max_tokens: Number.isNaN(v) ? 32768 : Math.max(1, Math.floor(v)) })
                 }}
                 className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink"
               />
