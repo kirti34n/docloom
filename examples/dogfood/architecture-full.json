@@ -1,0 +1,224 @@
+{
+ "type": "diagram",
+ "title": "docloom architecture (full)",
+ "direction": "LR",
+ "groups": [
+  {
+   "id": "studio",
+   "label": "docloom studio",
+   "kind": "region"
+  },
+  {
+   "id": "engine",
+   "label": "docloom engine",
+   "kind": "region"
+  }
+ ],
+ "nodes": [
+  {
+   "id": "user",
+   "label": "You",
+   "type": "client"
+  },
+  {
+   "id": "provider",
+   "label": "LLM Provider",
+   "sublabel": "Gemini/Claude/Ollama",
+   "type": "external"
+  },
+  {
+   "id": "auth",
+   "label": "Auth & Workspaces",
+   "sublabel": "per-tenant",
+   "type": "security",
+   "group": "studio"
+  },
+  {
+   "id": "sources",
+   "label": "Sources",
+   "sublabel": "files, URLs",
+   "type": "store",
+   "group": "studio"
+  },
+  {
+   "id": "ingest",
+   "label": "Ingest",
+   "sublabel": "chunk",
+   "type": "service",
+   "group": "studio"
+  },
+  {
+   "id": "embed",
+   "label": "Embeddings",
+   "sublabel": "local .npy",
+   "type": "store",
+   "group": "studio"
+  },
+  {
+   "id": "retrieval",
+   "label": "Retrieval",
+   "sublabel": "rank",
+   "type": "service",
+   "group": "studio"
+  },
+  {
+   "id": "chat",
+   "label": "Chat & Research",
+   "sublabel": "grounded",
+   "type": "service",
+   "group": "studio"
+  },
+  {
+   "id": "jobs",
+   "label": "Jobs & SSE",
+   "sublabel": "async",
+   "type": "queue",
+   "group": "studio"
+  },
+  {
+   "id": "generation",
+   "label": "Generation",
+   "sublabel": "cited",
+   "type": "service",
+   "group": "studio"
+  },
+  {
+   "id": "assets",
+   "label": "Assets & Brand",
+   "sublabel": "logo, fonts",
+   "type": "store",
+   "group": "studio"
+  },
+  {
+   "id": "artifacts",
+   "label": "Artifacts",
+   "sublabel": "versioned",
+   "type": "store",
+   "group": "studio"
+  },
+  {
+   "id": "ir",
+   "label": "Document IR",
+   "sublabel": "validated",
+   "type": "service",
+   "group": "engine"
+  },
+  {
+   "id": "lint",
+   "label": "Linter",
+   "type": "security",
+   "group": "engine"
+  },
+  {
+   "id": "solver",
+   "label": "Diagram Solver",
+   "sublabel": "coordinate-free",
+   "type": "service",
+   "group": "engine"
+  },
+  {
+   "id": "render",
+   "label": "Renderers",
+   "sublabel": "deterministic",
+   "type": "service",
+   "group": "engine"
+  },
+  {
+   "id": "formats",
+   "label": "6 Formats",
+   "sublabel": "PPTX DOCX XLSX PDF HTML MD",
+   "type": "store"
+  }
+ ],
+ "edges": [
+  {
+   "source": "user",
+   "target": "auth",
+   "label": "login"
+  },
+  {
+   "source": "auth",
+   "target": "sources"
+  },
+  {
+   "source": "sources",
+   "target": "ingest"
+  },
+  {
+   "source": "ingest",
+   "target": "embed",
+   "label": "embed"
+  },
+  {
+   "source": "user",
+   "target": "chat",
+   "label": "ask"
+  },
+  {
+   "source": "chat",
+   "target": "retrieval"
+  },
+  {
+   "source": "retrieval",
+   "target": "embed",
+   "label": "query",
+   "style": "dashed"
+  },
+  {
+   "source": "retrieval",
+   "target": "generation",
+   "label": "evidence"
+  },
+  {
+   "source": "jobs",
+   "target": "generation",
+   "label": "runs",
+   "style": "dashed"
+  },
+  {
+   "source": "assets",
+   "target": "generation",
+   "label": "brand"
+  },
+  {
+   "source": "provider",
+   "target": "generation",
+   "label": "LLM",
+   "style": "dashed"
+  },
+  {
+   "source": "generation",
+   "target": "ir",
+   "label": "emits"
+  },
+  {
+   "source": "ir",
+   "target": "lint"
+  },
+  {
+   "source": "ir",
+   "target": "solver",
+   "label": "diagrams"
+  },
+  {
+   "source": "lint",
+   "target": "render",
+   "label": "clean"
+  },
+  {
+   "source": "solver",
+   "target": "render"
+  },
+  {
+   "source": "render",
+   "target": "artifacts",
+   "label": "save"
+  },
+  {
+   "source": "render",
+   "target": "formats",
+   "style": "emphasis"
+  }
+ ],
+ "caption": "The full studio + engine architecture: auth, retrieval, jobs, generation, versioned artifacts, and deterministic rendering."
+}

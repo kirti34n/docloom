@@ -1,0 +1,289 @@
+{
+ "title": "docloom: LLM Output to Finished Documents",
+ "subtitle": "Two systems. Six formats. Zero compromises.",
+ "authors": [
+  "docloom engine v0.2.0"
+ ],
+ "date": "2026-07-21",
+ "sources": [],
+ "slides": [
+  {
+   "layout": "hero",
+   "title": "LLM structured output becomes finished documents",
+   "subtitle": "docloom: engine + studio",
+   "blocks": [
+    {
+     "type": "stats",
+     "items": [
+      {
+       "label": "Output formats",
+       "value": "6"
+      },
+      {
+       "label": "Block types",
+       "value": "14"
+      },
+      {
+       "label": "Tests passing",
+       "value": "993"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "layout": "section",
+   "title": "The engine: validated IR → deterministic renderers",
+   "subtitle": "LLM emits JSON. Renderers consume it. Files ship guaranteed."
+  },
+  {
+   "layout": "content",
+   "title": "Render to six formats with one IR",
+   "blocks": [
+    {
+     "type": "stats",
+     "items": [
+      {
+       "label": "PPTX",
+       "value": "PowerPoint",
+       "delta": "native editable charts"
+      },
+      {
+       "label": "DOCX",
+       "value": "Word",
+       "delta": "hardened tables"
+      },
+      {
+       "label": "XLSX",
+       "value": "Excel",
+       "delta": "formulas & typed cells"
+      },
+      {
+       "label": "PDF",
+       "value": "Typst",
+       "delta": "in-process compile"
+      },
+      {
+       "label": "HTML & MD",
+       "value": "Web + Text",
+       "delta": "portable export"
+      }
+     ]
+    },
+    {
+     "type": "callout",
+     "style": "success",
+     "text": "Deterministic. No randomness. Byte-reproducible."
+    }
+   ]
+  },
+  {
+   "layout": "content",
+   "title": "Use 14 block types across three document kinds",
+   "blocks": [
+    {
+     "type": "stats",
+     "items": [
+      {
+       "label": "Reports",
+       "value": "DOCX / PDF / HTML / MD"
+      },
+      {
+       "label": "Decks",
+       "value": "PPTX"
+      },
+      {
+       "label": "Workbooks",
+       "value": "XLSX"
+      },
+      {
+       "label": "Block types",
+       "value": "14 total"
+      },
+      {
+       "label": "Layouts",
+       "value": "8 slide modes"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "layout": "content",
+   "title": "Lint before render, then loop findings back",
+   "blocks": [
+    {
+     "type": "stats",
+     "items": [
+      {
+       "label": "Deck overflow",
+       "value": "character & physical"
+      },
+      {
+       "label": "Slide bullets",
+       "value": "max 7, ≤130 chars"
+      },
+      {
+       "label": "Titles",
+       "value": "max 60 chars"
+      },
+      {
+       "label": "Contrast",
+       "value": "WCAG 2.x AA 4.5:1"
+      },
+      {
+       "label": "Citations",
+       "value": "every fact sourced"
+      }
+     ]
+    },
+    {
+     "type": "callout",
+     "style": "info",
+     "text": "Only error-severity findings block render. Warnings surface quality signals for self-correction."
+    }
+   ]
+  },
+  {
+   "layout": "section",
+   "title": "The studio: local-first AI document generation",
+   "subtitle": "NotebookLM crossed with Gamma. Runs offline. Fully open."
+  },
+  {
+   "layout": "content",
+   "title": "Generate six artifact kinds from one notebook",
+   "blocks": [
+    {
+     "type": "stats",
+     "items": [
+      {
+       "label": "Decks",
+       "value": "PPTX"
+      },
+      {
+       "label": "Documents",
+       "value": "DOCX/PDF/HTML/MD"
+      },
+      {
+       "label": "Spreadsheets",
+       "value": "XLSX"
+      },
+      {
+       "label": "Diagrams",
+       "value": "D2 + SVG"
+      },
+      {
+       "label": "Podcast",
+       "value": "WAV audio"
+      }
+     ]
+    },
+    {
+     "type": "paragraph",
+     "text": "All offline, fully local-first, no third-party account required."
+    }
+   ]
+  },
+  {
+   "layout": "content",
+   "title": "Grounded retrieval and ranked synthesis",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "Hybrid dense + lexical retrieval: every answer cites where it came from."
+    },
+    {
+     "type": "stats",
+     "items": [
+      {
+       "label": "Dense similarity",
+       "value": "cosine over embeddings"
+      },
+      {
+       "label": "Lexical rank",
+       "value": "BM25"
+      },
+      {
+       "label": "Fusion",
+       "value": "Reciprocal Rank Fusion (k=60)"
+      },
+      {
+       "label": "Evidence per answer",
+       "value": "12 chunks"
+      },
+      {
+       "label": "Chat history",
+       "value": "6 prior turns"
+      }
+     ]
+    },
+    {
+     "type": "callout",
+     "style": "success",
+     "text": "Citations flow into the IR. No hallucinated sources. No unknown citations."
+    }
+   ]
+  },
+  {
+   "layout": "content",
+   "title": "Achieve quality through rigorous testing and safeguards",
+   "blocks": [
+    {
+     "type": "stats",
+     "items": [
+      {
+       "label": "Engine tests",
+       "value": "658"
+      },
+      {
+       "label": "Studio tests",
+       "value": "301"
+      },
+      {
+       "label": "QA suites",
+       "value": "34"
+      },
+      {
+       "label": "Upload limit",
+       "value": "50 MB"
+      },
+      {
+       "label": "Encryption",
+       "value": "Fernet at rest"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "layout": "content",
+   "title": "Principles: why we built it this way",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "Five commitments baked into the architecture:"
+    },
+    {
+     "type": "bullets",
+     "items": [
+      {
+       "text": "Validated IR, not code: LLM output is always a schema, never executable"
+      },
+      {
+       "text": "Deterministic renderers: same IR + theme = same file, byte-for-byte"
+      },
+      {
+       "text": "Lint before render: findings loop back, enabling self-correction"
+      },
+      {
+       "text": "Nothing lost, nothing unreadable: labels never truncate, text always legible"
+      },
+      {
+       "text": "Local-first, multi-tenant-safe: offline, encrypted, owned sessions"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

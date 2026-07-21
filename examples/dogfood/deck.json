@@ -1,0 +1,499 @@
+{
+ "title": "docloom: LLM to Documents, Instantly",
+ "subtitle": "Validated IR, Deterministic Renderers, 6 Output Formats",
+ "authors": [
+  "docloom project"
+ ],
+ "date": "2026-07-21",
+ "slides": [
+  {
+   "layout": "title",
+   "title": "docloom: LLM to Documents, Instantly",
+   "subtitle": "Validated IR + Deterministic Renderers = 6 Native Formats",
+   "notes": "Welcome to docloom. This deck is authored using docloom itselfâ€”a dogfood test. We're going to walk through the problem we solve, the architecture, and how you can use it today."
+  },
+  {
+   "layout": "content",
+   "title": "From Raw LLM Output to Production Files",
+   "blocks": [
+    {
+     "type": "bullets",
+     "items": [
+      {
+       "text": "LLM outputs are unstructured and unpredictable"
+      },
+      {
+       "text": "Manual formatting is error-prone and time-consuming"
+      },
+      {
+       "text": "Renderers need consistent, validated input"
+      },
+      {
+       "text": "Quality checks should happen before any file is written"
+      },
+      {
+       "text": "Users need native, editable formatsâ€”not rasterized images"
+      }
+     ]
+    }
+   ],
+   "notes": "The problem: LLMs are good at generating text, but not at producing structured output that renders correctly every time. We needed a bridge."
+  },
+  {
+   "layout": "content",
+   "title": "Validated IR, Deterministic Renderers",
+   "blocks": [
+    {
+     "type": "bullets",
+     "items": [
+      {
+       "text": "LLM emits schema-validated JSON (Pydantic IR)"
+      },
+      {
+       "text": "Deterministic linter checks layout, citations, contrast"
+      },
+      {
+       "text": "Findings loop back to model for self-correction"
+      },
+      {
+       "text": "Deterministic renderers: same IR = same output, always"
+      }
+     ]
+    },
+    {
+     "type": "callout",
+     "style": "info",
+     "text": "The IR is deliberately non-recursive with plain tagged unionsâ€”shaped to survive real LLM structured-output constraints."
+    }
+   ],
+   "notes": "The core insight: put quality gates in the right place. Validate early, let the linter help the model correct itself, then render deterministically."
+  },
+  {
+   "layout": "content",
+   "title": "Data Flow: From Raw Sources to Rendered Output",
+   "blocks": [
+    {
+     "type": "diagram",
+     "title": "docloom architecture: sources to finished documents",
+     "direction": "LR",
+     "groups": [
+      {
+       "id": "studio",
+       "label": "docloom studio",
+       "kind": "region"
+      },
+      {
+       "id": "engine",
+       "label": "docloom engine",
+       "kind": "region"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "user",
+       "label": "You",
+       "sublabel": "notebook, chat, generate",
+       "type": "client"
+      },
+      {
+       "id": "sources",
+       "label": "Sources",
+       "sublabel": "files, URLs, research",
+       "type": "store",
+       "group": "studio"
+      },
+      {
+       "id": "ingest",
+       "label": "Ingest & Embed",
+       "sublabel": "chunk, vectorize",
+       "type": "service",
+       "group": "studio"
+      },
+      {
+       "id": "vectors",
+       "label": "Vector Store",
+       "sublabel": "local .npy",
+       "type": "store",
+       "group": "studio"
+      },
+      {
+       "id": "retrieval",
+       "label": "Retrieval",
+       "sublabel": "rank relevant chunks",
+       "type": "service",
+       "group": "studio"
+      },
+      {
+       "id": "generation",
+       "label": "Grounded Generation",
+       "sublabel": "cited, via Gemini/Claude/Ollama",
+       "type": "service",
+       "group": "studio"
+      },
+      {
+       "id": "ir",
+       "label": "Document IR",
+       "sublabel": "schema-validated",
+       "type": "service",
+       "group": "engine"
+      },
+      {
+       "id": "lint",
+       "label": "Linter",
+       "sublabel": "layout & citations",
+       "type": "security",
+       "group": "engine"
+      },
+      {
+       "id": "render",
+       "label": "Renderers",
+       "sublabel": "deterministic",
+       "type": "service",
+       "group": "engine"
+      },
+      {
+       "id": "formats",
+       "label": "6 Formats",
+       "sublabel": "PPTX DOCX XLSX PDF HTML MD",
+       "type": "store"
+      }
+     ],
+     "edges": [
+      {
+       "source": "user",
+       "target": "sources",
+       "label": "add"
+      },
+      {
+       "source": "sources",
+       "target": "ingest"
+      },
+      {
+       "source": "ingest",
+       "target": "vectors",
+       "label": "embed"
+      },
+      {
+       "source": "vectors",
+       "target": "retrieval"
+      },
+      {
+       "source": "retrieval",
+       "target": "generation",
+       "label": "evidence"
+      },
+      {
+       "source": "generation",
+       "target": "ir",
+       "label": "emits"
+      },
+      {
+       "source": "ir",
+       "target": "lint"
+      },
+      {
+       "source": "lint",
+       "target": "render",
+       "label": "clean"
+      },
+      {
+       "source": "render",
+       "target": "formats",
+       "style": "emphasis"
+      }
+     ],
+     "caption": "The model emits validated structure; deterministic renderers produce every format."
+    },
+    {
+     "type": "bullets",
+     "items": [
+      {
+       "text": "Sources are chunked, embedded, and ranked, so only the most relevant evidence reaches the model",
+       "level": 0
+      },
+      {
+       "text": "The model emits validated IR, never files; the linter checks layout and citations before any render",
+       "level": 0
+      },
+      {
+       "text": "Deterministic renderers turn one IR into all six formats with no lossy conversion",
+       "level": 0
+      }
+     ]
+    }
+   ],
+   "notes": "The data flow: sources come in, get ingested and embedded, retrieval feeds grounded generation, the IR is validated, linted, and rendered. No hand-placed coordinatesâ€”the renderer owns the layout."
+  },
+  {
+   "layout": "content",
+   "title": "Count What Matters: 14 Block Types, 6 Formats, 658+ Tests",
+   "blocks": [
+    {
+     "type": "stats",
+     "items": [
+      {
+       "label": "Block Types",
+       "value": "14"
+      },
+      {
+       "label": "Output Formats",
+       "value": "6"
+      },
+      {
+       "label": "Slide Layouts",
+       "value": "8"
+      },
+      {
+       "label": "Diagram Node Types",
+       "value": "7"
+      },
+      {
+       "label": "Tests (Passing)",
+       "value": "658+"
+      }
+     ]
+    }
+   ],
+   "notes": "Scale and scope: 14 block types cover everything from paragraphs to native charts to coordinate-free diagrams. 658 passing tests keep it all working."
+  },
+  {
+   "layout": "content",
+   "title": "Generate Six Native Formats from One IR",
+   "blocks": [
+    {
+     "type": "bullets",
+     "items": [
+      {
+       "text": "PPTX: native editable charts, autofit text, native shapes"
+      },
+      {
+       "text": "DOCX: hardened tables, repeating headers, fixed column widths"
+      },
+      {
+       "text": "XLSX: typed cells, formulas, number formats"
+      },
+      {
+       "text": "PDF: Typst compiled in-process, no LaTeX needed"
+      },
+      {
+       "text": "HTML: semantic markup with WCAG 2.x contrast"
+      },
+      {
+       "text": "Markdown: clean, readable prose"
+      }
+     ]
+    }
+   ],
+   "notes": "Same IR, six completely different renderers. Each owns its own coordinates and styling. Charts in PPTX are native editable objects, not rasterized images."
+  },
+  {
+   "layout": "two_column",
+   "title": "Turn Source Data into Grounded Artifacts",
+   "blocks": [
+    {
+     "type": "heading",
+     "level": 3,
+     "text": "Add Sources"
+    },
+    {
+     "type": "bullets",
+     "items": [
+      {
+       "text": "Upload file, URL, or paste text"
+      },
+      {
+       "text": "Free web research agent included"
+      },
+      {
+       "text": "Hybrid BM25 + dense retrieval"
+      },
+      {
+       "text": "Automatic chunking at 1000 chars"
+      }
+     ]
+    }
+   ],
+   "right": [
+    {
+     "type": "heading",
+     "level": 3,
+     "text": "Generate Artifacts"
+    },
+    {
+     "type": "bullets",
+     "items": [
+      {
+       "text": "Chat with grounded, cited answers"
+      },
+      {
+       "text": "5 one-click guides (briefing, FAQ, timeline)"
+      },
+      {
+       "text": "6 artifact kinds: deck, doc, sheet, diagram, infographic, podcast"
+      }
+     ]
+    }
+   ],
+   "notes": "The studio brings it all together: import sources, chat with them, generate artifacts. Everything works offline with a local model."
+  },
+  {
+   "layout": "content",
+   "title": "Keep Text Legible at Any Scale",
+   "blocks": [
+    {
+     "type": "bullets",
+     "items": [
+      {
+       "text": "Measured autofit: real text extents via FreeType against actual fonts"
+      },
+      {
+       "text": "WCAG 2.x contrast ratio checking: 4.5:1 for normal text"
+      },
+      {
+       "text": "Diagram legibility: labels never truncated, step down detail instead"
+      },
+      {
+       "text": "Table hardening: fixed widths, repeating headers, split prevention"
+      },
+      {
+       "text": "Geometric QA: off-slide detection, overlap checks, font sprawl"
+      }
+     ]
+    },
+    {
+     "type": "callout",
+     "style": "success",
+     "text": "Design principle: lint before render. Only error severity blocks a render; warnings help improve."
+    }
+   ],
+   "notes": "Quality is not an afterthought. Every diagram label is tested for legibility. PPTX text is actually measured, not guessed."
+  },
+  {
+   "layout": "content",
+   "title": "Local-First, Offline-Ready, Multi-Tenant-Safe",
+   "blocks": [
+    {
+     "type": "bullets",
+     "items": [
+      {
+       "text": "Runs fully offline against a local model (ollama, llama.cpp, etc.)"
+      },
+      {
+       "text": "SQLite default, Postgres for scale"
+      },
+      {
+       "text": "Session tokens stored only as SHA-256 hashes"
+      },
+      {
+       "text": "Cross-tenant access returns 404, not 403"
+      },
+      {
+       "text": "Secrets encrypted at rest with Fernet"
+      }
+     ]
+    }
+   ],
+   "notes": "The studio is designed for privacy and safety. You own your data. There's no third-party account required, no API keys sent to the cloud unless you choose."
+  },
+  {
+   "layout": "content",
+   "title": "One Command to Launch",
+   "blocks": [
+    {
+     "type": "heading",
+     "level": 3,
+     "text": "Windows (PowerShell)"
+    },
+    {
+     "type": "code",
+     "code": "studio.ps1",
+     "language": "powershell"
+    },
+    {
+     "type": "heading",
+     "level": 3,
+     "text": "macOS / Linux / Git Bash"
+    },
+    {
+     "type": "code",
+     "code": "studio.sh",
+     "language": "bash"
+    },
+    {
+     "type": "bullets",
+     "items": [
+      {
+       "text": "Installs dependencies, builds frontend, opens browser"
+      },
+      {
+       "text": "Default: http://127.0.0.1:8899"
+      },
+      {
+       "text": "Prerequisites: uv, Node 22+, npm"
+      }
+     ]
+    }
+   ],
+   "notes": "Getting started is simple. One launcher script handles everything. The first visit registers a local account; everything stays in your data directory."
+  },
+  {
+   "layout": "content",
+   "title": "Set Up Providers, Storage, and Secrets",
+   "blocks": [
+    {
+     "type": "bullets",
+     "items": [
+      {
+       "text": "Generation: ollama, llama-server, lmstudio, openai, anthropic, gemini"
+      },
+      {
+       "text": "Storage: SQLite (default) or Postgres via DOCLOOM_DB_URL"
+      },
+      {
+       "text": "Secrets: Fernet encryption, masked in API responses"
+      },
+      {
+       "text": "Optional extras: [pdf,diagrams] for engine; [podcast,ingest] for studio"
+      },
+      {
+       "text": "Settings resolve: per-user â†’ global â†’ built-in defaults"
+      }
+     ]
+    }
+   ],
+   "notes": "Fully configurable. Switch providers in the UI without restarting. Add Postgres for multi-node deployments. All secrets are encrypted at rest."
+  },
+  {
+   "layout": "content",
+   "title": "Design Principles: Built for Reliability",
+   "blocks": [
+    {
+     "type": "bullets",
+     "items": [
+      {
+       "text": "Validated IR, not code: LLM output is data, never executable"
+      },
+      {
+       "text": "Deterministic renderers: same input = same output, always"
+      },
+      {
+       "text": "Lint before render: findings can loop back to model"
+      },
+      {
+       "text": "Nothing authored is lost: labels step down, never truncate"
+      },
+      {
+       "text": "Graceful degradation: optional deps improve output, never crash"
+      }
+     ]
+    }
+   ],
+   "notes": "These principles drive every architectural decision. Schema validation prevents entire classes of bugs. Determinism means you can regenerate anytime and get the same file."
+  },
+  {
+   "layout": "section",
+   "title": "Open Source, Local-First, Production-Ready",
+   "subtitle": "MIT License â€¢ Python 0.2.0 â€¢ 658+ Tests â€¢ Full-Stack SPA"
+  }
+ ]
+}

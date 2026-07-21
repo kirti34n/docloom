@@ -1,10 +1,26 @@
 # Docloom diagram work: final report
 
-## The honest state, up front
+## Status as of 2026-07-20: resolved except one open decision
+
+This report originally shipped with 16 findings and a red test suite. Re-verified against HEAD on
+branch `diagrams-2026-07-16`: **all 16 findings below are fixed**, and the full docloom suite is
+green. Test counts drift with every commit, so don't trust a number frozen in prose — run it
+yourself: `cd docloom && ./.venv/Scripts/python.exe -m pytest -q`. The original findings are kept
+below, unedited, as a record of what was wrong and why; treat every one of them as **FIXED AT
+HEAD**, not as open work. Do not re-do this work.
+
+**The one thing that is still genuinely open** is the "open decision" section near the end: the
+`docloom-studio` diagram editor still generates D2 source and renders it client-side in the
+browser, entirely separate from the `Diagram` IR this report is about. That decision was
+explicitly left to the repo owner and, as of this writing, has not been made — `docloom-studio`
+has not been re-pointed at the `Diagram` IR. If you are looking for remaining diagram work, that
+unification is it; everything else in this document is closed.
+
+## The honest state, at the time this was written
 
 The diagram feature is real and it is good below the LLM layer. It is disconnected at the LLM layer, and it is not presentable at the PPTX layer for diagrams above roughly 6 nodes. Everything in this report that says "verified" was checked by someone other than the person who wrote the code: a functional verifier who ran the pipeline end to end, a UX verifier who authored a 14-slide board deck and looked at every rendered pixel, and an adversarial reviewer who ran repros rather than reading. Where an implementer said "done" and a verifier disagreed, the verifier wins and I have reported it as not done.
 
-Test suite as it stands: **3 failed, 416 passed, 5 skipped**. Two failures are the pre-existing typst-package-absent ones. The third is new and ships red. Details below.
+Test suite at the time: **3 failed, 416 passed, 5 skipped**. Two failures were the pre-existing typst-package-absent ones. The third was new and shipped red. All three are fixed now (see status above). Details below, kept as history.
 
 ## What actually works, verified independently
 
@@ -34,7 +50,7 @@ You asked for archify alongside a draw.io MCP to produce an architecture diagram
 
 **What you actually want from draw.io is its file format, not its editor.** The thing that makes draw.io valuable to you is that you can open a file, drag a box, and it is your diagram now. That is the `.mxfile` XML format. It is documented, it is stable, and it is plain XML. So we emit it directly. `render/drawio.py` is stdlib only, zero dependencies, and produces files that validate against jgraph's own XSD. Run `docloom render deck.json -f pptx --diagram-sources` and you get `deck.diagrams/arch.drawio` next to your deck. Open it at app.diagrams.net or in the desktop app, and every node is a real shape, every group is a real collapsible container, every edge carries our routed waypoints. Edit it freely. You got the editability you asked for, without the protocol, the server, or the dependency.
 
-**Archify's value was its vocabulary, not its code.** We evaluated it seriously (`docs/archify-evaluation.md`). Its renderer has no auto layout, no export formats, and no theming, so adopting the code would have meant inheriting three problems we would immediately have to solve ourselves. What archify genuinely has is a good visual language: the node taxonomy (service, client, store, queue, security, cloud, external), the grouping semantics for regions and security boundaries, the reading conventions that make an architecture diagram scan quickly. We took that vocabulary into the IR and the painter and wrote our own solver. That is the part that was worth having.
+**Archify's value was its vocabulary, not its code.** We evaluated it seriously. Its renderer has no auto layout, no export formats, and no theming, so adopting the code would have meant inheriting three problems we would immediately have to solve ourselves. What archify genuinely has is a good visual language: the node taxonomy (service, client, store, queue, security, cloud, external), the grouping semantics for regions and security boundaries, the reading conventions that make an architecture diagram scan quickly. We took that vocabulary into the IR and the painter and wrote our own solver. That is the part that was worth having.
 
 **So the answer to "archify alongside draw.io MCP" is: we took archify's ideas and draw.io's file format, and skipped both codebases.** That is a smaller, faster, dependency-free system that does what you wanted. I want to be clear this was a deliberate deviation from your instruction, not an oversight.
 
@@ -60,9 +76,11 @@ The good news is specific: the prose slides, the table slide, the chart slide, t
 
 The bad news is also specific: **every failing slide is either a diagram slide or the quote slide.** The diagram slides fail for three reasons that all live in the same code path, and I have listed them below.
 
-## What is broken
+## What was broken (all 16 findings below verified FIXED at HEAD, 2026-07-20)
 
-Ranked by how much it costs you.
+Ranked by how much it costs you, at the time this was written. Re-verified against HEAD: every
+finding 1 through 16, including the lower-severity items bundled into 16, is fixed. Kept verbatim
+below as the record of what the bug was and how it was found.
 
 **1. `llm.py` silently destroys every LLM-authored diagram. The feature is dead on the production path.**
 
@@ -141,6 +159,8 @@ The fix is to retire D2 from the diagram path and re-point `DiagramEditor` at th
 I did not make that call. It changes the studio's shape and it is yours to make.
 
 ## What I would do next, in order
+
+**All six items below are done.** Kept as the historical to-do list; do not re-apply any of them.
 
 1. Fix `llm.py` (four lines plus an AUTHORING_GUIDE bullet). Without this the feature does not exist for LLM users.
 2. One pass over `diagram_pptx.py`'s raster branch: reserve caption height before `k`, set `descr` from `Diagram.alt`, warn when the font floor trips. Closes three blockers.

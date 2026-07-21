@@ -83,24 +83,63 @@ The schema is non-recursive and uses plain tagged unions, so it validates under 
 | :---: | :---: |
 | ![infographic](docs/assets/infographic.png) | ![diagram](docs/assets/diagram.png) |
 
+**See the real output — docloom explaining itself.** [`examples/dogfood/`](examples/dogfood/)
+holds a full set of documents (a deck, a 95-block whitepaper in four formats, an infographic, a
+spreadsheet, and two architecture diagrams) that docloom generated from its own
+[`PROJECT.md`](PROJECT.md): a model authored the validated IR, and these deterministic renderers
+produced the files in [`examples/dogfood/output/`](examples/dogfood/output/). The complex
+architecture diagram is laid out by the optional Graphviz-`dot` backend (`pip install "docloom[dotlayout]"`),
+which keeps branching graphs compact; the `.drawio` exports open editable in draw.io.
+
 ## docloom studio
 
-docloom studio is a free, local-first app built on the engine. You add sources to a notebook, ask questions that are answered with citations, and generate editable decks, documents, spreadsheets, diagrams, and infographics that export through docloom.
+docloom studio is a free, local-first app built on the engine. You add sources to a notebook, ask questions that are answered with citations, and generate six kinds of artifact: editable decks, documents, spreadsheets, diagrams, infographics, and two-host podcast audio overviews. The first five export through docloom to real PPTX/DOCX/XLSX/PDF/HTML/MD; podcast audio is synthesized straight to `.wav` and never touches docloom's renderers.
 
 ![studio](docs/assets/guides.png)
 
 - Notebooks with your uploaded sources or agent web research
 - Retrieval-grounded chat that cites its sources
 - One-click guides: study guide, briefing, FAQ, timeline, and mind map
-- D2 diagrams, and a brand kit applied to every export
+- A brand kit applied to every export
 - Runs on your machine; a local model works offline
 
-```bash
-# from docloom-studio/
-pip install -e "../docloom[pdf]" && pip install -e ".[dev]"
-cd web && npm install && npm run build
-python -m docloom_studio.main        # http://127.0.0.1:8899
+> [!NOTE]
+> **Diagrams are two unconnected systems today.** docloom studio's diagram editor generates
+> [D2](https://d2lang.com) (d2lang) source with an LLM and renders it client-side in the browser
+> (WASM); the rendered picture is baked into whatever you export. The core `docloom` engine has its
+> own, separate coordinate-free `Diagram` IR with a deterministic solver and SVG/PPTX/`.drawio`
+> emitters (see [`docloom/README.md`](docloom/README.md#architecture-diagrams)), reachable only
+> through the JSON/CLI/MCP path today. They do not talk to each other: a diagram tuned in the
+> studio and a diagram authored as IR JSON are different pipelines producing different pictures.
+> Unifying them is an open decision, not yet done (see
+> [`docs/diagram-status.md`](docs/diagram-status.md)).
+
+One command brings the studio up — installs dependencies, builds the frontend, launches the
+server (API + SPA on one port), and opens a browser. Run it from the repository root:
+
+```powershell
+.\studio.ps1      # Windows (PowerShell)
+./studio.sh       # macOS / Linux / Git Bash
 ```
+
+Needs [`uv`](https://docs.astral.sh/uv), [Node 22+](https://nodejs.org), and npm. First run takes
+a few minutes; later runs launch immediately. Flags: `-Rebuild`/`--rebuild`, `-Port`/`--port`,
+`-NoBrowser`/`--no-browser`. The launcher also re-checks the `resvg` rasterizer on every start so
+studio diagrams/charts/infographics can never silently export blank. See
+[`docloom-studio/README.md`](docloom-studio/README.md#quickstart) for the equivalent manual steps.
+
+> [!NOTE]
+> `../docloom[pdf,diagrams]` needs both extras, but `[diagrams]` is not what stands between you and
+> a blank export: docloom's own `Chart`/`Diagram` blocks render in every format with `[diagrams]`
+> absent — HTML, Markdown, and PDF embed them as true vector SVG (no rasterizer involved either
+> way), and PPTX/DOCX fall back to a data table (charts) or a labeled placeholder (diagrams)
+> instead of a picture. The one place `[diagrams]` actually prevents a blank is docloom studio's
+> separate, browser-rendered diagram/infographic editor (see the note above): if the browser never
+> saved a picture for one of those, HTML/Markdown/PDF/DOCX export it as nothing at all (PPTX alone
+> shows a placeholder) unless the server can rasterize it itself, which needs `[diagrams]`. `.[dev]`
+> installs pytest only; running the ingest test suite also needs the separate `.[ingest]` extra
+> (EPUB and YouTube-transcript parsing), and podcast audio generation needs the separate
+> `.[podcast]` extra (`kokoro` + `soundfile`) on `docloom-studio`.
 
 > [!NOTE]
 > Set the generation model in Settings. A local Ollama model (qwen3.5 works well) runs fully offline; a hosted API key is optional.

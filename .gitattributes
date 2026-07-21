@@ -2,4 +2,8 @@
 # even when checked out or re-added on Windows (core.autocrlf=true).
 *.sh text eol=lf
 
+# Windows launchers must stay CRLF so cmd.exe / PowerShell parse them cleanly.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+
 # maintainer: krt

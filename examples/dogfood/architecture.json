@@ -1,0 +1,132 @@
+{
+ "type": "diagram",
+ "title": "docloom architecture: sources to finished documents",
+ "direction": "LR",
+ "groups": [
+  {
+   "id": "studio",
+   "label": "docloom studio",
+   "kind": "region"
+  },
+  {
+   "id": "engine",
+   "label": "docloom engine",
+   "kind": "region"
+  }
+ ],
+ "nodes": [
+  {
+   "id": "user",
+   "label": "You",
+   "sublabel": "notebook, chat, generate",
+   "type": "client"
+  },
+  {
+   "id": "sources",
+   "label": "Sources",
+   "sublabel": "files, URLs, research",
+   "type": "store",
+   "group": "studio"
+  },
+  {
+   "id": "ingest",
+   "label": "Ingest & Embed",
+   "sublabel": "chunk, vectorize",
+   "type": "service",
+   "group": "studio"
+  },
+  {
+   "id": "vectors",
+   "label": "Vector Store",
+   "sublabel": "local .npy",
+   "type": "store",
+   "group": "studio"
+  },
+  {
+   "id": "retrieval",
+   "label": "Retrieval",
+   "sublabel": "rank relevant chunks",
+   "type": "service",
+   "group": "studio"
+  },
+  {
+   "id": "generation",
+   "label": "Grounded Generation",
+   "sublabel": "cited, via Gemini/Claude/Ollama",
+   "type": "service",
+   "group": "studio"
+  },
+  {
+   "id": "ir",
+   "label": "Document IR",
+   "sublabel": "schema-validated",
+   "type": "service",
+   "group": "engine"
+  },
+  {
+   "id": "lint",
+   "label": "Linter",
+   "sublabel": "layout & citations",
+   "type": "security",
+   "group": "engine"
+  },
+  {
+   "id": "render",
+   "label": "Renderers",
+   "sublabel": "deterministic",
+   "type": "service",
+   "group": "engine"
+  },
+  {
+   "id": "formats",
+   "label": "6 Formats",
+   "sublabel": "PPTX DOCX XLSX PDF HTML MD",
+   "type": "store"
+  }
+ ],
+ "edges": [
+  {
+   "source": "user",
+   "target": "sources",
+   "label": "add"
+  },
+  {
+   "source": "sources",
+   "target": "ingest"
+  },
+  {
+   "source": "ingest",
+   "target": "vectors",
+   "label": "embed"
+  },
+  {
+   "source": "vectors",
+   "target": "retrieval"
+  },
+  {
+   "source": "retrieval",
+   "target": "generation",
+   "label": "evidence"
+  },
+  {
+   "source": "generation",
+   "target": "ir",
+   "label": "emits"
+  },
+  {
+   "source": "ir",
+   "target": "lint"
+  },
+  {
+   "source": "lint",
+   "target": "render",
+   "label": "clean"
+  },
+  {
+   "source": "render",
+   "target": "formats",
+   "style": "emphasis"
+  }
+ ],
+ "caption": "The model emits validated structure; deterministic renderers produce every format."
+}

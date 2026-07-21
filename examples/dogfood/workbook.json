@@ -1,0 +1,194 @@
+{
+ "title": "docloom: Formats & Capabilities",
+ "subtitle": "Engine output formats and feature matrix across docloom and docloom-studio",
+ "authors": [
+  "docloom project"
+ ],
+ "date": "2026-07-21",
+ "sheets": [
+  {
+   "name": "Formats",
+   "columns": [
+    {
+     "header": "Format",
+     "width": 12
+    },
+    {
+     "header": "Renderer Module",
+     "width": 18
+    },
+    {
+     "header": "Editable",
+     "width": 10
+    },
+    {
+     "header": "Notes",
+     "width": 40
+    }
+   ],
+   "rows": [
+    [
+     "PPTX",
+     "render/pptx.py",
+     "Yes",
+     "PowerPoint; native editable charts & connectors"
+    ],
+    [
+     "DOCX",
+     "render/docx.py",
+     "Yes",
+     "Word; hardened tables with fixed layout & repeating headers"
+    ],
+    [
+     "XLSX",
+     "render/xlsx.py",
+     "Yes",
+     "Excel; typed cells with currency/percent/date formats"
+    ],
+    [
+     "PDF",
+     "render/typst.py",
+     "No",
+     "Compiled in-process via Typst wheel (no LaTeX/browser)"
+    ],
+    [
+     "HTML",
+     "render/html.py",
+     "Yes",
+     "Static HTML; vector SVG diagrams inlined"
+    ],
+    [
+     "Markdown",
+     "render/markdown.py",
+     "Yes",
+     "Plain text Markdown; diagrams as alt-text placeholders"
+    ],
+    [
+     "Typst",
+     "render/typst.py",
+     "No",
+     "Typst source (.typ); emitted alongside PDF"
+    ]
+   ]
+  },
+  {
+   "name": "Capabilities",
+   "columns": [
+    {
+     "header": "Feature",
+     "width": 24
+    },
+    {
+     "header": "Engine",
+     "width": 10
+    },
+    {
+     "header": "Studio",
+     "width": 10
+    },
+    {
+     "header": "Status",
+     "width": 12
+    }
+   ],
+   "rows": [
+    [
+     "Grounded chat citations",
+     "No",
+     "Yes",
+     "Ready"
+    ],
+    [
+     "Native PPTX charts",
+     "Yes",
+     "Yes",
+     "Ready"
+    ],
+    [
+     "Architecture diagrams (IR)",
+     "Yes",
+     "Yes",
+     "Ready"
+    ],
+    [
+     "D2 diagrams (studio only)",
+     "No",
+     "Yes",
+     "Ready"
+    ],
+    [
+     "Measured text autofit",
+     "Yes",
+     "No",
+     "Ready"
+    ],
+    [
+     "Brand kit (logo + theme)",
+     "No",
+     "Yes",
+     "Ready"
+    ],
+    [
+     "Offline mode",
+     "Yes",
+     "Yes",
+     "Ready"
+    ],
+    [
+     "Infographics",
+     "No",
+     "Yes",
+     "Ready"
+    ],
+    [
+     "Podcast audio synthesis",
+     "No",
+     "Yes",
+     "Ready"
+    ],
+    [
+     "Slide image generation",
+     "No",
+     "Yes",
+     "Optional"
+    ],
+    [
+     "WCAG-AA contrast checking",
+     "Yes",
+     "No",
+     "Ready"
+    ],
+    [
+     "Geometric QA (PPTX)",
+     "Yes",
+     "No",
+     "Ready"
+    ],
+    [
+     "Citation integrity lint",
+     "Yes",
+     "Yes",
+     "Ready"
+    ],
+    [
+     "SVG rasterizer (resvg)",
+     "Optional",
+     "Auto",
+     "Ready"
+    ],
+    [
+     "Multi-tenant auth",
+     "No",
+     "Yes",
+     "Ready"
+    ],
+    [
+     "PostgreSQL storage",
+     "No",
+     "Yes",
+     "Ready"
+    ]
+   ]
+  }
+ ]
+}

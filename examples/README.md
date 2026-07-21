@@ -18,7 +18,7 @@ The rendered output is committed under [`output/`](output/) so you can open it w
 
 | File | What it is |
 | --- | --- |
-| [`output/showcase.pptx`](output/showcase.pptx) | A 13-slide deck with native charts, a stats row, and a table |
+| [`output/showcase.pptx`](output/showcase.pptx) | A 14-slide deck with native charts, a stats row, a table, and an auto-generated sources slide |
 | [`output/showcase.pdf`](output/showcase.pdf) | The full multi-page report, typeset by Typst |
 | [`output/showcase.docx`](output/showcase.docx) | The same report as a Word document |
 | [`output/showcase.html`](output/showcase.html) | A self-contained web page |

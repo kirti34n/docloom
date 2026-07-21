@@ -1,0 +1,64 @@
+{
+  "type": "diagram",
+  "id": "architecture",
+  "title": "docloom + docloom studio architecture",
+  "direction": "LR",
+  "caption": "Studio owns sources, retrieval, generation, and export storage; the docloom engine only renders a validated Document/Diagram IR. The D2 diagram editor (client) and the engine's own Diagram IR + solver are deliberately unconnected today.",
+  "alt": "Architecture diagram: a browser SPA talks to the docloom studio backend, which handles auth, source ingestion, local embeddings, chat and research, background jobs over SSE, artifact versioning, brand assets, export storage, and provider settings; artifact export calls into the separate docloom engine's Document IR and its three diagram emitters (SVG, PPTX, drawio), while the browser's D2 diagram editor renders independently client-side with no connection to the engine's Diagram IR and solver.",
+  "groups": [
+    {"id": "client", "label": "Browser (React SPA)", "kind": "region"},
+    {"id": "backend", "label": "docloom studio + docloom engine", "kind": "region"}
+  ],
+  "nodes": [
+    {"id": "spa", "label": "Studio SPA", "type": "client", "group": "client",
+     "sublabel": "notebook, chat, editors"},
+    {"id": "d2_render", "label": "D2 Renderer", "type": "client", "group": "client",
+     "sublabel": "D2 WASM, client-side only"},
+
+    {"id": "auth", "label": "Auth & Workspaces", "type": "security", "group": "backend",
+     "sublabel": "sessions, per-tenant scope"},
+    {"id": "ingest", "label": "Source Ingestion", "type": "service", "group": "backend",
+     "sublabel": "file / URL / EPUB / YouTube"},
+    {"id": "embeddings", "label": "Embeddings", "type": "store", "group": "backend",
+     "sublabel": "local .npy vectors"},
+    {"id": "research", "label": "Chat & Research", "type": "service", "group": "backend",
+     "sublabel": "grounded retrieval, web agent"},
+    {"id": "jobs", "label": "Background Jobs", "type": "queue", "group": "backend",
+     "sublabel": "generation, SSE progress"},
+    {"id": "artifacts", "label": "Artifact Store", "type": "store", "group": "backend",
+     "sublabel": "versioned generations"},
+    {"id": "assets", "label": "Assets & Brand Kit", "type": "service", "group": "backend",
+     "sublabel": "logo, colors, fonts"},
+    {"id": "exports", "label": "Export Storage", "type": "store", "group": "backend",
+     "sublabel": "rendered files on disk"},
+    {"id": "providers", "label": "Model Providers", "type": "external", "group": "backend",
+     "sublabel": "Ollama, OpenAI, Anthropic..."},
+
+    {"id": "doc_ir", "label": "Document IR", "type": "service", "group": "backend",
+     "sublabel": "validated Pydantic schema"},
+    {"id": "diagram_ir", "label": "Diagram IR + Solver", "type": "service", "group": "backend",
+     "sublabel": "coordinate-free, one solve()"},
+    {"id": "emitters", "label": "Emitters", "type": "service", "group": "backend",
+     "sublabel": "SVG / PPTX / .drawio"}
+  ],
+  "edges": [
+    {"source": "spa", "target": "auth", "label": "login, session"},
+    {"source": "spa", "target": "d2_render", "label": "diagram editor"},
+    {"source": "spa", "target": "research", "label": "chat query"},
+    {"source": "spa", "target": "jobs", "label": "SSE progress", "style": "dashed"},
+
+    {"source": "auth", "target": "ingest", "style": "secure"},
+    {"source": "ingest", "target": "embeddings", "label": "chunk + embed"},
+    {"source": "embeddings", "target": "research", "label": "retrieve"},
+    {"source": "providers", "target": "research", "label": "LLM calls", "style": "dashed"},
+    {"source": "research", "target": "jobs", "label": "generation job"},
+    {"source": "jobs", "target": "artifacts", "label": "writes version"},
+    {"source": "d2_render", "target": "artifacts", "label": "baked D2 image", "style": "dashed"},
+    {"source": "assets", "target": "artifacts", "label": "brand-stamped"},
+
+    {"source": "artifacts", "target": "doc_ir", "label": "export: bake()"},
+    {"source": "doc_ir", "target": "emitters", "label": "render()"},
+    {"source": "diagram_ir", "target": "emitters", "label": "render_diagram()"},
+    {"source": "emitters", "target": "exports", "label": "PPTX/DOCX/...MD"}
+  ]
+}
