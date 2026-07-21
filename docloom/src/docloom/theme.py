@@ -9,6 +9,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
 
+from .ir import SafeStr
+
 
 class Theme(BaseModel):
     primary: str = "#1D4ED8"
@@ -17,8 +19,8 @@ class Theme(BaseModel):
     surface: str = "#F3F4F6"
     text: str = "#111827"
     muted: str = "#6B7280"
-    font_heading: str = "Arial"
-    font_body: str = "Georgia"
+    font_heading: SafeStr = "Arial"
+    font_body: SafeStr = "Georgia"
     # Optional local font files (.woff2/.ttf/.otf) for the two families above.
     # When set, self-contained renderers (HTML) embed them so the brand font
     # renders anywhere; font-path renderers (PDF/typst) resolve by directory.

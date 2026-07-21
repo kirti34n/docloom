@@ -390,6 +390,49 @@ class Item:
         self.x = self.y = self.w = self.h = 0.0
 
 
+def fit_label(label, inner_w):
+    """Wrap a node's OWN label (unlike wrap(), used for sublabels) to fit
+    inner_w without ever truncating with an ellipsis or dropping a word --
+    'nothing authored is lost' forbids that for the label itself. Greedily
+    wraps at <=2 lines, stepping the font size down through 14.5..11.0pt
+    when 2 lines still overflow, then falls back to <=3 lines at 11.0/10.5pt;
+    if nothing fits (a single word wider than inner_w even at 10.5pt), the
+    last attempt is returned as-is -- still text, just slightly overflowing.
+    Returns (lines, pt)."""
+    words = label.split()
+    if not words:
+        return [""], 14.5
+
+    def greedy(size):
+        lines, cur = [], words[0]
+        for w in words[1:]:
+            trial = cur + " " + w
+            if measure(trial, size, True) <= inner_w:
+                cur = trial
+            else:
+                lines.append(cur)
+                cur = w
+        lines.append(cur)
+        return lines
+
+    def fits(lines, size, max_lines):
+        return (len(lines) <= max_lines
+                and all(measure(l, size, True) <= inner_w for l in lines))
+
+    attempt = None
+    for size in (14.5, 13.5, 12.5, 11.5, 11.0):
+        lines = greedy(size)
+        attempt = (lines, size)
+        if fits(lines, size, 2):
+            return attempt
+    for size in (11.0, 10.5):
+        lines = greedy(size)
+        attempt = (lines, size)
+        if fits(lines, size, 3):
+            return attempt
+    return attempt
+
+
 def node_box(n):
     label = n["label"]
     sub = n.get("sublabel") or ""
@@ -403,7 +446,9 @@ def node_box(n):
     w = max(NODE_MIN_W, min(NODE_MAX_W, inner + 2 * PAD_X + BAR))
     if sub:
         sub_lines = wrap(sub, 10.5, w - 2 * PAD_X - BAR, 2)
-    h = PAD_Y * 2 + 17 + 12.5 * len(sub_lines) + (16 if tag else 0)
+    label_lines, label_pt = fit_label(label, w - 2 * PAD_X - BAR)
+    label_h = len(label_lines) * (17.0 * label_pt / 14.5)
+    h = PAD_Y * 2 + label_h + 12.5 * len(sub_lines) + (16 if tag else 0)
     h = max(h, NODE_MIN_H_TEXT if (sub_lines or tag) else NODE_MIN_H_BARE)
     if n.get("kind") == "store":
         h += 14
@@ -577,6 +622,15 @@ def order_layers(items, chains, sweeps=10):
                                  pos[it.key], it.seq))
 
     ranks = sorted(layers)
+    # seed the sweep with a group-contiguous layout, not the raw seq order:
+    # a single-rank diagram (all nodes rank 0) never enters the seqr loop
+    # below, so if the seed itself weren't contiguous, group_sort would
+    # never run and a stranger could stay stranded between two group
+    # members for the whole solve.
+    for r in ranks:
+        group_sort(layers[r])
+        for i, it in enumerate(layers[r]):
+            pos[it.key] = i
     best = ({r: list(layers[r]) for r in ranks},
             count_crossings(layers, adj, items))
     for s in range(sweeps):
@@ -590,7 +644,7 @@ def order_layers(items, chains, sweeps=10):
             for i, it in enumerate(layers[r]):
                 pos[it.key] = i
         c = count_crossings(layers, adj, items)
-        if c < best[1]:
+        if c <= best[1]:
             best = ({r: list(layers[r]) for r in ranks}, c)
     layers = best[0]
     for r in layers:
@@ -744,6 +798,24 @@ def assign_cross(layers, adj, items, passes=16):
             for it in grp:
                 it.cross = c + it.ce / 2
                 c = it.cross + it.ce / 2 + CROSS_GAP
+
+    def extent():
+        his = [it.cross + it.ce / 2 for r in ranks for it in layers[r]]
+        los = [it.cross - it.ce / 2 for r in ranks for it in layers[r]]
+        return max(his) - min(los)
+
+    def snapshot():
+        return {it.key: it.cross for r in ranks for it in layers[r]}
+
+    # median alignment has no fixed point for some interleaved-group +
+    # ghost-chain layouts: cross positions drift monotonically outward pass
+    # over pass (rigid-body translation, not internal expansion), so the
+    # canvas would otherwise become an artifact of the hardcoded pass count.
+    # Track the most compact iterate and fall back to it if the layout
+    # clearly diverged -- well-behaved diagrams oscillate within a bounded
+    # extent band and never trip this gate.
+    best_extent = extent()
+    best_snapshot = snapshot()
     for p in range(passes):
         seqr = ranks[1:] if p % 2 == 0 else list(reversed(ranks[:-1]))
         for r in seqr:
@@ -780,6 +852,14 @@ def assign_cross(layers, adj, items, passes=16):
                     it.cross = max(lo, min(hi, d)) if lo <= hi else d
                     fixed.append(it)
                 enforce(grp)
+        e = extent()
+        if e < best_extent:
+            best_extent = e
+            best_snapshot = snapshot()
+    if extent() > best_extent * 2.0:
+        for r in ranks:
+            for it in layers[r]:
+                it.cross = best_snapshot[it.key]
     lo = min(it.cross - it.ce / 2 for r in ranks for it in layers[r])
     for r in ranks:
         for it in layers[r]:
@@ -1696,9 +1776,11 @@ def _finish_solve(L: dict, spec: dict, legend: bool) -> SolvedDiagram:
         boxes.append([g, gx, gy, gw, gy2 - gy])
 
     minx = min([it.x for it in node_items] + [b[1] for b in boxes] +
-               [min(p[0] for p in R["pts"]) for R in routes])
+               [min(p[0] for p in R["pts"]) for R in routes] +
+               [l["x"] - l["w"] / 2 for l in labels])
     miny = min([it.y for it in node_items] + [b[2] for b in boxes] +
-               [min(p[1] for p in R["pts"]) for R in routes])
+               [min(p[1] for p in R["pts"]) for R in routes] +
+               [l["y"] - l["h"] / 2 for l in labels])
     ox, oy = MARGIN - minx, MARGIN + TITLE_H - miny
     for it in items.values():
         it.x += ox
@@ -2024,14 +2106,19 @@ def paint_svg(s: SolvedDiagram, theme=None) -> str:
         sub_lines = (wrap(n.sublabel, 10.5, n.w - 2 * PAD_X - BAR, 2)
                      if n.sublabel else [])
         tag = n.tag
-        ch = 17 + 12.5 * len(sub_lines) + (16 if tag else 0)
+        label_lines, label_pt = fit_label(n.label, n.w - 2 * PAD_X - BAR)
+        pitch = 17.0 * label_pt / 14.5
+        base_off = 13.0 * label_pt / 14.5
+        ch = pitch * len(label_lines) + 12.5 * len(sub_lines) + (16 if tag else 0)
         box_h = n.h - (28 if n.type == "store" else 0)
-        cy = top + (box_h - ch) / 2 + 13
+        cy = top + (box_h - ch) / 2 + base_off
         cx = n.x + n.w / 2 + BAR / 2
-        o.append('<text x="%.1f" y="%.1f" font-size="14.5" font-weight="650" '
-                 'text-anchor="middle" fill="%s">%s</text>'
-                 % (cx, cy, t["text"], esc(n.label)))
-        yy = cy + 13
+        for line in label_lines:
+            o.append('<text x="%.1f" y="%.1f" font-size="%.1f" font-weight="650" '
+                     'text-anchor="middle" fill="%s">%s</text>'
+                     % (cx, cy, label_pt, t["text"], esc(line)))
+            cy += pitch
+        yy = cy - pitch + base_off
         for line in sub_lines:
             o.append('<text x="%.1f" y="%.1f" font-size="10.5" text-anchor="middle" '
                      'fill="%s">%s</text>' % (cx, yy, t["muted"], esc(line)))

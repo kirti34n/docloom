@@ -328,12 +328,6 @@ def _solved(d: Diagram):
     return solve(d, target_aspect=2.2)
 
 
-def _strip_modified(xml: str) -> str:
-    """The `modified` attribute on <mxfile> is wall-clock; strip it before
-    comparing two renders for determinism."""
-    return re.sub(r'modified="[^"]*"', 'modified=""', xml)
-
-
 # ---------------------------------------------------------------------------
 # well-formedness + XSD validation
 # ---------------------------------------------------------------------------
@@ -468,23 +462,6 @@ def test_referential_integrity_and_relative_child_coords(d):
 # ---------------------------------------------------------------------------
 
 
-def test_modified_timestamp_is_actually_utc():
-    """finding 16: `modified` used time.strftime() with no explicit time
-    tuple (local time) but suffixed "Z" (claiming UTC). Assert the emitted
-    timestamp is within a few seconds of the real UTC clock, not the local
-    clock -- on a non-UTC machine (this run's is UTC+5:30) the pre-fix value
-    would be off by the timezone offset, which this test would have caught."""
-    import time as time_mod
-
-    d = Diagram(title="ts", nodes=[DiagramNode(id="a", label="A")], edges=[])
-    before = time_mod.strftime("%Y-%m-%dT%H:%M:%SZ", time_mod.gmtime())
-    xml = render_drawio(d, _solved(d))
-    after = time_mod.strftime("%Y-%m-%dT%H:%M:%SZ", time_mod.gmtime())
-    m = re.search(r'modified="([^"]*)"', xml)
-    assert m is not None
-    assert before <= m.group(1) <= after
-
-
 def test_hash_comment_present_and_matches_diagram_hash():
     d = BAKEOFF_DIAGRAMS[0]
     xml = render_drawio(d, _solved(d))
@@ -523,10 +500,38 @@ def test_hash_comment_is_schema_invisible():
 
 @pytest.mark.parametrize("d", BAKEOFF_DIAGRAMS, ids=BAKEOFF_IDS)
 def test_render_drawio_is_deterministic(d):
+    """No wall-clock (or any other) non-determinism survives: two independent
+    solve() + render_drawio() passes over the same Diagram are byte-identical,
+    not just equal after masking a timestamp."""
     s1, s2 = _solved(d), _solved(d)
-    xml1 = _strip_modified(render_drawio(d, s1))
-    xml2 = _strip_modified(render_drawio(d, s2))
+    xml1 = render_drawio(d, s1)
+    xml2 = render_drawio(d, s2)
     assert xml1 == xml2
+
+
+def test_render_drawio_has_no_modified_attribute():
+    """`modified` was the one wall-clock byte range in the emitter (draw.io
+    stamps it on every save, but it carries no semantic weight and is not
+    part of the diagram_hash contract). It is optional in the official XSD
+    (tests/data/mxfile.xsd), so the emitter omits it outright rather than
+    fake a value -- a frozen epoch would be a lie a human could trip over."""
+    d = BAKEOFF_DIAGRAMS[0]
+    xml = render_drawio(d, _solved(d))
+    assert "modified=" not in xml
+
+
+def test_render_drawio_byte_identical_across_independent_renders():
+    """Same Diagram, two completely independent solve()+render_drawio() call
+    chains (fresh SolvedDiagram each time): the output bytes must match
+    exactly, confirming the export is byte-deterministic end to end."""
+    d = Diagram(
+        title="determinism check",
+        nodes=[DiagramNode(id="a", label="A"), DiagramNode(id="b", label="B")],
+        edges=[DiagramEdge(source="a", target="b")],
+    )
+    first = render_drawio(d, solve(d, target_aspect=2.2))
+    second = render_drawio(d, solve(d, target_aspect=2.2))
+    assert first.encode("utf-8") == second.encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -1008,7 +1013,7 @@ def test_render_diagram_public_api_matches_direct_call():
     # match the plan's own aspect-assertion acceptance criteria) -- so the
     # direct-call comparison must solve() the same way the API does.
     direct = render_drawio(d, solve(d, theme_dict), theme_dict)
-    assert _strip_modified(via_api) == _strip_modified(direct)
+    assert via_api == direct
 
 
 def test_render_diagram_rejects_unknown_format():

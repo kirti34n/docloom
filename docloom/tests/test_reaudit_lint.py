@@ -5,9 +5,9 @@ hard-block the CLI render and the studio export (HTTP 422).
   - hero renders its body in a short bottom caption band, so it keeps the
     half budget, but as a non-blocking warning (not the error that wrongly
     hard-blocked export of an otherwise-fine hero deck).
-  - title/section slides render only their title/subtitle, so their
-    (ignored) blocks must not fire a deck/overflow error, only the
-    existing deck/ignored-blocks warning.
+  - title/section slides render their blocks in a dedicated zone outside the
+    content-layout body budget, so those blocks must not fire a deck/overflow
+    error that would hard-block export.
 
 Also covers docs/diagram-status.md finding 13: lint.py mirrors several
 render/pptx.py layout constants as plain duplicated literals (lint.py must
@@ -50,9 +50,9 @@ def test_hero_slide_with_450_char_body_has_no_overflow_error():
 
 
 def test_section_slide_over_800_char_blocks_has_no_overflow_error():
-    # section renders only title/subtitle; its blocks are ignored, so even
-    # 900 chars of (non-rendered) blocks must not block export. The blocks
-    # are still surfaced by the correct deck/ignored-blocks warning.
+    # a section slide's blocks render in a dedicated zone that is not subject to
+    # the content-layout body budget, so even 900 chars must not raise a
+    # deck/overflow error that would block export.
     doc = Document(title="T", slides=[Slide(
         layout="section", title="t",
         blocks=[Paragraph(text="x" * 900)],
@@ -61,7 +61,6 @@ def test_section_slide_over_800_char_blocks_has_no_overflow_error():
     assert not any(
         f.rule == "deck/overflow" and f.severity == "error" for f in findings
     )
-    assert any(f.rule == "deck/ignored-blocks" for f in findings)
     assert not has_errors(findings)
 
 

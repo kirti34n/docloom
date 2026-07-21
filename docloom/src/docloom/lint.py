@@ -115,6 +115,137 @@ IMAGE_CAPTION_H_IN = 0.3  # image caption strip (slightly taller)
 QUOTE_ATTR_H_IN = 0.28    # quote attribution line
 SUBTITLE_PAD_IN = 0.12    # fixed pad below a subtitle's estimated lines
 
+# hero/section/quote/title draw their body blocks into a much smaller
+# SECONDARY zone than SLIDE_BODY_H_IN -- a bottom caption band, a divider
+# band below the section title, the leftover below a display pull-quote, or
+# the cover leftover below title/subtitle/byline -- not the full content-slide
+# body. SLIDE_BODY_H_IN alone used to stand in for all of them, so a slide
+# whose renderer squeezed an authored visual block into that small secondary
+# zone (and dropped it below MIN_VISUAL_BLOCK_H_IN) emitted zero deck/overflow
+# findings. These mirror render/pptx.py's own per-layout geometry
+# (_hero_slide, _section_slide, _quote_slide, _title_slide), same
+# import-light reasoning as the block above.
+SLIDE_H_IN = 7.5     # render/pptx.py SLIDE_H (LAYOUT["slide_h_in"])
+SLIDE_W_IN = 13.333  # render/pptx.py SLIDE_W (LAYOUT["slide_w_in"])
+MARGIN_IN = 0.6      # render/pptx.py MARGIN (LAYOUT["margin_in"])
+SECTION_BODY_START_IN = 4.25    # _section_slide's fixed y before its body
+SECTION_SUBTITLE_ADV_IN = 0.75  # _section_slide's y advance when s.subtitle is set
+HERO_PAD_IN = 0.3      # _hero_slide's pad inside the bottom band
+HERO_TITLE_PT = 36     # render/pptx.py LAYOUT["hero_title_pt"]
+HERO_SUB_PT = 20       # _hero_slide's subtitle font size
+HERO_CAP_PT = 11       # _hero_slide's image-caption font size
+HERO_BLOCK_BAND_IN = 1.7      # _hero_slide's flat guess for a photo-backed band's blocks
+HERO_BAND_MAX_H_IN = SLIDE_H_IN * 0.6  # _hero_slide's band_h cap
+TITLE_BODY_TOP_IN = 2.5    # _title_slide's fixed title y
+TITLE_TITLE_PT = 40        # _title_slide's title font size
+TITLE_TEXT_W_IN = SLIDE_W_IN - 1.1 - MARGIN_IN  # _title_slide's tx=1.1
+TITLE_TITLE_MIN_H_IN = 1.4  # _title_slide's title_h floor
+TITLE_BYLINE_MIN_Y = 6.3    # _title_slide's by_y floor
+QUOTE_COL_W_IN = SLIDE_W_IN - 4.6      # _quote_slide's qx/qw
+QUOTE_TOP_RESERVE_IN = 1.4             # _quote_slide's avail/y floor
+QUOTE_ATTR_RESERVE_IN = 0.6            # _quote_slide's attr_h
+
+
+def _est_lines(text: str, size: float, width_in: float) -> int:
+    """Mirrors render/pptx.py's _est_lines at an arbitrary font size: the
+    display-scale hero/section/quote/title bands size text far from body's
+    fixed 14pt, which _block_height's own hardcoded-14pt estimate cannot
+    model."""
+    per = max(8, int(width_in * 144 / size))
+    return sum(max(1, (len(ln) + per - 1) // per) for ln in text.split("\n"))
+
+
+def _line_h(size: float) -> float:
+    """Mirrors render/pptx.py's _line_h."""
+    return size * 1.3 / 72
+
+
+def _usable_image(img: Image | None) -> bool:
+    """Mirrors render/pptx.py's _usable_image: whether an image slot resolves
+    to a real file the renderer will actually draw (a bare query/asset_id,
+    not yet resolved to a path, is not)."""
+    return img is not None and bool(img.path) and Path(img.path).is_file()
+
+
+def _hero_body_budget(slide: Slide) -> float:
+    """Mirrors render/pptx.py's _hero_slide: the body blocks draw into a
+    bottom band whose height depends on whether the hero has a usable
+    background photo."""
+    tw = FULL_BODY_W_IN
+    title_h = (
+        _est_lines(slide.title, HERO_TITLE_PT, tw) * _line_h(HERO_TITLE_PT)
+        if slide.title else 0.0
+    )
+    sub_h = (
+        _est_lines(slide.subtitle, HERO_SUB_PT, tw) * _line_h(HERO_SUB_PT) + 0.08
+        if slide.subtitle else 0.0
+    )
+    if _usable_image(slide.image):
+        cap_h = (
+            _est_lines(slide.image.caption, HERO_CAP_PT, tw) * _line_h(HERO_CAP_PT) + 0.08
+            if slide.image.caption else 0.0
+        )
+        band_h = min(
+            HERO_BAND_MAX_H_IN,
+            2 * HERO_PAD_IN + title_h + sub_h + cap_h + HERO_BLOCK_BAND_IN,
+        )
+        band_y = SLIDE_H_IN - band_h
+    else:
+        # An imageless hero grows its band to fit its blocks' real height
+        # instead (never dropping them), so an exact mirror of that growth
+        # would never fire here either. Model the band at its floor
+        # (MARGIN_IN, i.e. fully grown) instead: this only trips when the
+        # grown band genuinely cannot fit the content -- real DROP territory
+        # -- not the ordinary shrink-not-drop case.
+        cap_h = 0.0
+        band_y = MARGIN_IN
+    y_start = band_y + HERO_PAD_IN + (title_h + 0.08 if slide.title else 0.0) + sub_h + cap_h
+    return (SLIDE_H_IN - MARGIN_IN) - y_start
+
+
+def _section_body_budget(slide: Slide) -> float:
+    """Mirrors render/pptx.py's _section_slide."""
+    y = SECTION_BODY_START_IN + (SECTION_SUBTITLE_ADV_IN if slide.subtitle else 0.0)
+    return (SLIDE_H_IN - MARGIN_IN) - y
+
+
+def _title_body_budget(slide: Slide, doc: Document) -> float:
+    """Mirrors render/pptx.py's _title_slide."""
+    title = slide.title or doc.title or ""
+    title_h = max(
+        TITLE_TITLE_MIN_H_IN,
+        _est_lines(title, TITLE_TITLE_PT, TITLE_TEXT_W_IN) * _line_h(TITLE_TITLE_PT),
+    )
+    y = TITLE_BODY_TOP_IN + title_h + 0.1
+    if slide.subtitle or doc.subtitle:
+        y += 0.6
+    if doc.authors or doc.date:
+        y = max(TITLE_BYLINE_MIN_Y, y + 0.3) + 0.35
+    body_y = y + 0.25
+    return max(0.0, (SLIDE_H_IN - MARGIN_IN) - body_y)
+
+
+def _quote_rest_budget(quote_text: str, attribution: str | None) -> float:
+    """Mirrors render/pptx.py's _quote_slide: the pull-quote self-sizes at
+    display scale and never overflows (it is excluded from the summed height
+    entirely -- see _lint_slide), so this is the leftover height available to
+    any OTHER blocks sharing the slide."""
+    if not quote_text:
+        return SLIDE_BODY_H_IN
+    qw = QUOTE_COL_W_IN
+    attr_h = QUOTE_ATTR_RESERVE_IN if attribution else 0.0
+    avail_q = SLIDE_H_IN - MARGIN_IN - QUOTE_TOP_RESERVE_IN - attr_h
+    size = next(
+        (pt for pt in (30, 24, 20, 16)
+         if _est_lines(quote_text, pt, qw) * _line_h(pt) <= avail_q),
+        14,
+    )
+    qh = min(avail_q, _est_lines(quote_text, size, qw) * _line_h(size))
+    y = max(QUOTE_TOP_RESERVE_IN, (SLIDE_H_IN - qh - 0.3 - attr_h) / 2)
+    y += qh + 0.25 + (0.55 if attribution else 0.0)
+    return max(0.0, (SLIDE_H_IN - MARGIN_IN) - y)
+
+
 # Authoring-quality thresholds (research-notebooklm-quality.md section 6).
 # These rules are advisory only: severity="warning" so they never hard-block
 # export the way deck/overflow and chart/empty (severity="error") can.
@@ -425,7 +556,7 @@ def _is_bullet_only(slide: Slide) -> bool:
     return bool(blocks) and all(isinstance(b, (BulletList, NumberedList)) for b in blocks)
 
 
-def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
+def _lint_slide(slide: Slide, where: str, out: list[Finding], doc: Document) -> None:
     all_blocks = slide.blocks + slide.right
 
     if slide.title and len(slide.title) > MAX_TITLE_CHARS:
@@ -464,12 +595,10 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
                     "switch layout",
         ))
 
-    if slide.layout in ("title", "section") and all_blocks:
-        out.append(Finding(
-            rule="deck/ignored-blocks", severity="warning", where=where,
-            message=f'"{slide.layout}" slides render only title/subtitle; '
-                    "these blocks will not appear; use a content slide",
-        ))
+    # title/section slides deliberately NOT flagged: render/pptx.py's
+    # _title_slide/_section_slide draw their blocks (P5 audit), so warning that
+    # "these blocks will not appear" is false and pushes the LLM to delete
+    # content that renders fine. Overflow on those layouts is caught generically.
 
     # hero deliberately excluded: an imageless hero is a first-class,
     # supported configuration (render/pptx.py's _hero_slide falls back to a
@@ -538,19 +667,20 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
         total = sum(_block_chars(b) for b in all_blocks)
         if total > MAX_SLIDE_CHARS // 2:
             out.append(Finding(
-                rule="deck/overflow", severity="error", where=where,
-                message=f"~{total} chars beside the image "
-                        f"(budget {MAX_SLIDE_CHARS // 2}); split the slide",
+                rule="deck/overflow", severity="warning", where=where,
+                message=f"~{total} chars beside the image (soft budget "
+                        f"{MAX_SLIDE_CHARS // 2} for a half-width column); "
+                        "dense -- tighten it or move detail to speaker notes",
             ))
     elif slide.layout == "two_column":
         for name, blocks in (("blocks", slide.blocks), ("right", slide.right)):
             total = sum(_block_chars(b) for b in blocks)
             if total > MAX_SLIDE_CHARS // 2:
                 out.append(Finding(
-                    rule="deck/overflow", severity="error", where=f"{where}.{name}",
-                    message=f"~{total} chars in one column "
-                            f"(budget {MAX_SLIDE_CHARS // 2} at half width); "
-                            "this will overflow the slide; split it",
+                    rule="deck/overflow", severity="warning", where=f"{where}.{name}",
+                    message=f"~{total} chars in one column (soft budget "
+                            f"{MAX_SLIDE_CHARS // 2} at half width); dense -- "
+                            "tighten it or move detail to speaker notes",
                 ))
     elif slide.layout == "hero":
         # a hero body renders in a short bottom caption band (~1.5in), not a
@@ -591,24 +721,42 @@ def _lint_slide(slide: Slide, where: str, out: list[Finding]) -> None:
     # deck/overflow silently while the renderer dropped the trailing block.
     # two_column's subtitle spans the FULL width (drawn before the two
     # columns split), unlike its body blocks, which each get the narrow
-    # per-column width; hero/quote/title/section handle a subtitle
-    # differently and are not affected.
-    if slide.layout == "content":
-        sub_w: float | None = FULL_BODY_W_IN
-    elif slide.layout in ("image_left", "image_right"):
-        sub_w = NARROW_BODY_W_IN
+    # per-column width. hero/quote/title/section handle a subtitle as part
+    # of their own layout-specific budget below instead.
+    if slide.layout == "section":
+        body_budget = _section_body_budget(slide)
+        height_groups = [(where, all_blocks)]
+    elif slide.layout == "hero":
+        body_budget = _hero_body_budget(slide)
+        height_groups = [(where, all_blocks)]
+    elif slide.layout == "title":
+        body_budget = _title_body_budget(slide, doc)
+        height_groups = [(where, all_blocks)]
+    elif slide.layout == "quote":
+        # the pull-quote itself self-sizes at display scale and never
+        # overflows (see _quote_rest_budget), so it is excluded from the
+        # summed height below; only the OTHER blocks sharing the slide are
+        # checked against its leftover room. Identify it exactly as
+        # render/pptx.py's _quote_slide does.
+        q = next((b for b in all_blocks if isinstance(b, Quote)), None)
+        if q is not None:
+            quote_text = plain(q.text)
+            attribution = q.attribution or slide.subtitle
+            rest = [b for b in all_blocks if b is not q]
+        else:
+            quote_text = slide.title or ""
+            attribution = slide.subtitle
+            rest = all_blocks
+        body_budget = _quote_rest_budget(quote_text, attribution)
+        height_groups = [(where, rest)]
     elif slide.layout == "two_column":
-        sub_w = FULL_BODY_W_IN
-    else:
-        sub_w = None
-    body_budget = SLIDE_BODY_H_IN
-    if sub_w is not None:
-        body_budget -= _subtitle_reserve_h(slide.subtitle, sub_w)
-    if slide.layout == "two_column":
+        body_budget = SLIDE_BODY_H_IN - _subtitle_reserve_h(slide.subtitle, FULL_BODY_W_IN)
         height_groups = [
             (f"{where}.blocks", slide.blocks), (f"{where}.right", slide.right),
         ]
     else:
+        sub_w = NARROW_BODY_W_IN if slide.layout in ("image_left", "image_right") else FULL_BODY_W_IN
+        body_budget = SLIDE_BODY_H_IN - _subtitle_reserve_h(slide.subtitle, sub_w)
         height_groups = [(where, all_blocks)]
     for group_where, blocks in height_groups:
         total_h = sum(_block_height(b, w_in) for b in blocks)
@@ -920,7 +1068,7 @@ def lint(doc: Document, theme: Theme | None = None) -> list[Finding]:
 
     # slides
     for i, slide in enumerate(doc.slides):
-        _lint_slide(slide, f"slides[{i}]", out)
+        _lint_slide(slide, f"slides[{i}]", out, doc)
 
     # deck.block_variety: a big deck that is nothing but bullets has no
     # visual thinking; flag both a monotone block palette and long runs of

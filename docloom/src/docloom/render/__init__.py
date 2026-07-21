@@ -25,9 +25,14 @@ class RenderError(Exception):
     pass
 
 
+_MAX_SLUG = 80
+
+
 def slug(title: str) -> str:
     # \w keeps unicode letters so non-Latin titles get distinct filenames
     s = re.sub(r"[^\w]+", "-", title).strip("-_").lower()
+    if len(s) > _MAX_SLUG:
+        s = s[:_MAX_SLUG].rstrip("-_")
     return s or "document"
 
 
@@ -60,7 +65,10 @@ def render(
         raise RenderError(f"cannot create output directory {out.parent}: {e}") from e
 
     module = importlib.import_module(f".{module_name}", __package__)
-    if fmt == "typ":
-        out.write_text(module.to_typst(doc, theme or DEFAULT), encoding="utf-8")
-        return out
-    return module.render(doc, theme or DEFAULT, out)
+    try:
+        if fmt == "typ":
+            out.write_text(module.to_typst(doc, theme or DEFAULT), encoding="utf-8")
+            return out
+        return module.render(doc, theme or DEFAULT, out)
+    except OSError as e:
+        raise RenderError(f"cannot write output file {out}: {e}") from e

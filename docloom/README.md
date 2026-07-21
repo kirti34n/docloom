@@ -109,13 +109,44 @@ One `Document` carries any mix of three bodies; each renderer takes what it need
 
 | Field    | Renders to                       | Blocks |
 |----------|----------------------------------|--------|
-| `blocks` | DOCX, PDF, HTML, MD (reports)    | heading, paragraph, bullets, numbered, quote, code, table, image, callout, divider, chart, stats, artifact |
+| `blocks` | DOCX, PDF, HTML, MD (reports)    | heading, paragraph, bullets, numbered, quote, code, table, image, callout, divider, chart, stats, artifact, diagram |
 | `slides` | PPTX (decks)                     | layouts: `title`, `section`, `content`, `two_column`, `quote`, `hero`, `image_left`, `image_right` + any blocks, speaker `notes` |
 | `sheets` | XLSX (workbooks)                 | typed cells, `{"formula": "=SUM(B2:B4)"}`, number formats, column widths |
 
 Plus `sources`, evidence records that spans cite by id. Text everywhere is either a plain string or spans (`bold`, `italic`, `code`, `link`, `cite`), so simple content stays cheap to generate.
 
 A deck-only document still renders to PDF/DOCX/HTML (slides flatten to sections); a report with tables still renders to XLSX (tables become worksheets).
+
+## Architecture diagrams
+
+A `diagram` block is a coordinate-free `Diagram`: nodes, edges, and groups, no `x`/`y`/`row`/`col`
+anywhere. `render_diagram(d, theme, fmt)` (or the `diagram` block inside `render()`) solves the
+layout once and hands the same solved geometry to every emitter, so SVG, native PPTX shapes, and
+`.drawio` (mxGraph XML) all agree on where everything sits:
+
+```python
+from docloom import Diagram, DiagramNode, DiagramEdge, render_diagram
+
+d = Diagram(nodes=[
+    DiagramNode(id="api", label="API", type="service"),
+    DiagramNode(id="db", label="Postgres", type="store"),
+], edges=[DiagramEdge(source="api", target="db")])
+
+svg = render_diagram(d, fmt="svg")     # themed SVG string
+png = render_diagram(d, fmt="png")     # rasterized bytes, needs the [diagrams] extra
+xml = render_diagram(d, fmt="drawio")  # .drawio (mxGraph) XML
+```
+
+A node's `type` is one of the painter's seven kinds: `service`, `client`, `store`, `queue`,
+`security`, `cloud`, `external`. That vocabulary is **inspired by [Archify](https://github.com/tt-a1i/archify)'s
+node taxonomy and reading conventions, not Archify's code** — docloom does not depend on Archify;
+the IR, the solver, and every emitter here are docloom's own.
+
+`.drawio` export is a **one-way derived export**: `docloom render --diagram-sources` writes a
+`.drawio` sidecar next to your rendered deck so you can open and edit it in draw.io, but docloom
+never reads a `.drawio` file back. The `Diagram` block in your document JSON is the single source
+of truth; editing the `.drawio` (or dragging a shape in PowerPoint) is a fork that the next render
+overwrites, not a merge.
 
 ## The linter
 
@@ -126,7 +157,12 @@ A deck-only document still renders to PDF/DOCX/HTML (slides flatten to sections)
  "message": "~1240 chars of content (budget 800); this will overflow the slide, split it"}
 ```
 
-Rules cover slide overflow, bullet count/length, title length, oversized tables, empty slides, heading-level skips, unknown/unused citation sources, missing image files, and theme contrast (WCAG AA). `docloom render` refuses to render documents with lint *errors* (override with `--no-lint`); feed the JSON findings back to your model and it fixes its own deck.
+Rules cover slide overflow, bullet count/length, title length, oversized tables, empty slides,
+heading-level skips, unknown/unused citation sources, missing image files, theme contrast (WCAG
+AA), and ten diagram-specific rules (dangling edges, duplicate ids, empty groups, over-dense
+layouts, and more) — 41 rule ids in total. `docloom render` refuses to render documents with lint
+*errors* (override with `--no-lint`); feed the JSON findings back to your model and it fixes its
+own deck.
 
 ## Theming
 

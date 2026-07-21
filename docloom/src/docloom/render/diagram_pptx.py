@@ -679,7 +679,7 @@ def _emit_native(slide, d: Diagram, s: SolvedDiagram, theme, td: dict,
             r2.text = n.tag
             r2.font.size = Pt(PT(TAG_PX))
             r2.font.bold = True
-            r2.font.color.rgb = _rgb(p["line"])
+            r2.font.color.rgb = _rgb(label_fg)
         shp_by_id[n.id] = shape
         type_by_id[n.id] = n.type
         all_shapes.append(shape)

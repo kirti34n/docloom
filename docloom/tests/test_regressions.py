@@ -52,12 +52,15 @@ def test_lint_ragged_table():
     assert "table/ragged" in {f.rule for f in lint(doc)}
 
 
-def test_lint_ignored_blocks_on_title_slide():
+def test_title_slide_blocks_are_not_flagged_as_ignored():
+    # title/section slides now render their blocks (P5 audit), so lint must not
+    # warn they "will not appear" -- that false guidance drove the LLM to delete
+    # content that renders fine.
     doc = Document(
         title="T",
-        slides=[Slide(layout="title", title="T", blocks=[Paragraph(text="lost")])],
+        slides=[Slide(layout="title", title="T", blocks=[Paragraph(text="kept")])],
     )
-    assert "deck/ignored-blocks" in {f.rule for f in lint(doc)}
+    assert "deck/ignored-blocks" not in {f.rule for f in lint(doc)}
 
 
 def test_lint_two_column_gets_half_budget():

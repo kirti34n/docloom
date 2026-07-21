@@ -18,6 +18,7 @@ import re
 import shutil
 import tempfile
 import warnings
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -105,39 +106,58 @@ def _font(name: str) -> str:
     return f"({_str(name)}, {_str(_FALLBACK_FONT)})"
 
 
-def _embeddable(path: Path) -> bool:
-    """True if Typst can embed the image file. SVGs pass through (Typst
-    renders them natively); anything else must decode via PIL, so a file
-    that exists but is corrupt gets skipped instead of failing the compile,
-    consistent with the missing-file policy."""
+# Typst rejects the string "jpeg" for `format:` (only "jpg" is accepted), so
+# PIL's "JPEG" format name cannot be lowercased and used directly.
+_TYPST_RASTER = {"PNG": "png", "JPEG": "jpg", "GIF": "gif", "WEBP": "webp"}
+
+
+def _svg_wellformed(path: Path) -> bool:
+    """True if `path` is well-formed XML with an <svg> root. Typst's SVG
+    embedder requires well-formed XML with a real root element; a truncated
+    or entity-broken file that merely contains the substring "<svg" (e.g. an
+    unclosed tag) would abort the whole compile if that substring alone were
+    trusted."""
+    try:
+        with path.open("rb") as fh:
+            root = ET.parse(fh).getroot()
+    except Exception:
+        return False
+    return root.tag.rsplit("}", 1)[-1].lower() == "svg"
+
+
+def _typst_format(path: Path) -> str | None:
+    """The Typst `format:` string to embed `path` as, or None if Typst can't
+    decode it. Rasters are classified by DECODED content (PIL's img.format),
+    not by file extension: Typst itself dispatches its own auto-detection by
+    extension, so a mislabeled file (e.g. JPEG bytes saved as figure1.png)
+    must have its true format passed explicitly or the compile aborts."""
     if path.suffix.lower() == ".svg":
-        try:
-            with path.open("rb") as fh:
-                head = fh.read(2048)
-        except OSError:
-            return False
-        # a bare "<" also matches XML/HTML-ish files that Typst's SVG parser
-        # rejects (e.g. "failed to parse SVG: missing root node"); require an
-        # actual <svg tag instead.
-        return b"<svg" in head.lower()
+        return "svg" if _svg_wellformed(path) else None
     try:
         with PILImage.open(path) as img:
             fmt = (img.format or "").upper()
-            img.verify()
+            img.verify()  # must read .format first: verify() can invalidate img
         # Typst decodes only these raster formats; PIL can verify many more
         # (BMP, TIFF, ICO, ...) that would crash the compile, so skip them.
-        return fmt in {"PNG", "JPEG", "GIF", "WEBP"}
+        return _TYPST_RASTER.get(fmt)
     except Exception:
-        return False
+        return None
 
 
-def _image_ref(path: Path) -> str:
+def _embeddable(path: Path) -> bool:
+    """True if Typst can embed the image file; a file that exists but is
+    corrupt or undecodable gets skipped instead of failing the compile,
+    consistent with the missing-file policy."""
+    return _typst_format(path) is not None
+
+
+def _image_ref(path: Path, fmt: str) -> str:
     """The embed line for an image path; render() rewrites these to local
     copies. Absolute paths (which Typst rejects) become comment lines that
     only embed via render()."""
     if path.is_absolute():
         return f"// docloom-image: {path.as_posix()}"
-    return f"#image({_str(path.as_posix())})"
+    return f"#image({_str(path.as_posix())}, format: {_str(fmt)})"
 
 
 def _caption(text: str, theme: Theme) -> str:
@@ -270,9 +290,12 @@ def _block(b: Block, theme: Theme, numbers: dict[str, int]) -> list[str]:
         if not b.path:
             return []
         path = Path(b.path)
-        if not path.is_file() or not _embeddable(path):
+        if not path.is_file():
             return []
-        lines = [_image_ref(path)]
+        fmt = _typst_format(path)
+        if fmt is None:
+            return []
+        lines = [_image_ref(path, fmt)]
         if b.caption:
             lines.append(_caption(b.caption, theme))
         return lines
@@ -281,8 +304,9 @@ def _block(b: Block, theme: Theme, numbers: dict[str, int]) -> list[str]:
         if b.title:
             lines.append(f'#text(weight: "bold")[{_esc(b.title)}]')
         path = Path(b.path) if b.path else None
-        if path and path.is_file() and _embeddable(path):
-            lines.append(_image_ref(path))
+        fmt = _typst_format(path) if path and path.is_file() else None
+        if path and fmt:
+            lines.append(_image_ref(path, fmt))
             if b.caption:
                 lines.append(_caption(b.caption, theme))
             return lines
@@ -293,7 +317,7 @@ def _block(b: Block, theme: Theme, numbers: dict[str, int]) -> list[str]:
                 lines.append(_caption(b.caption, theme))
             return lines
         rows = [
-            [s.name] + ["" if v is None else f"{v:g}" for v in s.values]
+            [s.name] + ["" if chart_svg._finite(v) is None else chart_svg._fmt(v) for v in s.values]
             for s in b.series
         ]
         return lines + _table(
@@ -388,6 +412,12 @@ def to_typst(doc: Document, theme: Theme) -> str:
         '#set page(paper: "a4", margin: 2.2cm)',
         f'#set text(font: {_font(theme.font_body)}, size: 11pt, '
         f'fill: rgb("{theme.text}"))',
+        # justify: true already implies linebreaks: "optimized", so these
+        # costs (typst>=0.12, well below this repo's typst>=0.13 floor) take
+        # effect immediately: fewer widows/orphans/runts, tamer hyphenation.
+        '#set text(lang: "en", hyphenate: true, '
+        "costs: (runt: 200%, widow: 250%, orphan: 250%, hyphenation: 150%))",
+        "#show heading: set text(hyphenate: false)",
         "#set par(justify: true)",
         f"#show heading: set text(font: {_font(theme.font_heading)}, "
         f'fill: rgb("{theme.primary}"))',
@@ -485,9 +515,10 @@ def _inject_logo(source: str, doc: Document, tmp_dir: Path) -> str:
     """Replace the __DOCLOOM_LOGO__ placeholder with a right-aligned, sized
     brand logo (copied local to the compile dir), or drop it."""
     logo = doc.logo
-    if logo and logo.path and Path(logo.path).is_file() and _embeddable(Path(logo.path)):
+    fmt = _typst_format(Path(logo.path)) if logo and logo.path and Path(logo.path).is_file() else None
+    if logo and logo.path and fmt:
         p = Path(logo.path)
-        local = "logo" + p.suffix
+        local = f"logo.{fmt}"
         try:
             shutil.copy(p, tmp_dir / local)
             # count=1: the placeholder line is always emitted first, before any
@@ -500,7 +531,7 @@ def _inject_logo(source: str, doc: Document, tmp_dir: Path) -> str:
             # mark is a consistent size across every rendered format.
             return source.replace(
                 "// __DOCLOOM_LOGO__",
-                f"#align(right)[#image({_str(local)}, height: 1.27cm)]",
+                f"#align(right)[#image({_str(local)}, height: 1.27cm, format: {_str(fmt)})]",
                 1,
             )
         except OSError:
@@ -531,20 +562,26 @@ def render(doc: Document, theme: Theme, out_path: Path) -> Path:
         # replacing the shorter one first would also corrupt the longer one's
         # still-unreplaced marker line. Replacing longest-first means a marker
         # is always fully substituted before any shorter path can match inside it.
+        # Substitutions apply in a single left-to-right pass over the ORIGINAL
+        # source (not sequential str.replace calls): a generated local name
+        # (e.g. img0.png) can otherwise collide with another block's real
+        # relative path, and a later replace-all would silently re-rewrite
+        # text a previous replacement had just inserted.
+        replacements: dict[str, str] = {}
         for i, path in enumerate(sorted(images, key=len, reverse=True)):
             p = Path(path)
-            local = f"img{i}{p.suffix}"
-            ref = (
-                f"// docloom-image: {p.as_posix()}"
-                if p.is_absolute()
-                else f"#image({_str(p.as_posix())})"
-            )
+            fmt = _typst_format(p)
+            local = f"img{i}.{fmt}"
+            ref = _image_ref(p, fmt)
             try:
                 shutil.copy(path, tmp_dir / local)
             except OSError:  # vanished or unreadable since the is_file check
-                source = source.replace(ref, f"// docloom-image skipped: {p.as_posix()}")
+                replacements[ref] = f"// docloom-image skipped: {p.as_posix()}"
                 continue
-            source = source.replace(ref, f"#image({_str(local)})")
+            replacements[ref] = f"#image({_str(local)}, format: {_str(fmt)})"
+        if replacements:
+            pattern = re.compile("|".join(re.escape(r) for r in replacements))
+            source = pattern.sub(lambda m: replacements[m.group(0)], source)
         source = _inject_logo(source, doc, tmp_dir)
         # Copy any brand font files so typst resolves the theme's font names.
         font_paths = _copy_fonts(theme, tmp_dir)

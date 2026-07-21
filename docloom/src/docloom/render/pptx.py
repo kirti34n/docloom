@@ -45,7 +45,7 @@ from ..ir import (
     spans,
 )
 from ..theme import Theme, contrast_ratio, hex_to_rgb
-from . import RenderError, chart_svg, diagram_pptx, diagram_svg, raster
+from . import RenderError, chart_svg, diagram_pptx, diagram_svg, raster, textfit
 
 # target pixel width for rasterized SVG (2x a 640pt-wide chart), so the picture
 # stays crisp on a projector and in print without bloating the deck
@@ -106,6 +106,18 @@ _GROWABLE_BLOCKS = (Heading, Paragraph, BulletList, NumberedList, Callout)
 _FIXED_SIZE_BLOCKS = (Table, Code, Chart, StatRow, Image, Artifact, Diagram)
 TABLE_PT = 12  # preferred row font size, shrunk toward TABLE_MIN_PT to fit
 TABLE_MIN_PT = 9
+# Post-layout text-fit floor and trigger. MIN_FIT_PT mirrors TABLE_MIN_PT's
+# rationale (9pt is the smallest size that reads from a conference-room
+# screen); FIT_SLACK_PT is hysteresis: a frame must measurably overflow by
+# more than this before its runs are rewritten, so every frame the 1.3x
+# _est_lines allocator already sized generously stays byte-identical.
+# Not mirrored into lint.py: lint's height model is unaffected -- this pass
+# shrinks font sizes INSIDE unchanged box heights, it never touches geometry.
+MIN_FIT_PT = 9.0
+FIT_SLACK_PT = 6.0
+# Kill switch: flipping this to False makes _fit_text_frames a no-op, so the
+# PPTX output is byte-identical to the pre-autofit-fix build. See render().
+TEXTFIT_ENABLED = True
 TABLE_VPAD = 0.06  # matches the cell.margin_top + cell.margin_bottom set below
 CHART_TYPE = {
     "bar": XL_CHART_TYPE.BAR_CLUSTERED,
@@ -678,6 +690,13 @@ def _table_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
         n_rows, cols, Inches(tx), Inches(y), Inches(tw), Inches(th)
     )
     tbl = frame.table
+    # Table has no authored alt field (unlike Image/Artifact); the caption is
+    # the closest authored description, falling back to the column headers
+    # so a screen reader still gets SOMETHING beyond "table, 3 by 4" (see
+    # _set_alt's docstring for why this reaches into the oxml by hand).
+    cols_desc = ", ".join(t for t in (plain(c) for c in header) if t)
+    _set_alt(frame, b.caption or (f"Table with columns: {cols_desc}" if cols_desc else "Table"),
+             title="Table")
     tbl.first_row = False
     tbl.horz_banding = False
     col_w = _table_col_widths(header, rows, cols, tw)
@@ -789,20 +808,28 @@ def _placeholder_block(slide, x, y, w, max_h, theme, alt: str, caption: str | No
     return h
 
 
-def _set_alt(pic, alt: str) -> None:
-    """Set a picture's accessible description from Image.alt. python-pptx
-    exposes no high-level alt-text setter (the same reason diagram_pptx.py's
-    raster fallback reaches into the oxml element directly), so this writes
-    the docPr descr attribute by hand. Previously nothing set it at all: an
-    Image/Artifact's alt text reached HTML (alt=) and Markdown (![alt]) but
-    never PPTX, a genuine accessibility gap invisible to every existing
-    structural test because alt was never expected to render as slide TEXT
-    in the first place. Best-effort: a metadata hiccup here must never fail
-    the embed itself."""
+def _set_alt(shape, alt: str, title: str | None = None) -> None:
+    """Set a shape's accessible name (docPr title) and description (docPr
+    descr) from an authored alt/caption string. python-pptx exposes no
+    high-level alt-text setter for ANY shape type (the same reason
+    diagram_pptx.py's raster fallback reaches into the oxml element
+    directly), so this writes the docPr attributes by hand. Originally
+    pictures only (`pic._element.nvPicPr.cNvPr`): an Image/Artifact's alt
+    text reached HTML (alt=) and Markdown (![alt]) but never PPTX, a genuine
+    accessibility gap invisible to every existing structural test because
+    alt was never expected to render as slide TEXT in the first place.
+    Generalized via `_element._nvXxPr` -- python-pptx names the non-visual
+    properties container differently per shape type (nvPicPr for pictures,
+    nvGraphicFramePr for charts/tables, nvSpPr for plain autoshapes,
+    nvGrpSpPr for groups), but every one of those XML classes exposes the
+    same `_nvXxPr` alias to its own container, so one call site now covers
+    all of them. Best-effort: a metadata hiccup here must never fail the
+    embed itself."""
     if not alt:
         return
     try:
-        pic._element.nvPicPr.cNvPr.set("descr", alt)
+        shape._element._nvXxPr.cNvPr.set("descr", alt)
+        shape._element._nvXxPr.cNvPr.set("title", title or alt)
     except Exception:
         pass
 
@@ -963,6 +990,11 @@ def _chart_block(slide, b: Chart, theme, numbers, x, y, w, max_h,
         frame = slide.shapes.add_chart(
             CHART_TYPE[b.chart], Inches(x), Inches(y), Inches(w), Inches(h), data
         )
+        # Chart has no authored alt field (unlike Image/Artifact); the title
+        # is the closest authored accessible name and the caption the closest
+        # description, same reasoning as the table's descr above.
+        _set_alt(frame, b.caption or b.title or f"{b.chart.capitalize()} chart",
+                 title=b.title or "Chart")
         chart = frame.chart
         chart.font.name = theme.font_body
         chart.font.size = Pt(11)
@@ -977,6 +1009,13 @@ def _chart_block(slide, b: Chart, theme, numbers, x, y, w, max_h,
             chart.legend.include_in_layout = False
         else:
             chart.has_legend = False
+        if b.chart == "bar":
+            # Office's native default draws horizontal-bar categories
+            # first-at-bottom; every other docloom painter (chart_svg, used
+            # by HTML/DOCX/Typst and this file's own fallback) draws
+            # first-at-top. Flip only the category axis so the same Chart IR
+            # reads the same way across every format.
+            chart.category_axis.reverse_order = True
         try:
             _style_chart(chart, b, theme)
         except Exception:
@@ -1131,11 +1170,18 @@ def _block(slide, b: Block, theme, numbers, x, y, w, max_h,
     raise RenderError(f"unhandled block type {type(b).__name__}")
 
 
-def _natural_h(b: Block, w: float, scale: float = 1.0) -> float:
+def _natural_h(b: Block, w: float, scale: float = 1.0,
+               theme=None, max_h: float | None = None) -> float:
     """Estimate a block's natural (unclamped) height in inches, so _body can
     tell when a slide is underfull and rebalance the whitespace. `scale`
     mirrors the font-size growth _block applies for the same block types, so
-    the grow pass can verify a candidate scale against this same formula."""
+    the grow pass can verify a candidate scale against this same formula.
+
+    `theme`/`max_h` let a Diagram report its TRUE fitted height (a wide, short
+    architecture diagram fits to the slide width and renders far shorter than
+    the flat DIAGRAM_H_IN reserve): without this, the layout reserves 4.6in for
+    a ~1.5in band and leaves the rest as dead space at the slide bottom instead
+    of centering the content."""
     if isinstance(b, Heading):
         s = HEAD_PT[b.level] * scale
         return _est_lines(plain(b.text), s, w) * _line_h(s)
@@ -1166,7 +1212,25 @@ def _natural_h(b: Block, w: float, scale: float = 1.0) -> float:
     if isinstance(b, Chart):
         return LAYOUT["chart_max_h_in"] + (CAPTION_H_IN if b.caption else 0.0)
     if isinstance(b, Diagram):
-        return DIAGRAM_H_IN + (CAPTION_H_IN if b.caption else 0.0)
+        cap = CAPTION_H_IN if b.caption else 0.0
+        # Aspect-aware: solve once and return the height the diagram will
+        # ACTUALLY occupy after fitting to width `w`, capped at DIAGRAM_H_IN.
+        # A wide LR pipeline fits to width and renders as a short band, so this
+        # is much less than 4.6in -- letting _body center the content rather
+        # than stranding it at the top of a phantom 4.6in reserve.
+        if theme is not None and max_h and max_h > 0 and b.nodes:
+            try:
+                s = diagram_svg.solve(
+                    b, diagram_pptx.theme_dict(theme),
+                    target_aspect=(w / max_h),
+                )
+                cw, ch = s.width / 96.0, s.height / 96.0
+                if cw > 0 and ch > 0:
+                    k = min(w / cw, max(0.1, max_h - cap) / ch)
+                    return min(DIAGRAM_H_IN, k * ch) + cap
+            except Exception:
+                pass  # fall back to the flat reserve on any solve failure
+        return DIAGRAM_H_IN + cap
     if isinstance(b, (Image, Artifact)):
         # a resolved image tends to fill much of the content area; estimate high
         # so a lone image centers near the top instead of floating low.
@@ -1244,7 +1308,7 @@ def _body(slide, blocks: list[Block], theme, numbers, x, y, w,
     # it (P5 audit defect 6); treat its natural height as "fills avail" so
     # the slack pass below doesn't also push it down first.
     solo_chart = n == 1 and isinstance(blocks[0], Chart)
-    nat = [max(0.0, _natural_h(b, w)) for b in blocks]
+    nat = [max(0.0, _natural_h(b, w, theme=theme, max_h=avail)) for b in blocks]
     if solo_chart:
         cap_h = CAPTION_H_IN if blocks[0].caption else 0.0
         nat[0] = max(nat[0], avail - cap_h)
@@ -1625,7 +1689,7 @@ def _quote_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int]) -> None
         size = next(
             (pt for pt in (30, 24, 20, 16)
              if _est_lines(plain(quote_text), pt, qw) * _line_h(pt) <= avail),
-            14,  # ponytail: floor at 14pt; auto_size shrinks text into the clamped box
+            14,  # floor the ladder at 14pt; _fit_text_frames measures and bakes any further shrink
         )
         qh = min(avail, _est_lines(plain(quote_text), size, qw) * _line_h(size))
         y = max(1.4, (SLIDE_H - qh - 0.3 - attr_h) / 2)
@@ -1799,48 +1863,70 @@ def _image_side_slide(slide, s: Slide, doc: Document, theme: Theme,
     pane_w = SLIDE_W * LAYOUT["image_pane_ratio"]
     left_side = s.layout == "image_left"
     px = 0.0 if left_side else SLIDE_W - pane_w
-    try:
-        pic = slide.shapes.add_picture(str(s.image.path), Inches(px), 0)
-    except Exception:  # unembeddable file: behave like content layout
-        _content_slide(slide, s, doc, theme, numbers, accent)
-        return
-    _set_alt(pic, s.image.alt)
-    # Contain-fit, not cover-fit: a side image is often a diagram or chart, and
-    # cropping its edge would silently drop content. Never upscale past native.
-    _contain_fit(pic, px, 0.0, pane_w, SLIDE_H, max_scale=1.0)
-    # Matte a band that hugs the fitted image's height, not the full 7.5in
-    # pane: contain-fitting a wide/short image (a banner) into this pane
-    # otherwise leaves 80% of the pane as dead gray around a sliver of
-    # image (P5 audit defect 7, measured live). _contain_fit already
-    # centered the picture within the full-height box, so a matte band the
-    # same height as the fitted image, centered the same way, encloses it
-    # with a deliberate pad instead of a near-empty pane.
-    #
-    # Finding B: this layout never drew s.image.caption at all -- DOCX/HTML/
-    # MD all keep it (flatten_slides turns a deck-only document's s.image
-    # into a real Image block for the report renderers), only PPTX silently
-    # dropped it. Reserve a caption strip below the image (same cap_h
-    # literal _place_picture uses) inside the matte, instead of only
-    # bracketing the image itself.
-    fitted_h = pic.height / 914400
     pad = 0.35
     cap_h = IMAGE_CAPTION_H_IN if s.image.caption else 0.0
-    matte_h = min(SLIDE_H, fitted_h + 2 * pad + cap_h)
-    matte_y = (SLIDE_H - matte_h) / 2
-    matte = _rect(slide, px, matte_y, pane_w, matte_h, theme.surface)
-    pic._element.addprevious(matte._element)  # matte behind the picture
-    # Re-anchor the picture to the top of its own pad within the (now
-    # possibly taller) matte -- _contain_fit centered it across the full
-    # SLIDE_H box, which no longer matches once cap_h grows the matte
-    # asymmetrically to make room for the caption strip below.
-    pic.top = Inches(matte_y + pad)
-    if s.image.caption:
-        cap_tf = _box(slide, px, matte_y + pad + fitted_h + 0.05, pane_w, 0.22)
-        cap_tf.paragraphs[0].alignment = PP_ALIGN.CENTER
-        _runs(
-            cap_tf.paragraphs[0], s.image.caption, theme, {}, 11, theme.muted,
-            theme.font_body, italic=True,
+    pic = _add_picture(slide, Path(s.image.path), theme, px, 0.0)
+    if pic is None:
+        # Unembeddable file (an SVG with no rasterizer extra installed, or a
+        # corrupt raster): previously this fell back to _content_slide, which
+        # silently dropped the image, its alt text, and its caption, and drew
+        # a full-width title that the image_right corner logo then overlapped
+        # (a P5-class regression, since _content_slide never reads s.image).
+        # Keep the side-pane layout and draw a placeholder in the pane instead,
+        # so the logo/title geometry above still accounts for this being an
+        # image layout, and nothing authored is silently lost.
+        warnings.warn(
+            f"pptx: image could not be embedded ({s.image.path!r}); "
+            "placeholder shown", stacklevel=2,
         )
+        box_h = min(1.6, SLIDE_H - 2 * pad - cap_h)
+        ph_y = (SLIDE_H - (box_h + cap_h)) / 2
+        _placeholder_block(
+            slide, px + pad, ph_y, pane_w - 2 * pad, box_h + cap_h, theme,
+            s.image.alt, s.image.caption,
+        )
+    else:
+        _set_alt(pic, s.image.alt)
+        # Contain-fit, not cover-fit: a side image is often a diagram or chart, and
+        # cropping its edge would silently drop content. Never upscale past native.
+        # Reserve the top/bottom pad and the caption strip BEFORE fitting: fitting
+        # into the full SLIDE_H and only afterward re-anchoring the picture inside
+        # the pad let a tall/portrait image's fitted height alone reach 7.5in, so
+        # the pad push and the caption strip both landed off the bottom of the
+        # slide (P5-class regression, measured live).
+        avail_h = SLIDE_H - 2 * pad - cap_h
+        _contain_fit(pic, px, pad, pane_w, avail_h, max_scale=1.0)
+        # Matte a band that hugs the fitted image's height, not the full 7.5in
+        # pane: contain-fitting a wide/short image (a banner) into this pane
+        # otherwise leaves 80% of the pane as dead gray around a sliver of
+        # image (P5 audit defect 7, measured live). _contain_fit already
+        # centered the picture within the reduced-height box, so a matte band
+        # the same height as the fitted image, centered the same way, encloses
+        # it with a deliberate pad instead of a near-empty pane.
+        #
+        # Finding B: this layout never drew s.image.caption at all -- DOCX/HTML/
+        # MD all keep it (flatten_slides turns a deck-only document's s.image
+        # into a real Image block for the report renderers), only PPTX silently
+        # dropped it. Reserve a caption strip below the image (same cap_h
+        # literal _place_picture uses) inside the matte, instead of only
+        # bracketing the image itself.
+        fitted_h = pic.height / 914400
+        matte_h = min(SLIDE_H, fitted_h + 2 * pad + cap_h)
+        matte_y = (SLIDE_H - matte_h) / 2
+        matte = _rect(slide, px, matte_y, pane_w, matte_h, theme.surface)
+        pic._element.addprevious(matte._element)  # matte behind the picture
+        # Re-anchor the picture to the top of its own pad within the (now
+        # possibly taller) matte -- _contain_fit centered it across the
+        # reduced-height box, which no longer matches once cap_h grows the
+        # matte asymmetrically to make room for the caption strip below.
+        pic.top = Inches(matte_y + pad)
+        if s.image.caption:
+            cap_tf = _box(slide, px, matte_y + pad + fitted_h + 0.05, pane_w, 0.22)
+            cap_tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+            _runs(
+                cap_tf.paragraphs[0], s.image.caption, theme, {}, 11, theme.muted,
+                theme.font_body, italic=True,
+            )
     tx = pane_w + MARGIN if left_side else MARGIN
     tw = SLIDE_W - pane_w - 2 * MARGIN
     logo_present = _usable_image(doc.logo)
@@ -1947,6 +2033,106 @@ def _sources_slide(prs, blank, doc: Document, theme: Theme) -> None:
         y += h
 
 
+def _frame_paras(tf) -> list[textfit.ParaSpec] | None:
+    """Extract measurable ParaSpecs from a text frame. Returns None when any
+    run lacks an explicit size or font name -- _runs always sets both, so a
+    frame that doesn't match that shape is skipped rather than mis-measured."""
+    paras = []
+    for p in tf.paragraphs:
+        runs = []
+        for r in p.runs:
+            if r.font.size is None or not r.font.name:
+                return None
+            runs.append(textfit.RunSpec(
+                r.text or "", r.font.name, r.font.size.pt,
+                bool(r.font.bold), bool(r.font.italic),
+            ))
+        pPr = p._p.pPr  # may be None; marL/indent are EMU string attributes
+        marL = int(pPr.get("marL", "0")) if pPr is not None else 0
+        indent = int(pPr.get("indent", "0")) if pPr is not None else 0
+        sa = p.space_after
+        paras.append(textfit.ParaSpec(
+            runs=tuple(runs),
+            space_after_pt=sa.pt if sa is not None else 0.0,
+            first_indent_in=max(0, marL + indent) / 914400,
+            cont_indent_in=max(0, marL) / 914400,
+        ))
+    return paras
+
+
+def _fit_one_frame(shape) -> None:
+    tf = shape.text_frame
+    bodyPr = tf._txBody.bodyPr  # CT_TextBody.bodyPr is a required child (verified)
+    if bodyPr.find(qn("a:normAutofit")) is None:
+        return  # only _box frames opt in; diagram/table/chart text never carries it
+    inner_w = (shape.width - tf.margin_left - tf.margin_right) / 914400
+    inner_h = (shape.height - tf.margin_top - tf.margin_bottom) / 914400
+    if inner_w <= 0.05 or inner_h <= 0.05:
+        return
+    paras = _frame_paras(tf)
+    if not paras:
+        return
+    need = textfit.required_height_pt(paras, inner_w, 1.0, 0.0)
+    if need <= inner_h * 72.0 + FIT_SLACK_PT:
+        return  # fits (within slack): leave today's XML byte-identical
+    res = textfit.fit_scale(paras, inner_w, inner_h, MIN_FIT_PT)
+    if res.scale >= 1.0 and res.lnspc_reduction == 0.0:
+        return
+    for p in tf.paragraphs:
+        if res.lnspc_reduction:
+            p.line_spacing = 1.0 - res.lnspc_reduction  # <a:lnSpc><a:spcPct val="90000"/>
+        for r in p.runs:
+            # floor to half-point, never round up past the measured fit; the
+            # MIN_FIT_PT clamp is defense-in-depth against half-point
+            # truncation ever landing a run under the legibility floor that
+            # fit_scale's own (protected-run-derived) scale already honours
+            # -- but ONLY for runs that started at/above the floor. A run
+            # authored below MIN_FIT_PT to begin with (a citation
+            # superscript) is deliberate small typography, not a legibility
+            # bug: it must scale down proportionally with the rest of the
+            # frame, not get bumped back up above its own authored size.
+            orig_pt = r.font.size.pt
+            scaled_pt = int(orig_pt * res.scale * 2) / 2
+            if orig_pt >= MIN_FIT_PT - 1e-9:
+                scaled_pt = max(MIN_FIT_PT, scaled_pt)
+            r.font.size = Pt(scaled_pt)
+    # After baking, fontScale MUST be 100000: PowerPoint multiplies run sz by
+    # fontScale at render time, so echoing the applied scale here would shrink
+    # the text a second time in PowerPoint while every other renderer draws
+    # the baked size once. 100000 == "already fits; keep autofit for edits".
+    for tag in ("a:normAutofit", "a:spAutoFit", "a:noAutofit"):
+        for el in bodyPr.findall(qn(tag)):
+            bodyPr.remove(el)
+    bodyPr.insert(0, bodyPr.makeelement(
+        qn("a:normAutofit"), {"fontScale": "100000", "lnSpcReduction": "0"},
+    ))
+    if not res.fits:
+        warnings.warn(
+            f"pptx: text still exceeds its box at the {MIN_FIT_PT:g}pt "
+            "legibility floor; it is drawn at the floor size and may overflow "
+            "-- split the slide or shorten the text",
+            stacklevel=2,
+        )
+
+
+def _fit_text_frames(prs) -> None:
+    """Measured autofit pass over every _box text frame (see textfit.py's
+    module docstring for why the bare normAutofit python-pptx writes is a
+    lie everywhere except interactive desktop PowerPoint). Best-effort per
+    frame: a corrupt font file or unexpected XML shape must never lose a
+    render, so each frame failure degrades to today's behavior."""
+    if not TEXTFIT_ENABLED:
+        return
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            try:
+                _fit_one_frame(shape)
+            except Exception:
+                continue
+
+
 def render(doc: Document, theme: Theme, out_path: Path) -> Path:
     if not doc.slides:
         raise RenderError("document has no slides; add slides[] to render pptx")
@@ -1959,5 +2145,6 @@ def render(doc: Document, theme: Theme, out_path: Path) -> Path:
         _render_slide(prs, blank, s, doc, theme, numbers)
     if doc.sources and cited_ids(doc):
         _sources_slide(prs, blank, doc, theme)
+    _fit_text_frames(prs)
     prs.save(str(out_path))
     return Path(out_path)

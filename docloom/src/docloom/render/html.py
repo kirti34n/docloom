@@ -91,6 +91,12 @@ figure.diagram svg{max-width:100%;height:auto;display:block;margin:0 auto}
 .stat .delta{color:var(--accent);font-size:.85rem;font-weight:600}
 sup.cite a{text-decoration:none;font-weight:bold}
 ol.sources li{margin:.35rem 0}
+@media print{
+  @page{margin:2cm}
+  p{orphans:3;widows:3;hyphens:auto}
+  figure,table,pre{break-inside:avoid}
+  h1,h2,h3{break-after:avoid;hyphens:none;text-wrap:balance}
+}
 """
 
 

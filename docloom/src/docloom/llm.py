@@ -176,7 +176,7 @@ def _filter_union_errors(data: Any, exc: Exception) -> list[str]:
         for segment in loc:
             if isinstance(segment, str) and segment in _MODEL_NAMES:
                 tag = obj.get("type") if isinstance(obj, dict) else None
-                expected = _TAG_TO_MODEL.get(tag)
+                expected = _TAG_TO_MODEL.get(tag) if isinstance(tag, str) else None
                 if expected is not None and expected != segment:
                     return False
                 continue  # member names are not keys in the data

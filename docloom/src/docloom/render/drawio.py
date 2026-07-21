@@ -33,7 +33,6 @@ content must not be compressed.
 """
 from __future__ import annotations
 
-import time
 from xml.sax.saxutils import escape, quoteattr
 
 from ..ir import Diagram, diagram_hash
@@ -250,11 +249,14 @@ def render_drawio(d: Diagram, solved: SolvedDiagram, theme: dict | None = None) 
     "surface": theme.surface, "text": theme.text, "muted": theme.muted,
     "background": theme.background}`.
 
-    Deterministic given (solved, theme, d) except for the `modified`
-    timestamp attribute on <mxfile>, which is wall-clock (draw.io itself
-    stamps this on every save; it carries no semantic weight and is not part
-    of the diagram_hash contract). The timestamp is UTC, matching its "Z"
-    suffix (time.gmtime(), not the local-time default of time.strftime()).
+    Byte-deterministic given (solved, theme, d): two independent calls with
+    the same inputs produce identical XML, byte for byte. draw.io itself
+    stamps a wall-clock `modified` attribute on <mxfile> on every save, but
+    that attribute carries no semantic weight and is not part of the
+    diagram_hash contract, so this emitter omits it entirely rather than
+    fake a value -- checked against the official schema
+    (tests/data/mxfile.xsd), `modified` is optional, and omission validates
+    like any other absent optional attribute.
     """
     t = dict(THEME)
     t.update(theme or {})
@@ -347,8 +349,7 @@ def render_drawio(d: Diagram, solved: SolvedDiagram, theme: dict | None = None) 
     body = "".join(cells)
     hash_comment = f"<!-- docloom:hash:{diagram_hash(d)} -->"
     xml = (
-        f'<mxfile host="docloom" modified="{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}" '
-        f'agent="docloom" version="24.0.0" compressed="false">'
+        f'<mxfile host="docloom" agent="docloom" version="24.0.0" compressed="false">'
         f'{hash_comment}'
         f'<diagram id="d0" name={quoteattr(d.title or solved.title or "Diagram")}>'
         f'<mxGraphModel dx="800" dy="600" grid="1" gridSize="10" guides="1" '

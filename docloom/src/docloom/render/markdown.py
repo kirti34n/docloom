@@ -51,7 +51,7 @@ def _longest_tick_run(text: str) -> int:
 
 def _esc_md(text: str) -> str:
     """Escape markdown specials in plain text (never applied to code)."""
-    text = re.sub(r"[\\`*_\[\]<>|]", r"\\\g<0>", text)
+    text = re.sub(r"[\\`&*_\[\]<>|~]", r"\\\g<0>", text)
     # collapse 4+ leading spaces first (they would be an indented code block),
     # so a marker that ends up in the 0-3 space range below still gets escaped
     text = re.sub(r"^ {4,}", "   ", text, flags=re.MULTILINE)
@@ -72,7 +72,10 @@ def _code_span(text: str) -> str:
     if not text:  # "``" alone is not a valid empty code span in CommonMark
         return "` `"
     ticks = "`" * (_longest_tick_run(text) + 1)
-    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    pad = " " if (
+        text.startswith("`") or text.endswith("`")
+        or (text.startswith(" ") and text.endswith(" ") and text.strip(" ") != "")
+    ) else ""
     return f"{ticks}{pad}{text}{pad}{ticks}"
 
 
@@ -212,7 +215,7 @@ def _image_md(
         return ""
     dest = (copier.dest(path) if copier is not None else None) or path
     dest_ref = f"<{dest}>" if any(c in dest for c in " ()") else dest
-    alt = _one_line(alt).replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+    alt = _esc_md(_one_line(alt))
     out = f"![{alt}]({dest_ref})"
     if caption:
         out += f"\n\n{_wrap_flank(_esc_md(_one_line(caption)), '*')}"
@@ -289,7 +292,7 @@ def _diagram_md(b: Diagram, index: int, theme: Theme, writer: _AssetCopier | Non
             svg = ""
     rel = writer.write(f"diagram-{index}.svg", svg) if svg and writer is not None else None
     if rel:
-        img_alt = label.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+        img_alt = _esc_md(label)
         out = f"![{img_alt}]({rel})"
     else:
         # the diagram had content but generation or the write failed: a
@@ -396,9 +399,13 @@ def _footnotes_md(doc: Document, numbers: dict[str, int]) -> str:
         if src.publisher:
             line += f" \u2014 {_esc_md(src.publisher)}"
         if src.date:
-            line += f" ({src.date})"
+            line += f" ({_esc_md(src.date)})"
         if src.url:
-            line += f", {src.url}"
+            dest = _safe_dest(src.url)
+            if dest:
+                line += f", [{_esc_md(src.url)}]({dest})"
+            else:
+                line += f", {_esc_md(src.url)}"
         defs.append(f"[^{numbers[src.id]}]: {_one_line(line)}")
     return "\n".join(defs)
 

@@ -3,11 +3,17 @@ SVG string. No external libraries. Every report renderer that cannot embed a
 native chart (html.py inlines it; typst.py embeds it via image()) uses this
 instead of falling back to a bare data table.
 
-Colors follow the theme: series use theme.primary/theme.accent (extended
-with tint/shade steps for extra series, mirroring pptx.py's on-brand
-palette); axes, gridlines, and tick text use theme.muted; text uses
-theme.font_body. None values are gaps: bars/points are skipped and lines
-break rather than interpolate across them.
+Colors follow the theme: a single series is the brand accent alone (the
+title already names it); two series are the two brand hues, still a
+legitimate on-brand comparison; three or more collapse to one brand
+accent for the "message" series plus neutral greys for the rest, instead
+of cycling through ever-more-derived brand-hue tints (a rainbow). Pie
+slices are all equal-weight categories rather than a message-plus-context
+series, so they keep the fuller tint/shade palette. Axes, gridlines, and
+tick text use theme.muted; text uses theme.font_body, set once on the
+<svg> root so every label in the chart shares one typeface. None values
+are gaps: bars/points are skipped and lines break rather than interpolate
+across them.
 """
 
 from __future__ import annotations
@@ -37,13 +43,33 @@ def _shade(color: str, f: float) -> str:
     return "#%02X%02X%02X" % tuple(round(c * (1 - f)) for c in (r, g, b))
 
 
-def _palette(theme: Theme) -> list[str]:
-    """On-brand categorical colors derived from primary/accent (mirrors
-    pptx.py's _series_palette so native and painted charts agree)."""
+def _categorical_palette(theme: Theme) -> list[str]:
+    """On-brand categorical colors derived from primary/accent, for charts
+    where every slot is its own identity with equal weight (pie slices --
+    unlike a multi-series chart there is no single "message" slice, so the
+    fuller tint/shade spread stays)."""
     return [
         theme.primary, theme.accent,
         _tint(theme.primary, 0.42), _shade(theme.accent, 0.28),
         _tint(theme.accent, 0.5), _shade(theme.primary, 0.28),
+    ]
+
+
+def _series_palette(theme: Theme, n: int) -> list[str]:
+    """Series colors for column/bar/line/area/scatter. One series is the
+    brand accent alone. Two are the two brand hues -- still a legitimate
+    on-brand comparison, not a rainbow. Three or more collapse to one
+    brand accent for the "message" series (index 0) plus neutral greys
+    for the rest, so a wider series count reads as message-plus-context
+    instead of cycling through more brand-hue tints."""
+    if n <= 1:
+        return [theme.accent]
+    if n == 2:
+        return [theme.primary, theme.accent]
+    return [
+        theme.accent,
+        _tint(theme.muted, 0.35), _shade(theme.muted, 0.2),
+        _tint(theme.muted, 0.6), _shade(theme.muted, 0.45), _tint(theme.muted, 0.15),
     ]
 
 
@@ -62,6 +88,16 @@ def _finite(v: float | None) -> float | None:
     """None (a gap) for missing or non-finite (NaN/Infinity) values, so
     adversarial data degrades to a gap instead of corrupting layout math."""
     return v if v is not None and math.isfinite(v) else None
+
+
+_MAX_MAGNITUDE = 1e300
+
+
+def _plottable(v: float | None) -> float | None:
+    """Like _finite but also gaps finite-but-astronomical magnitudes whose
+    tick/coordinate math overflows float; realistic data is never affected."""
+    f = _finite(v)
+    return f if f is not None and abs(f) <= _MAX_MAGNITUDE else None
 
 
 def _nice_num(x: float, round_: bool) -> float:
@@ -142,10 +178,12 @@ def _runs(points: list[tuple[float, float] | None]) -> list[list[tuple[float, fl
 def _band_marks(band: float, n: int, max_w: float = 22.0) -> tuple[float, float]:
     """Mark thickness and offset for `n` grouped bars sharing a category
     band: capped thickness (never fills the slot), a surface gap between
-    marks, centered in the band."""
+    marks, centered in the band. Marks fill about half the band -- bars
+    read as distinct columns with real air between categories, never a
+    wall-to-wall slab or a hairline."""
     if n <= 0:
         return 0.0, 0.0
-    usable = band * 0.74
+    usable = band * 0.5
     w = min(max_w, max(1.5, (usable - _GAP * (n - 1)) / n))
     group = w * n + _GAP * (n - 1)
     return w, (band - group) / 2
@@ -179,7 +217,13 @@ def _draw_legend(
     gap = 18.0
     x = 16.0
     row_y = y + 10
+    # Wrapping to a fresh row only helps a name that's too wide for the
+    # REMAINING space on the current row -- a name too wide for a whole
+    # fresh row would still run past the right edge every time. Cap each
+    # name to what a lone item on its own row could ever fit.
+    max_item_w = max(20.0, width - 16 - 16 - 14)
     for name, color in items:
+        name = _truncate(name, max_item_w, size)
         w = 14 + _text_w(name, size) + gap
         if x + w > width - 16 and x > 16.0:
             x = 16.0
@@ -205,24 +249,23 @@ def _wedge(cx: float, cy: float, r: float, a0: float, a1: float, fill: str, stro
 
 
 def _has_data(chart: Chart) -> bool:
-    return any(_finite(v) is not None for s in chart.series for v in s.values)
+    return any(_plottable(v) is not None for s in chart.series for v in s.values)
 
 
 def _x_category_chart(chart: Chart, theme: Theme, width: int, height: int, kind: str) -> str:
     """column / line / area: categories on X, values on Y."""
     n = max(len(chart.labels), max((len(s.values) for s in chart.series), default=0))
     labels = (list(chart.labels) + [""] * n)[:n]
-    series_vals = [([_finite(v) for v in s.values] + [None] * n)[:n] for s in chart.series]
-    palette = _palette(theme)
+    series_vals = [([_plottable(v) for v in s.values] + [None] * n)[:n] for s in chart.series]
+    n_series = len(chart.series)
+    palette = _series_palette(theme, n_series)
     parts: list[str] = []
+    names = [s.name or f"Series {i + 1}" for i, s in enumerate(chart.series)]
 
     top = 14.0
     if chart.title:
         parts.append(_text(16, top + 12, chart.title, size=14, weight="600", fill=theme.text))
         top += 28
-    if len(chart.series) > 1:
-        legend = [(s.name or f"Series {i + 1}", palette[i % len(palette)]) for i, s in enumerate(chart.series)]
-        top = _draw_legend(parts, legend, theme, width, top)
 
     all_vals = [v for vals in series_vals for v in vals if v is not None]
     if kind == "line":
@@ -233,28 +276,122 @@ def _x_category_chart(chart: Chart, theme: Theme, width: int, height: int, kind:
     vmin, vmax = ticks[0], ticks[-1]
     val_labels = [_fmt(t) for t in ticks]
 
+    # Columns with few enough marks label every bar directly and drop the
+    # value axis entirely -- the numbers live on the bars instead of off to
+    # the side. Lines/areas keep the axis (only their endpoint gets a
+    # direct label, never every point), per direct-label convention.
+    direct_values = kind == "column" and n * n_series <= 12
+    wants_end_labels = kind in ("line", "area") and 1 < n_series <= 3
+
     many_cats = n > 7
-    bottom = 52 if many_cats else 32
-    left = min(
+    # Rotated (-35deg), end-anchored category labels swing their far corner
+    # downward by roughly 0.574 * text-width (the rotation's vertical lever
+    # arm) beyond their own font size -- with the max truncate width (70)
+    # that dip alone is ~40px, well past a plain, non-rotated label's
+    # height. 60 keeps the worst case (a full-width truncated label) inside
+    # the viewBox instead of clipping its lowest corner off the bottom edge.
+    bottom = 60 if many_cats else 32
+    left = 16.0 if direct_values else min(
         max(34.0, 16 + max((_text_w(s, 10.5) for s in val_labels), default=0)), width * 0.42
     )
-    plot_x0, plot_y0 = left, top + 6
-    plot_x1 = max(width - 16.0, plot_x0 + 20)
+    if many_cats:
+        # The first category's rotated (-35deg), end-anchored label is drawn
+        # closest to the left edge; even truncated to its max width (70),
+        # the rotation's lever arm can still swing part of the glyph run
+        # past x=0 if the first band's center sits too close to it. Reserve
+        # a floor wide enough to absorb that worst case regardless of how
+        # tight the value-axis margin would otherwise be.
+        left = max(left, 66.0)
+    plot_x0 = left
+
+    # End-label fit requires BOTH enough vertical separation between the
+    # series' last points (so the text doesn't overlap) AND enough
+    # horizontal room for the label text itself -- a long series name must
+    # not collapse the plot to a sliver just because its two endpoints
+    # happen to be far apart in value.
+    end_labels_fit = False
+    widest = 0.0
+    if wants_end_labels:
+        lasts = []
+        for vals in series_vals:
+            real = [v for v in vals if v is not None]
+            if real:
+                lasts.append(real[-1])
+        span = (vmax - vmin) or 1.0
+        vertical_ok = len(lasts) < 2 or all(
+            (b - a) / span >= 0.09 for a, b in zip(sorted(lasts), sorted(lasts)[1:])
+        )
+        widest = max((_text_w(f"{nm} {val_labels[-1]}", 9.5) for nm in names), default=0)
+        width_ok = (24.0 + widest) <= width * 0.4
+        end_labels_fit = vertical_ok and width_ok
+    label_series = wants_end_labels and end_labels_fit
+
+    # The end-label margin is only worth paying when the labels are
+    # actually going to be drawn: a chart that falls back to a legend
+    # (label_series False) must not still pay the full right-margin cost
+    # for direct labels it never draws.
+    right_reserve = 16.0
+    if label_series:
+        right_reserve = 24.0 + widest
+    plot_x1 = max(width - right_reserve, plot_x0 + 20)
+    band_w = (plot_x1 - plot_x0) / n
+
+    # A legend row is only worth its space past 3 series; at 2-3, each
+    # series is named directly on the chart instead -- a single-line,
+    # left-anchored swatch+name key sitting right above the first bar
+    # group (columns), or the series' own line-end (line/area) -- but only
+    # where that actually fits without colliding. Measure first: a name
+    # row too wide for the first band, or two close-together line
+    # endpoints, fall back to a real legend rather than an unreadable mess.
+    bar_w = offset = 0.0
+    identity_inline = False
+    if kind == "column":
+        bar_w, offset = _band_marks(band_w, n_series)
+        if direct_values and 1 < n_series <= 3:
+            row_w = sum(16 + _text_w(nm, 10) + 14 for nm in names)
+            identity_inline = row_w <= band_w
+    show_legend = n_series > 3 or (
+        1 < n_series <= 3
+        and (
+            (kind == "column" and not identity_inline)
+            or (wants_end_labels and not end_labels_fit)
+        )
+    )
+    if show_legend:
+        legend = [(names[i], palette[i % len(palette)]) for i in range(n_series)]
+        top = _draw_legend(parts, legend, theme, width, top)
+    elif identity_inline:
+        iy = top + 12
+        ix = plot_x0
+        for i, nm in enumerate(names):
+            color = palette[i % len(palette)]
+            parts.append(f'<circle cx="{ix + 5:.1f}" cy="{iy - 3.5:.1f}" r="4.5" fill="{color}"/>')
+            parts.append(_text(ix + 14, iy, nm, size=10, fill=theme.text, anchor="start"))
+            ix += 16 + _text_w(nm, 10) + 14
+        top += 18
+
+    plot_y0 = top + (14 if direct_values else 6)
     plot_y1 = max(height - bottom, plot_y0 + 20)
 
     def yv(v: float) -> float:
         frac = (v - vmin) / (vmax - vmin) if vmax > vmin else 0.5
         return plot_y1 - frac * (plot_y1 - plot_y0)
 
-    for t in ticks:
-        ty = yv(t)
-        parts.append(
-            f'<line x1="{plot_x0:.1f}" y1="{ty:.1f}" x2="{plot_x1:.1f}" y2="{ty:.1f}" '
-            f'stroke="{theme.muted}" stroke-opacity="{0.55 if t == 0 else 0.2}" stroke-width="1"/>'
-        )
-        parts.append(_text(plot_x0 - 8, ty + 3.5, _fmt(t), size=10, fill=theme.muted, anchor="end"))
+    if direct_values:
+        pass  # no gridlines, no tick numbers -- values ride the bars instead
+    else:
+        # gridlines off except a single very light baseline -- the tick
+        # numbers stay (they carry the values that aren't directly labeled).
+        baseline_t = 0.0 if vmin <= 0 <= vmax else ticks[0]
+        for t in ticks:
+            ty = yv(t)
+            if t == baseline_t:
+                parts.append(
+                    f'<line x1="{plot_x0:.1f}" y1="{ty:.1f}" x2="{plot_x1:.1f}" y2="{ty:.1f}" '
+                    f'stroke="{theme.muted}" stroke-opacity="0.35" stroke-width="1"/>'
+                )
+            parts.append(_text(plot_x0 - 8, ty + 3.5, _fmt(t), size=10, fill=theme.muted, anchor="end"))
 
-    band_w = (plot_x1 - plot_x0) / n
     for i in range(n):
         lbl = labels[i]
         if not lbl:
@@ -273,7 +410,6 @@ def _x_category_chart(chart: Chart, theme: Theme, width: int, height: int, kind:
     y0 = yv(0.0) if vmin <= 0 <= vmax else plot_y1
 
     if kind == "column":
-        bar_w, offset = _band_marks(band_w, len(chart.series))
         for i in range(n):
             for s_i, vals in enumerate(series_vals):
                 v = vals[i]
@@ -287,12 +423,21 @@ def _x_category_chart(chart: Chart, theme: Theme, width: int, height: int, kind:
                     f'<rect x="{bx:.1f}" y="{by:.1f}" width="{bar_w:.1f}" height="{h:.1f}" '
                     f'rx="{rx:.1f}" fill="{palette[s_i % len(palette)]}"/>'
                 )
+                if direct_values:
+                    # identity (if any) already rode the inline key above;
+                    # the bar itself only needs its own explicit-formatted
+                    # value, never squeezed alongside a name.
+                    label_y = by - 4 if vy <= y0 else by + h + 12
+                    parts.append(
+                        _text(bx + bar_w / 2, label_y, _fmt(v), size=9.5, fill=theme.text, anchor="middle")
+                    )
     else:  # line / area
         show_dots = n <= 24
         for s_i, vals in enumerate(series_vals):
             color = palette[s_i % len(palette)]
             pts = [None if v is None else (plot_x0 + (i + 0.5) * band_w, yv(v)) for i, v in enumerate(vals)]
-            for run in _runs(pts):
+            runs = _runs(pts)
+            for run in runs:
                 if kind == "area":
                     poly = run + [(run[-1][0], y0), (run[0][0], y0)]
                     d = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in poly) + " Z"
@@ -306,6 +451,18 @@ def _x_category_chart(chart: Chart, theme: Theme, width: int, height: int, kind:
                 if show_dots or len(run) == 1:
                     for x, y in run:
                         parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.2" fill="{color}"/>')
+            if label_series and runs:
+                # identity + the endpoint value ride the line itself
+                # instead of a legend row -- text stays in the text token,
+                # never the series color, per the ink-vs-mark rule.
+                last_x, last_y = runs[-1][-1]
+                name = names[s_i]
+                last_v = next(v for v in reversed(vals) if v is not None)
+                parts.append(f'<circle cx="{last_x:.1f}" cy="{last_y:.1f}" r="2.5" fill="{color}"/>')
+                parts.append(
+                    _text(last_x + 8, last_y + 3.5, f"{name} {_fmt(last_v)}", size=9.5,
+                          fill=theme.text, anchor="start")
+                )
 
     return "".join(parts)
 
@@ -315,46 +472,121 @@ def _bar_chart(chart: Chart, theme: Theme, width: int, height: int) -> str:
     many category names better than a column chart."""
     n = max(len(chart.labels), max((len(s.values) for s in chart.series), default=0))
     labels = (list(chart.labels) + [""] * n)[:n]
-    series_vals = [([_finite(v) for v in s.values] + [None] * n)[:n] for s in chart.series]
-    palette = _palette(theme)
+    series_vals = [([_plottable(v) for v in s.values] + [None] * n)[:n] for s in chart.series]
+    n_series = len(chart.series)
+    palette = _series_palette(theme, n_series)
     parts: list[str] = []
 
     top = 14.0
     if chart.title:
         parts.append(_text(16, top + 12, chart.title, size=14, weight="600", fill=theme.text))
         top += 28
-    if len(chart.series) > 1:
-        legend = [(s.name or f"Series {i + 1}", palette[i % len(palette)]) for i, s in enumerate(chart.series)]
-        top = _draw_legend(parts, legend, theme, width, top)
 
     all_vals = [v for vals in series_vals for v in vals if v is not None]
     vmin, vmax = min(0.0, min(all_vals)), max(0.0, max(all_vals))
     ticks = _ticks(vmin, vmax)
     vmin, vmax = ticks[0], ticks[-1]
 
+    # Few enough marks: label every bar directly and drop the value axis --
+    # the numbers live at the bar ends instead of off to the side.
+    direct_values = n * n_series <= 12
+
+    # Series identity, when direct-labelled, rides the bar at each series'
+    # OWN first row that actually has data -- not category row 0 -- so a
+    # legitimate data gap in the first category never silently drops a
+    # series' name. A series with no data anywhere gets no direct label.
+    name_row: dict[int, int] = {}
+    if direct_values and 1 < n_series <= 3:
+        for s_i, vals in enumerate(series_vals):
+            first_i = next((i for i, v in enumerate(vals) if v is not None), None)
+            if first_i is not None:
+                name_row[s_i] = first_i
+
+    # See _x_category_chart: a legend row only earns its space past 3
+    # series; at 2-3 the series name rides its first-data bar instead --
+    # but only when direct labelling actually happened for every series
+    # (fewer than n_series names would mean silent, partial identity).
+    show_legend = n_series > 3 or (
+        1 < n_series <= 3 and (not direct_values or len(name_row) < n_series)
+    )
+
     left = min(
         max(40.0, 16 + max((_text_w(_truncate(lbl, 150, 10.5), 10.5) for lbl in labels), default=0)),
         width * 0.5,
     )
-    plot_x0, plot_y0 = left, top + 6
-    plot_x1 = max(width - 16.0, plot_x0 + 20)
-    plot_y1 = max(height - 30.0, plot_y0 + 20)
+
+    def _side_reserves(with_names: bool) -> tuple[float, float]:
+        """Widest direct-label text on each side (right for v>=0, left for
+        v<0), optionally with the series-name prefix included."""
+        right_texts: list[str] = []
+        left_texts: list[str] = []
+        for s_i, vals in enumerate(series_vals):
+            for i, v in enumerate(vals):
+                if v is None:
+                    continue
+                text = _fmt(v)
+                if with_names and name_row.get(s_i) == i:
+                    name = chart.series[s_i].name or f"Series {s_i + 1}"
+                    text = f"{name} {text}"
+                (right_texts if v >= 0 else left_texts).append(text)
+        widest_right = max((_text_w(t, 9.5) for t in right_texts), default=0)
+        widest_left = max((_text_w(t, 9.5) for t in left_texts), default=0)
+        return widest_right, widest_left
+
+    # Direct value labels are drawn past the end of each bar -- positive
+    # values to the right, negative values to the left (see the draw loop
+    # below, `vx >= x0`). Without a margin sized to the widest label on
+    # EACH side, a headline number runs past that edge of the viewBox and
+    # is silently clipped away -- positive bars off the right, negative
+    # bars off the left, symmetric defects.
+    right_reserve = 16.0
+    left_reserve = 0.0
+    if direct_values:
+        widest_right, widest_left = _side_reserves(not show_legend)
+        # A name-prefixed label ("Series-name 1,200,000") can be wide enough
+        # that the two side reserves together leave too little (or negative)
+        # plot area -- the same "measure the actual width, not just whether
+        # a slot was assigned" rule _x_category_chart's end-labels already
+        # follow. When that happens, fall back to a legend instead of
+        # squeezing an unreadable sliver or clipping the label outright.
+        if not show_legend:
+            tentative_right = 16.0 + widest_right + 8.0
+            tentative_left = (widest_left + 8.0) if widest_left else 0.0
+            if width - tentative_right - (left + tentative_left) < max(20.0, width * 0.15):
+                show_legend = True
+                widest_right, widest_left = _side_reserves(False)
+        right_reserve = 16.0 + widest_right + 8.0
+        if widest_left:
+            left_reserve = widest_left + 8.0
+
+    if show_legend:
+        legend = [(s.name or f"Series {i + 1}", palette[i % len(palette)]) for i, s in enumerate(chart.series)]
+        top = _draw_legend(parts, legend, theme, width, top)
+
+    plot_x0, plot_y0 = left + left_reserve, top + 6
+    plot_x1 = max(width - right_reserve, plot_x0 + 20)
+    plot_y1 = max(height - (16.0 if direct_values else 30.0), plot_y0 + 20)
 
     def xv(v: float) -> float:
         frac = (v - vmin) / (vmax - vmin) if vmax > vmin else 0.5
         return plot_x0 + frac * (plot_x1 - plot_x0)
 
-    for t in ticks:
-        tx = xv(t)
-        parts.append(
-            f'<line x1="{tx:.1f}" y1="{plot_y0:.1f}" x2="{tx:.1f}" y2="{plot_y1:.1f}" '
-            f'stroke="{theme.muted}" stroke-opacity="{0.55 if t == 0 else 0.2}" stroke-width="1"/>'
-        )
-        parts.append(_text(tx, plot_y1 + 16, _fmt(t), size=10, fill=theme.muted, anchor="middle"))
+    if not direct_values:
+        # gridlines off except a single very light baseline -- the tick
+        # numbers stay (they carry the values that aren't directly labeled).
+        baseline_t = 0.0 if vmin <= 0 <= vmax else ticks[0]
+        for t in ticks:
+            tx = xv(t)
+            if t == baseline_t:
+                parts.append(
+                    f'<line x1="{tx:.1f}" y1="{plot_y0:.1f}" x2="{tx:.1f}" y2="{plot_y1:.1f}" '
+                    f'stroke="{theme.muted}" stroke-opacity="0.35" stroke-width="1"/>'
+                )
+            parts.append(_text(tx, plot_y1 + 16, _fmt(t), size=10, fill=theme.muted, anchor="middle"))
 
     x0 = xv(0.0) if vmin <= 0 <= vmax else plot_x0
     band_h = (plot_y1 - plot_y0) / n
-    bar_h, offset = _band_marks(band_h, len(chart.series), max_w=20.0)
+    bar_h, offset = _band_marks(band_h, n_series, max_w=20.0)
     for i in range(n):
         lbl = labels[i]
         if lbl:
@@ -375,6 +607,18 @@ def _bar_chart(chart: Chart, theme: Theme, width: int, height: int) -> str:
                 f'<rect x="{bx:.1f}" y="{by:.1f}" width="{w:.1f}" height="{bar_h:.1f}" '
                 f'rx="{rx:.1f}" fill="{palette[s_i % len(palette)]}"/>'
             )
+            if direct_values:
+                text = _fmt(v)
+                if not show_legend and name_row.get(s_i) == i:
+                    # identity rides this series' own first-data bar
+                    # instead of a legend row: name the series once, here.
+                    name = chart.series[s_i].name or f"Series {s_i + 1}"
+                    text = f"{name} {text}"
+                label_x = bx + w + 4 if vx >= x0 else bx - 4
+                anchor = "start" if vx >= x0 else "end"
+                parts.append(
+                    _text(label_x, by + bar_h / 2 + 3.5, text, size=9.5, fill=theme.text, anchor=anchor)
+                )
     return "".join(parts)
 
 
@@ -382,7 +626,7 @@ def _scatter(chart: Chart, theme: Theme, width: int, height: int) -> str:
     """Points connected in data order, matching the PPTX XY_SCATTER_LINES
     native chart type. Labels are used as numeric X when every one parses;
     otherwise each series falls back to its own point index as X."""
-    palette = _palette(theme)
+    palette = _series_palette(theme, len(chart.series))
     parts: list[str] = []
 
     top = 14.0
@@ -402,8 +646,12 @@ def _scatter(chart: Chart, theme: Theme, width: int, height: int) -> str:
         try:
             parsed = [float(lb) for lb in chart.labels]
             # reject "inf"/"nan" (which float() accepts): a non-finite x would
-            # emit cx="inf" and collapse the whole scale. Fall back to indices.
-            xs_numeric = parsed if all(math.isfinite(x) for x in parsed) else None
+            # emit cx="inf" and collapse the whole scale. Also reject extreme
+            # magnitudes, whose x-scale math overflows float. Fall back to
+            # indices in either case.
+            xs_numeric = parsed if all(
+                math.isfinite(x) and abs(x) <= _MAX_MAGNITUDE for x in parsed
+            ) else None
         except ValueError:
             xs_numeric = None
 
@@ -412,12 +660,12 @@ def _scatter(chart: Chart, theme: Theme, width: int, height: int) -> str:
         pts: list[tuple[float, float]] = []
         if xs_numeric is not None:
             for x, raw in zip(xs_numeric, s.values):
-                v = _finite(raw)
+                v = _plottable(raw)
                 if v is not None:
                     pts.append((x, v))
         else:
             for i, raw in enumerate(s.values):
-                v = _finite(raw)
+                v = _plottable(raw)
                 if v is not None:
                     pts.append((float(i), v))
         series_points.append(pts)
@@ -451,12 +699,16 @@ def _scatter(chart: Chart, theme: Theme, width: int, height: int) -> str:
         frac = (y - ymin) / (ymax - ymin) if ymax > ymin else 0.5
         return plot_y1 - frac * (plot_y1 - plot_y0)
 
+    # gridlines off except a single very light baseline -- the tick numbers
+    # stay (scatter has no direct-label substitute for either axis).
+    y_baseline_t = 0.0 if ymin <= 0 <= ymax else y_ticks[0]
     for t in y_ticks:
         ty = ypix(t)
-        parts.append(
-            f'<line x1="{plot_x0:.1f}" y1="{ty:.1f}" x2="{plot_x1:.1f}" y2="{ty:.1f}" '
-            f'stroke="{theme.muted}" stroke-opacity="{0.55 if t == 0 else 0.2}" stroke-width="1"/>'
-        )
+        if t == y_baseline_t:
+            parts.append(
+                f'<line x1="{plot_x0:.1f}" y1="{ty:.1f}" x2="{plot_x1:.1f}" y2="{ty:.1f}" '
+                f'stroke="{theme.muted}" stroke-opacity="0.35" stroke-width="1"/>'
+            )
         parts.append(_text(plot_x0 - 8, ty + 3.5, _fmt(t), size=10, fill=theme.muted, anchor="end"))
     for t in x_ticks:
         tx = xpix(t)
@@ -480,7 +732,7 @@ def _scatter(chart: Chart, theme: Theme, width: int, height: int) -> str:
 def _pie(chart: Chart, theme: Theme, width: int, height: int) -> str:
     """Only the first series is plotted (a pie can only show one), matching
     pptx.py's native-chart constraint."""
-    palette = _palette(theme)
+    palette = _categorical_palette(theme)
     parts: list[str] = []
 
     top = 14.0
@@ -488,7 +740,7 @@ def _pie(chart: Chart, theme: Theme, width: int, height: int) -> str:
         parts.append(_text(16, top + 12, chart.title, size=14, weight="600", fill=theme.text))
         top += 28
 
-    values = [_finite(v) for v in (chart.series[0].values if chart.series else [])]
+    values = [_plottable(v) for v in (chart.series[0].values if chart.series else [])]
     n = max(len(chart.labels), len(values))
     labels = (list(chart.labels) + [""] * n)[:n]
     values = (values + [None] * n)[:n]
@@ -518,9 +770,14 @@ def _pie(chart: Chart, theme: Theme, width: int, height: int) -> str:
 
     lx0 = cx + r + 28
     ly = cy - (len(legend_items) - 1) * 9
+    # legend_w is capped at width * 0.34 regardless of how wide the longest
+    # name actually is; without truncating to the space that's really left
+    # between the swatch and the right edge of the viewBox, an uncapped
+    # long label runs straight past it.
+    avail = max(20.0, width - (lx0 + 11) - 8.0)
     for name, color in legend_items:
         parts.append(f'<circle cx="{lx0:.1f}" cy="{ly - 3.5:.1f}" r="4.5" fill="{color}"/>')
-        parts.append(_text(lx0 + 11, ly + 1, name, size=10.5, fill=theme.text, anchor="start"))
+        parts.append(_text(lx0 + 11, ly + 1, _truncate(name, avail, 10.5), size=10.5, fill=theme.text, anchor="start"))
         ly += 18
     return "".join(parts)
 
@@ -550,6 +807,7 @@ def render_svg(
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
         f'width="{width}" height="{height}" role="img" aria-label="{title}" '
         f'class="docloom-chart" font-family="{_esc(theme.font_body)}">'
+        f'<rect width="100%" height="100%" fill="{theme.background}"/>'
         f"<title>{title}</title>"
         f"{body}</svg>"
     )

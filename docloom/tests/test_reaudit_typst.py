@@ -24,3 +24,16 @@ def test_typst_skips_sheet_with_no_cells():
     )
     typ = to_typst(doc, Theme())
     assert "Empty" not in typ
+
+
+def test_typst_emits_typography_preamble():
+    # justify: true alone leaves widow/orphan/runt control and hyphenation at
+    # Typst's defaults; the preamble tunes those costs and disables
+    # hyphenation in headings so titles never break mid-word.
+    typ = to_typst(Document(title="t"), Theme())
+    assert (
+        '#set text(lang: "en", hyphenate: true, costs: '
+        "(runt: 200%, widow: 250%, orphan: 250%, hyphenation: 150%))"
+    ) in typ
+    assert "#show heading: set text(hyphenate: false)" in typ
+    assert "#set par(justify: true)" in typ

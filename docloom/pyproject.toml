@@ -40,6 +40,12 @@ mcp = ["mcp>=1.2"]
 # pictures instead of falling back to a data table or a text placeholder.
 # Optional on purpose: without it every format still renders, just as before.
 diagrams = ["resvg-py>=0.3.3"]
+# Optional Graphviz `dot` layout backend for architecture diagrams
+# (render.diagram_dot / render_diagram(..., layout="dot")): the pywheel
+# bundles its own Graphviz DLLs so this needs no separate system install.
+# Purely opt-in -- the default `layout="native"` custom Sugiyama solver
+# never imports this module, so a docloom install without it is unaffected.
+dotlayout = ["pygraphviz>=1.11"]
 # lxml is a dev-only test oracle (tests/test_drawio.py validates .drawio
 # output against the official jgraph mxfile.xsd via lxml.etree), never a
 # runtime dependency of docloom itself. Without it here, a fresh venv makes

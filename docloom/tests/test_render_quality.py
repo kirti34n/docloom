@@ -71,7 +71,9 @@ def test_chart_svg_none_gap_breaks_the_line_not_bridges_it():
 def test_chart_svg_column_skips_the_bar_for_none():
     chart = Chart(chart="column", labels=["A", "B"], series=[Series(name="only", values=[1.0, None])])
     svg = chart_svg.render_svg(chart, Theme())
-    assert svg.count("<rect") == 1  # the None value draws no bar (and there is no legend to add rects)
+    # one bar for 1.0; the None value draws no bar. The full-canvas themed
+    # background rect is not a bar, so exclude it from the count.
+    assert svg.count("<rect") - svg.count('width="100%"') == 1
 
 
 def test_chart_svg_single_series_has_no_legend_multi_series_does():
@@ -191,6 +193,10 @@ def test_docx_chart_without_prerendered_path_is_titled_captioned_table(tmp_path,
     assert "Revenue" in paragraphs
     assert any("source: internal" in p for p in paragraphs)
     assert any(t.rows for t in d.tables)  # the chart data still reaches the reader
+    # LOW-3 regression: the title must stay glued to the chart/table that
+    # follows it, or a page break can strand the title alone on one page
+    title_idx = paragraphs.index("Revenue")
+    assert d.paragraphs[title_idx].paragraph_format.keep_with_next is True
 
 
 # --------------------------------------------------------- docx: findings
@@ -278,6 +284,137 @@ def test_docx_body_link_color_is_unaffected_by_the_header_fix(tmp_path):
     assert hyperlink is not None
     color = hyperlink.findall(".//" + qn("w:color"))[0]
     assert color.get(qn("w:val")).upper() == theme.primary.lstrip("#").upper()
+
+
+def test_docx_heading_gets_keep_with_next(tmp_path):
+    import docx as docx_lib
+
+    doc = Document(title="T", blocks=[Heading(level=2, text="Section"), Paragraph(text="body")])
+    out = render(doc, "docx", tmp_path / "h.docx")
+    d = docx_lib.Document(str(out))
+    heading = next(p for p in d.paragraphs if p.text == "Section")
+    assert heading.paragraph_format.keep_with_next is True
+
+
+def test_docx_image_caption_keeps_together_and_bound_to_its_picture(tmp_path):
+    import docx as docx_lib
+
+    # 1x1 PNG: python-docx embeds it, so the caption goes through _render_image
+    png_path = tmp_path / "pic.png"
+    png_path.write_bytes(bytes.fromhex(
+        "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de"
+        "0000000c49444154789c63f8cfc0000003010100c9fe92ef0000000049454e44ae426082"
+    ))
+    doc = Document(title="T", blocks=[ImageBlock(path=str(png_path), caption="Fig 1: a pixel")])
+    out = render(doc, "docx", tmp_path / "i.docx")
+    d = docx_lib.Document(str(out))
+    paragraphs = d.paragraphs  # one property access: each access rewraps fresh objects
+    idx = next(i for i, p in enumerate(paragraphs) if p.text == "Fig 1: a pixel")
+    assert paragraphs[idx].paragraph_format.keep_together is True
+    # the picture's own paragraph, immediately above, is bound forward to the
+    # caption so a page break can never separate the two
+    assert paragraphs[idx - 1].paragraph_format.keep_with_next is True
+
+
+def test_docx_wide_table_gets_repeating_header_uncuttable_rows_and_proportional_widths(tmp_path):
+    import docx as docx_lib
+    from docx.oxml.ns import qn
+    from docx.shared import Emu, Inches
+
+    doc = Document(
+        title="T",
+        blocks=[TableBlock(
+            header=[f"Col {i} is quite a bit longer" if i == 0 else f"C{i}" for i in range(8)],
+            rows=[[f"r{r}c{c}" for c in range(8)] for r in range(3)],
+            caption="Fig T: wide",
+        )],
+    )
+    out = render(doc, "docx", tmp_path / "w.docx")
+    d = docx_lib.Document(str(out))
+    table = d.tables[0]
+    header_trPr = table.rows[0]._tr.find(qn("w:trPr"))
+    assert header_trPr is not None and header_trPr.find(qn("w:tblHeader")) is not None
+    for row in table.rows:  # no row -- including the header -- may split across a page
+        row_trPr = row._tr.find(qn("w:trPr"))
+        assert row_trPr is not None and row_trPr.find(qn("w:cantSplit")) is not None
+    widths = [c.width for c in table.columns]
+    assert len(set(widths)) > 1  # the long-label column gets more room than the rest
+    frame = d.sections[0].page_width - d.sections[0].left_margin - d.sections[0].right_margin
+    assert abs(sum(widths) - frame) < Emu(Inches(0.01))  # fills the frame, never overflows it
+
+
+def test_docx_many_columns_enforce_min_width_floor_after_renormalization():
+    """MEDIUM-1 regression: the floor must survive the renormalization pass
+    that follows it. A skewed weight distribution (one very long header,
+    thirteen short ones) used to push every short column below
+    MIN_COL_WIDTH once the post-clamp rescale ran, even though the frame is
+    wide enough for all 14 columns to meet the floor."""
+    import docx as docx_lib
+    from docx.shared import Emu, Inches
+
+    from docloom.render.docx import MIN_COL_WIDTH, _column_widths
+
+    cols = 14
+    d = docx_lib.Document()
+    # widen the page so 14 * MIN_COL_WIDTH comfortably fits the frame --
+    # this test targets the floor-enforcement math, not the too-many-
+    # columns fallback (covered separately below)
+    section = d.sections[0]
+    section.page_width = Inches(20)
+    section.left_margin = Inches(0.5)
+    section.right_margin = Inches(0.5)
+    frame = section.page_width - section.left_margin - section.right_margin
+
+    header = ["This header is deliberately extremely long to skew weights"] + [
+        f"C{i}" for i in range(cols - 1)
+    ]
+    rows = [[f"r{r}c{c}" for c in range(cols)] for r in range(3)]
+
+    widths = _column_widths(d, header, rows, cols)
+    assert widths is not None  # the frame fits every column at the floor
+    for w in widths:
+        assert w >= MIN_COL_WIDTH, f"column width {w} fell below the documented floor"
+    assert abs(sum(widths) - frame) < Emu(Inches(0.01))  # still fills the frame exactly
+
+
+def test_docx_too_many_columns_falls_back_to_word_autofit(tmp_path):
+    """MEDIUM-1: when cols * MIN_COL_WIDTH exceeds the frame (default Letter
+    page, 14 columns), no explicit split can honor the floor for every
+    column. The documented fallback engages: Word autofit, not slivers."""
+    import docx as docx_lib
+
+    cols = 14
+    doc = Document(
+        title="T",
+        blocks=[TableBlock(
+            header=[f"C{i}" for i in range(cols)],
+            rows=[[f"r{r}c{c}" for c in range(cols)] for r in range(3)],
+            caption="Fig T: too many columns",
+        )],
+    )
+    out = render(doc, "docx", tmp_path / "many.docx")
+    d = docx_lib.Document(str(out))
+    table = d.tables[0]
+    assert table.autofit is True  # documented fallback engaged, not below-floor slivers
+
+
+def test_docx_long_table_last_row_keeps_with_next_to_its_caption(tmp_path):
+    import docx as docx_lib
+
+    doc = Document(
+        title="T",
+        blocks=[TableBlock(
+            header=["ID", "Name"],
+            rows=[[str(r), f"item-{r}"] for r in range(65)],
+            caption="Fig T: long",
+        )],
+    )
+    out = render(doc, "docx", tmp_path / "l.docx")
+    d = docx_lib.Document(str(out))
+    table = d.tables[0]
+    assert len(table.rows) == 66  # header + 65 data rows, none dropped
+    for cell in table.rows[-1].cells:
+        assert cell.paragraphs[-1].paragraph_format.keep_with_next is True
 
 
 # ------------------------------------------------------ markdown: findings
@@ -1026,6 +1163,33 @@ def test_pptx_chart_caption_never_dropped_even_when_max_h_is_tiny():
     assert "CHARTCAPMARK" in _shapes_text(slide)
 
 
+def test_pptx_bar_chart_category_axis_is_reversed_column_chart_is_not():
+    # Office's native BAR_CLUSTERED (horizontal bars) plots the first
+    # category at the BOTTOM by default (its documented "categories in
+    # reverse order" quirk) while chart_svg -- the painter every other
+    # renderer (html/docx/typst) shares, and this file's own image/table
+    # fallback -- always draws the first category at the TOP. Pin that
+    # _chart_block flips only the bar chart's category axis (via
+    # reverse_order, i.e. OOXML orientation="maxMin") to match, and leaves
+    # a column chart's (vertical bars, left-to-right already matches)
+    # category axis at its native, unreversed order.
+    from docloom.render.pptx import _chart_block
+
+    slide = _blank_slide()
+    bar = Chart(chart="bar", labels=["a", "b", "c"],
+                series=[Series(name="s", values=[1.0, 2.0, 3.0])])
+    _chart_block(slide, bar, Theme(), {}, x=1.0, y=1.0, w=6.0, max_h=4.0)
+    bar_chart = next(s for s in slide.shapes if s.has_chart).chart
+    assert bar_chart.category_axis.reverse_order is True
+
+    slide2 = _blank_slide()
+    col = Chart(chart="column", labels=["a", "b", "c"],
+                series=[Series(name="s", values=[1.0, 2.0, 3.0])])
+    _chart_block(slide2, col, Theme(), {}, x=1.0, y=1.0, w=6.0, max_h=4.0)
+    col_chart = next(s for s in slide2.shapes if s.has_chart).chart
+    assert col_chart.category_axis.reverse_order is False
+
+
 def test_pptx_placeholder_caption_never_dropped_even_when_max_h_is_tiny():
     from docloom.render.pptx import _placeholder_block
 
@@ -1202,3 +1366,531 @@ def test_pptx_callout_fill_color_derives_from_the_edge_color():
         assert fill.startswith("#") and fill != edge
         # a wash toward background, not the flat surface gray
         assert fill.upper() != theme.surface.upper()
+
+
+# --------------------------------------------------------- render/qa.py
+#
+# Reference-free geometric QA over a BUILT pptx.Presentation: off-slide
+# bleed, illegitimate shape overlap (with containment/decorative filtering
+# -- the false-positive machine the task warns about), deck-wide palette
+# discipline, and WCAG 2 text/background contrast. qa.py is pure and
+# standalone (no Document IR, no Theme object): the synthetic-shape tests
+# below build raw python-pptx Presentations directly to control geometry and
+# color exactly; the doc-driven tests exercise it against a real docloom
+# render.
+
+
+def _qa_blank_prs():
+    from pptx import Presentation
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches
+
+    prs = Presentation()
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    slide.background.fill.solid()
+    slide.background.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+    return prs, slide
+
+
+def _qa_rect(slide, x, y, w, h, rgb):
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.util import Inches
+
+    shape = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h)
+    )
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = rgb
+    return shape
+
+
+def test_qa_finding_reuses_lints_finding_shape():
+    # "reuse docloom's existing finding/severity shape from lint.py" -- this
+    # must be the SAME class, not a structurally-similar copy, so any
+    # existing caller that folds lint findings and qa findings into one list
+    # (isinstance checks, model_dump(), etc.) just works.
+    from docloom.lint import Finding as LintFinding
+    from docloom.render.qa import Finding as QaFinding
+
+    assert QaFinding is LintFinding
+
+
+def test_qa_flags_a_shape_that_bleeds_past_the_slide_edge():
+    from pptx.dml.color import RGBColor
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()
+    _qa_rect(slide, -0.5, 0, 2, 2, RGBColor(0, 0, 0))
+    findings = qa.check_bleed(prs)
+    assert len(findings) == 1
+    assert findings[0].rule == "qa/off-slide"
+    assert findings[0].severity == "warning"
+    assert "left" in findings[0].message
+
+
+def test_qa_bleed_ignores_a_shape_flush_with_the_edge():
+    # Rounding slack: a shape sized to land EXACTLY on the slide bounds must
+    # not be flagged just because of float-to-EMU rounding.
+    from pptx.dml.color import RGBColor
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()
+    _qa_rect(slide, 0, 0, 13.333, 7.5, RGBColor(0, 0, 0))
+    assert qa.check_bleed(prs) == []
+
+
+def test_qa_bleed_whitelist_exempts_an_intentional_full_bleed_shape():
+    from pptx.dml.color import RGBColor
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()
+    _qa_rect(slide, -0.5, 0, 2, 2, RGBColor(0, 0, 0))
+    assert qa.check_bleed(prs, whitelist=lambda shape, si: True) == []
+
+
+def test_qa_flags_two_shapes_that_genuinely_collide():
+    from pptx.dml.color import RGBColor
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()
+    _qa_rect(slide, 1, 1, 3, 3, RGBColor(255, 0, 0))
+    _qa_rect(slide, 2, 2, 3, 3, RGBColor(0, 255, 0))  # ~44% of the smaller area
+    findings = qa.check_overlap(prs)
+    assert len(findings) == 1
+    assert findings[0].rule == "qa/shape-overlap"
+    assert findings[0].severity == "warning"
+
+
+def test_qa_overlap_ignores_containment_text_on_a_card():
+    # The exact false-positive class the task calls out: a label textbox
+    # sitting entirely inside a card's fill rectangle is legitimate
+    # composition (a stat card, a diagram node inside its group container),
+    # not a layout defect.
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()
+    _qa_rect(slide, 1, 1, 4, 2, RGBColor(240, 240, 240))
+    txt = slide.shapes.add_textbox(Inches(1.2), Inches(1.2), Inches(3), Inches(0.5))
+    txt.text_frame.text = "Card label"
+    assert qa.check_overlap(prs) == []
+
+
+def test_qa_overlap_ignores_a_thin_decorative_divider():
+    # A hairline rule/underline (min dimension below the decorative floor)
+    # carries no real visual area to collide with anything.
+    from pptx.dml.color import RGBColor
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()
+    _qa_rect(slide, 1, 1, 4, 2, RGBColor(240, 240, 240))
+    _qa_rect(slide, 1, 1.9, 4, 0.02, RGBColor(0, 0, 0))  # a hairline rule
+    assert qa.check_overlap(prs) == []
+
+
+def test_qa_overlap_ignores_connector_lines_with_a_large_bounding_box():
+    # An elbow/diagonal connector's bounding box can span a large rectangle
+    # even though the actual drawn line is a thin stroke; bbox-thinness
+    # alone would miss a diagonal one, so line/freeform shapes with no
+    # solid fill are always decorative regardless of their bbox size.
+    from pptx.enum.shapes import MSO_CONNECTOR
+    from pptx.util import Inches
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()
+    node = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(3))
+    node.text_frame.text = "node"
+    conn = slide.shapes.add_connector(
+        MSO_CONNECTOR.ELBOW, Inches(0.5), Inches(0.5), Inches(3.5), Inches(3.5)
+    )
+    assert qa.check_overlap(prs) == []
+
+
+def test_qa_flags_low_contrast_text_on_its_own_fill():
+    from pptx.dml.color import RGBColor
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()
+    box = _qa_rect(slide, 1, 1, 3, 1, RGBColor(0xFF, 0xFF, 0xFF))
+    box.text_frame.text = "Invisible text"
+    box.text_frame.paragraphs[0].runs[0].font.color.rgb = RGBColor(0xFE, 0xFE, 0xFE)
+    findings = qa.check_contrast(prs)
+    assert len(findings) == 1
+    assert findings[0].rule == "qa/low-contrast"
+    assert findings[0].severity == "warning"
+
+
+def test_qa_contrast_resolves_a_transparent_textbox_against_the_shape_behind_it():
+    # A plain textbox (no fill of its own, the common case for docloom's own
+    # _box()) sitting on top of a filled card must resolve its background to
+    # the CARD's fill, not silently pass or wrongly assume the slide's own
+    # background.
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()
+    _qa_rect(slide, 1, 1, 4, 2, RGBColor(0xFF, 0xFF, 0xFF))  # white card
+    txt = slide.shapes.add_textbox(Inches(1.2), Inches(1.2), Inches(3), Inches(0.5))
+    txt.text_frame.text = "Card label"
+    txt.text_frame.paragraphs[0].runs[0].font.color.rgb = RGBColor(0xFE, 0xFE, 0xFE)
+    findings = qa.check_contrast(prs)
+    assert len(findings) == 1
+    assert "Card label" in findings[0].message
+
+
+def test_qa_contrast_falls_back_to_the_slide_background():
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()  # white slide background
+    txt = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(0.5))
+    txt.text_frame.text = "Ghost text"
+    txt.text_frame.paragraphs[0].runs[0].font.color.rgb = RGBColor(0xFE, 0xFE, 0xFE)
+    findings = qa.check_contrast(prs)
+    assert len(findings) == 1
+    assert "Ghost text" in findings[0].message
+
+
+def test_qa_contrast_checks_table_cells_against_their_own_fill():
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()
+    frame = slide.shapes.add_table(1, 1, Inches(1), Inches(1), Inches(3), Inches(1))
+    cell = frame.table.cell(0, 0)
+    cell.fill.solid()
+    cell.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+    cell.text_frame.text = "Faint cell text"
+    cell.text_frame.paragraphs[0].runs[0].font.color.rgb = RGBColor(0xFE, 0xFE, 0xFE)
+    findings = qa.check_contrast(prs)
+    assert len(findings) == 1
+    assert findings[0].rule == "qa/low-contrast"
+
+
+def test_qa_table_cells_visits_every_distinct_cell_and_dedups_merged_span():
+    # Regression for a bug where dedup keyed on id(cell): python-pptx
+    # constructs a brand-new _Cell wrapper on every table.cell() call, so
+    # id(cell) is a freed-and-reused address, not a stable identity, and the
+    # old `id(cell) in seen` dedup spuriously skipped unrelated cells whose
+    # wrapper happened to reuse a just-freed address. The fix filters on
+    # `cell.is_spanned` (the grid positions a merge covers) instead of any
+    # object/element identity. Assert an exact, known cell count for a table
+    # with one 2x1 horizontal merge: 3x2 grid == 6 grid positions, one merge
+    # shadows 1 of them, so exactly 5 distinct cells must be yielded, and
+    # each of the 4 unmerged cells' own text must all be visited (proves no
+    # unrelated cell is silently skipped either).
+    from pptx.util import Inches
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()
+    frame = slide.shapes.add_table(3, 2, Inches(1), Inches(1), Inches(4), Inches(3))
+    table = frame.table
+    table.cell(0, 0).merge(table.cell(0, 1))  # merge row 0 across both columns
+    for r, c in [(1, 0), (1, 1), (2, 0), (2, 1)]:
+        table.cell(r, c).text_frame.text = f"r{r}c{c}"
+    table.cell(0, 0).text_frame.text = "merged"
+
+    cells = list(qa._table_cells(frame))
+    assert len(cells) == 5
+    seen_coords = {(r, c) for r, c, _cell in cells}
+    assert seen_coords == {(0, 0), (1, 0), (1, 1), (2, 0), (2, 1)}
+    texts = {cell.text_frame.text for _r, _c, cell in cells}
+    assert texts == {"merged", "r1c0", "r1c1", "r2c0", "r2c1"}
+
+
+def test_qa_palette_flags_too_many_fonts_and_non_neutral_fills():
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()
+    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0),
+              (255, 0, 255), (0, 255, 255), (128, 0, 128)]
+    for i, c in enumerate(colors):
+        _qa_rect(slide, 0.2 + i * 1.5, 0.5, 1, 1, RGBColor(*c))
+    for i, font in enumerate(["Arial", "Times New Roman", "Courier New", "Comic Sans MS"]):
+        tb = slide.shapes.add_textbox(Inches(0.2 + i * 3), Inches(3), Inches(2.8), Inches(0.5))
+        tb.text_frame.text = f"text {i}"
+        tb.text_frame.paragraphs[0].runs[0].font.name = font
+    findings = qa.check_palette(prs)
+    rules = {f.rule for f in findings}
+    assert rules == {"qa/font-family-sprawl", "qa/palette-sprawl"}
+    assert all(f.severity == "warning" for f in findings)
+
+
+def test_qa_palette_ignores_neutral_grays_and_stays_within_budget():
+    from pptx.dml.color import RGBColor
+
+    from docloom.render import qa
+
+    prs, slide = _qa_blank_prs()
+    for gray in (0x10, 0x40, 0x80, 0xC0):
+        _qa_rect(slide, 1, 1, 1, 1, RGBColor(gray, gray, gray))
+    _qa_rect(slide, 3, 3, 1, 1, RGBColor(0x4F, 0x46, 0xE5))  # one brand color
+    assert qa.check_palette(prs) == []
+
+
+def test_qa_audit_on_a_realistic_deck_finds_no_overlap_false_positives(tmp_path):
+    # Integration guard: a deck that exercises stat cards, a callout, a
+    # table, a chart, and a native diagram (group container + nodes +
+    # connectors) -- exactly the composition patterns that would make a
+    # naive bbox-overlap rule cry wolf on every slide -- must come back
+    # clean on qa/shape-overlap, and every finding that DOES fire (contrast,
+    # palette) must stay advisory. This is the "or make the rule narrower"
+    # regression guard: proof the containment/decorative filtering actually
+    # works on renderer-real geometry, not just synthetic shapes.
+    from pptx import Presentation
+
+    from docloom import Callout
+    from docloom.render import qa
+
+    diagram = Diagram(
+        id="arch", title="Architecture", caption="Request flow",
+        nodes=[
+            DiagramNode(id="client", label="Client", type="external"),
+            DiagramNode(id="api", label="API", type="service"),
+            DiagramNode(id="db", label="Database", type="store"),
+        ],
+        edges=[
+            DiagramEdge(source="client", target="api", label="HTTPS"),
+            DiagramEdge(source="api", target="db", label="SQL"),
+        ],
+    )
+    doc = Document(title="Realistic deck", slides=[
+        Slide(layout="content", title="Stats and a callout", blocks=[
+            StatRow(items=[Stat(label="Uptime", value="99.9%", delta="+0.2%"),
+                            Stat(label="Latency", value="120ms")]),
+            Callout(text="Danger callout", style="danger"),
+        ]),
+        Slide(layout="content", title="Table and chart", blocks=[
+            TableBlock(header=["A", "B"], rows=[["1", "2"]], caption="tbl"),
+            Chart(chart="column", title="T", labels=["A"],
+                  series=[Series(name="s", values=[1.0])], caption="chart cap"),
+        ]),
+        Slide(layout="content", title="Architecture diagram", blocks=[diagram]),
+    ])
+    out = render(doc, "pptx", tmp_path / "qa_realistic.pptx")
+    prs = Presentation(str(out))
+    findings = qa.audit(prs)
+    assert all(f.severity == "warning" for f in findings)
+    assert not any(f.rule == "qa/shape-overlap" for f in findings)
+    assert not any(f.rule == "qa/off-slide" for f in findings)
+
+
+# -------------------------------------------------- measured text-fit pass
+
+
+def test_pptx_overflowing_quote_gets_baked_shrink(tmp_path):
+    # A quote long enough that the old _est_lines heuristic's chosen tier
+    # still measurably overflows its real, font-measured wrapped extent:
+    # _fit_text_frames must bake a smaller run size (and, per the no-
+    # double-shrink invariant, reset normAutofit to fontScale=100000 /
+    # lnSpcReduction=0 rather than encode the shrink twice).
+    import warnings
+
+    from pptx import Presentation
+    from pptx.oxml.ns import qn
+
+    from docloom.render.pptx import MIN_FIT_PT
+
+    quote_text = " ".join(f"word{i}" for i in range(350))
+    doc = Document(title="T", slides=[Slide(layout="quote", blocks=[Quote(text=quote_text)])])
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")  # crowding/legibility warnings may fire too
+        out = render(doc, "pptx", tmp_path / "quote_shrink.pptx")
+    slide = Presentation(str(out)).slides[0]
+    quote_shape = next(
+        s for s in slide.shapes if s.has_text_frame and "word0 " in s.text_frame.text
+    )
+    sizes = [r.font.size.pt for p in quote_shape.text_frame.paragraphs for r in p.runs]
+    assert all(MIN_FIT_PT <= sz < 14 for sz in sizes)
+    bodyPr = quote_shape.text_frame._txBody.bodyPr
+    autofit = bodyPr.find(qn("a:normAutofit"))
+    assert autofit.get("fontScale") == "100000"
+    assert autofit.get("lnSpcReduction") == "0"
+    # nothing-lost: the full quote is still present, just shrunk to fit
+    assert "word349" in quote_shape.text_frame.text
+
+
+def test_pptx_fitting_frame_xml_untouched(tmp_path):
+    # A frame that already fits (same grow-suppressed short-prose fixture as
+    # test_pptx_grow_pass_suppressed_next_to_a_fixed_size_block above) must
+    # come out of _fit_text_frames byte-identical to today: run size
+    # unchanged, and its normAutofit element left with no fontScale
+    # attribute at all (proving zero churn, not just a no-op scale).
+    from pptx import Presentation
+    from pptx.oxml.ns import qn
+
+    from docloom.render.pptx import BODY_PT
+
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            Paragraph(text="short prose"),
+            Code(code="x = 1"),
+        ]),
+    ])
+    out = render(doc, "pptx", tmp_path / "fit_untouched.pptx")
+    slide = Presentation(str(out)).slides[0]
+    para = next(s for s in slide.shapes if s.has_text_frame and "short prose" in s.text_frame.text)
+    assert para.text_frame.paragraphs[0].runs[0].font.size.pt == BODY_PT
+    bodyPr = para.text_frame._txBody.bodyPr
+    autofit = bodyPr.find(qn("a:normAutofit"))
+    assert autofit is not None
+    assert autofit.get("fontScale") is None
+
+
+def test_pptx_floor_clamped_frame_warns_and_keeps_text(tmp_path):
+    # A quote so long that even the MIN_FIT_PT floor at max line-spacing
+    # reduction cannot make it fit: _fit_text_frames must still draw it (at
+    # the floor size, never dropped) and warn by name instead of silently
+    # overflowing the slide.
+    from pptx import Presentation
+
+    from docloom.render.pptx import MIN_FIT_PT
+
+    quote_text = " ".join(f"word{i}" for i in range(1200))
+    doc = Document(title="T", slides=[Slide(layout="quote", blocks=[Quote(text=quote_text)])])
+    with pytest.warns(UserWarning, match="legibility floor"):
+        out = render(doc, "pptx", tmp_path / "quote_floor.pptx")
+    slide = Presentation(str(out)).slides[0]
+    quote_shape = next(
+        s for s in slide.shapes if s.has_text_frame and "word0 " in s.text_frame.text
+    )
+    sizes = {r.font.size.pt for p in quote_shape.text_frame.paragraphs for r in p.runs}
+    assert sizes == {MIN_FIT_PT}
+    assert "word1199" in quote_shape.text_frame.text
+
+
+def test_fit_scale_authored_below_floor_run_does_not_veto_shrink():
+    # Regression for the fix that derived floor_scale from the frame's
+    # absolute SMALLEST run: a citation superscript is authored below
+    # MIN_FIT_PT by deliberate design (_runs bakes it at
+    # max(8, round(size*0.65)), routinely under 9pt), and deriving the floor
+    # from it makes min_pt/small > 1, which the old min(1.0, ...) clamp
+    # pinned at floor_scale = 1.0 -- disabling autofit for the WHOLE frame,
+    # body text included. A run authored below the floor is not a
+    # legibility bug to defend; it must scale right along with everything
+    # else, never veto the fit of runs that actually need to shrink.
+    from docloom.render import textfit
+
+    body = textfit.RunSpec("word " * 200, "Arial", 18.0)
+    citation = textfit.RunSpec("1", "Arial", 6.0)  # authored below MIN_FIT_PT=9 on purpose
+    para = textfit.ParaSpec(runs=(body, citation))
+    res = textfit.fit_scale([para], width_in=4.0, height_in=1.0, min_pt=9.0)
+    assert res.scale < 1.0, (
+        "a deliberately-small authored-below-floor run must not veto "
+        f"autofit for the runs that overflow; got {res!r}"
+    )
+
+
+def test_fit_scale_never_bakes_an_at_or_above_floor_run_below_the_floor():
+    # The ORIGINAL fix, pinned by a test that actually exercises the shrink
+    # path (unlike the tautological version this replaces -- see below): the
+    # floor must protect every run that started AT OR ABOVE MIN_FIT_PT, not
+    # just the frame's largest run. A big headline run sharing the same
+    # uniform scale as a small-but-still-legible run must never push that
+    # smaller run under min_pt, even under egregious overflow that would
+    # otherwise drive the shared scale far lower.
+    from docloom.render import textfit
+
+    big = textfit.RunSpec("word " * 200, "Arial", 30.0)
+    small_at_floor = textfit.RunSpec("caption", "Arial", 12.0)  # authored ABOVE floor
+    para = textfit.ParaSpec(runs=(big, small_at_floor))
+    res = textfit.fit_scale([para], width_in=4.0, height_in=1.0, min_pt=9.0)
+    # the fit actually engaged (not a trivial no-shrink no-op)...
+    assert res.scale < 1.0, res
+    # ...but never at the cost of pushing the protected run under the floor
+    baked = 12.0 * res.scale
+    assert baked >= 9.0 - 1e-6, (
+        f"a run authored at/above the floor (12pt) was baked to {baked:.3f}pt, "
+        f"under MIN_FIT_PT=9.0; res={res!r}"
+    )
+
+
+def test_pptx_fit_one_frame_citation_below_floor_does_not_veto_shrink():
+    # End-to-end version of the regression above, through the REAL
+    # _fit_one_frame glue (not a synthetic textfit call): a frame holding a
+    # normal-size body run plus a small run authored below MIN_FIT_PT (a
+    # citation superscript is exactly this -- _runs bakes it at
+    # max(8, round(size*0.65)), routinely under 9pt) must still shrink the
+    # overflowing body run, and the citation must scale proportionally right
+    # along with it instead of vetoing the fit or getting bumped back up
+    # above its own authored size (the OTHER way "nothing authored is lost"
+    # could be violated: silently changing a deliberately-small citation
+    # into a larger one).
+    from pptx import Presentation
+    from pptx.util import Inches, Pt as PptxPt
+
+    from docloom.render.pptx import MIN_FIT_PT, _box, _fit_one_frame
+
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    tf = _box(slide, 1, 1, 3.0, 1.0)
+    p = tf.paragraphs[0]
+    body = p.add_run()
+    body.text = "word " * 60
+    body.font.name, body.font.size = "Arial", PptxPt(18)
+    cite = p.add_run()
+    cite.text = "1"
+    cite.font.name, cite.font.size = "Arial", PptxPt(6)  # authored below the floor, by design
+    shape = slide.shapes[-1]
+    _fit_one_frame(shape)
+
+    body_size, cite_size = body.font.size.pt, cite.font.size.pt
+    assert body_size < 18.0, "the overflowing body run never shrank -- autofit was vetoed"
+    assert body_size >= MIN_FIT_PT, body_size
+    # the citation scales proportionally with the shared scale; it must
+    # never get bumped back up above its own authored size just because a
+    # blanket floor clamp doesn't distinguish it from a protected run
+    assert cite_size < 6.0, cite_size
+
+
+def test_pptx_mixed_run_sizes_never_bake_an_at_or_above_floor_run_below_it(tmp_path):
+    # Real quote-pipeline sanity check for the ORIGINAL fix: even under
+    # egregious overflow with a citation superscript sharing the frame,
+    # every word run (authored at/above the floor) stays at/above
+    # MIN_FIT_PT, and nothing authored -- word or citation -- is dropped.
+    from pptx import Presentation
+
+    from docloom.render.pptx import MIN_FIT_PT
+
+    quote_text = [
+        Span(text=f"word{i}", cite="a") for i in range(300)
+    ]
+    doc = Document(
+        title="T",
+        slides=[Slide(layout="quote", blocks=[Quote(text=quote_text)])],
+        sources=[Source(id="a", title="Alpha")],
+    )
+    out = render(doc, "pptx", tmp_path / "quote_mixed_runs.pptx")
+    slide = Presentation(str(out)).slides[0]
+    quote_shape = next(
+        s for s in slide.shapes if s.has_text_frame and "word0" in s.text_frame.text
+    )
+    runs = [r for p in quote_shape.text_frame.paragraphs for r in p.runs]
+    sizes = [r.font.size.pt for r in runs]
+    assert len(sizes) > 300  # every word run plus its citation-superscript run
+    word_sizes = {r.font.size.pt for r in runs if not r.text.isdigit()}
+    assert all(sz >= MIN_FIT_PT for sz in word_sizes), word_sizes
+    # nothing-lost: the full quote (and its citation markers) all survive
+    assert "word299" in quote_shape.text_frame.text

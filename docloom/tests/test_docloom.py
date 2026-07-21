@@ -73,6 +73,19 @@ def test_render_html(doc, tmp_path):
     assert "<sup" in text  # citation markers
 
 
+def test_html_has_print_stylesheet_and_lang_attr(doc, tmp_path):
+    # hyphens:auto in the print block needs a lang attribute somewhere up the
+    # tree to do anything; @page/break-inside/text-wrap keep printed pages
+    # from splitting figures/tables and from stranding heading lines.
+    out = render(doc, "html", tmp_path / "d.html")
+    text = out.read_text(encoding="utf-8")
+    assert '<html lang="en">' in text
+    assert "@media print" in text
+    assert "@page{margin:2cm}" in text
+    assert "hyphens:auto" in text
+    assert "break-inside:avoid" in text
+
+
 def test_html_escapes_hostile_input(tmp_path):
     hostile = Document(
         title="<script>alert(1)</script>",

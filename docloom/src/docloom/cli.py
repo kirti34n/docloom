@@ -64,18 +64,26 @@ def _diagram_filenames(diagrams: list[Diagram]) -> list[str]:
     correct guard even though it would not be a substitute for an
     authorization check elsewhere.
     """
-    seen: dict[str, int] = {}
+    used: set[str] = set()
     names = []
     for i, d in enumerate(diagrams):
         base = slug(d.id) if d.id else str(i)
-        n = seen.get(base, 0)
-        seen[base] = n + 1
         # First occurrence keeps the clean name (preserves the existing
         # "id.drawio" / "index.drawio" naming for the common case). A
         # colliding id -- two diagrams sharing an id, or two different ids
         # that sanitize to the same slug -- gets its index appended so one
-        # diagram's file never silently overwrites another's.
-        names.append(base if n == 0 else f"{base}-{i}")
+        # diagram's file never silently overwrites another's. Every minted
+        # name is registered in `used`, so a later diagram whose own slug
+        # happens to equal an earlier "{base}-{i}" cannot reclaim it either.
+        name = base
+        if name in used:
+            name = f"{base}-{i}"
+            k = 1
+            while name in used:
+                name = f"{base}-{i}-{k}"
+                k += 1
+        used.add(name)
+        names.append(name)
     return names
 
 
