@@ -7,6 +7,14 @@ export default defineConfig({
   // D2 ships a WASM engine + web worker; pre-bundling it breaks worker resolution.
   optimizeDeps: { exclude: ['@terrastruct/d2'] },
   worker: { format: 'es' },
+  // Excalidraw reads process.env.IS_PREACT at runtime; Vite strips `process`
+  // entirely from client bundles, which turns that read into a bare
+  // ReferenceError at import time. Dedupe react/react-dom too: Excalidraw
+  // bundles its own copy of React 19 hooks internally, and without dedupe a
+  // second React instance loaded via a nested dependency breaks hooks
+  // (invalid hook call) under Vite's module graph.
+  define: { 'process.env.IS_PREACT': '"false"' },
+  resolve: { dedupe: ['react', 'react-dom'] },
   server: {
     port: 8898,
     proxy: {

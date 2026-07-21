@@ -20,13 +20,20 @@ gets generated into a validated document and renders it deterministically.
 
 ![Architecture: studio orchestrates sources and generation, the engine renders the validated IR](../docs/assets/architecture.png)
 
-One deliberate exception: diagrams are two unconnected systems today. The diagram editor here
-generates [D2](https://d2lang.com) source with an LLM and renders it client-side in the browser
-(WASM); the resulting picture is baked into whatever you export. The docloom engine's own
-coordinate-free `Diagram` IR (solver + SVG/PPTX/`.drawio` emitters, see
-[`docloom/README.md`](../docloom/README.md#architecture-diagrams)) isn't wired into this studio
-yet, so a diagram you tune here and a diagram authored as IR JSON are different pipelines. See
-[`docs/diagram-status.md`](../docs/diagram-status.md) for the open decision on unifying them.
+### Visual diagram editor (in-app)
+
+Diagrams are the engine's own coordinate-free `Diagram` IR end to end: generation emits IR (not
+D2), and you edit it on a **visual canvas inside the studio** — add, connect, retype, and group
+nodes on an [Excalidraw](https://excalidraw.com) canvas, with a live **export preview** that is the
+exact same engine render your deck ships (preview == export, by construction). The layout is solved
+for you (`native` or the compact Graphviz **`dot`** backend for dense graphs); the same
+`Diagram` IR renders to SVG, native PPTX shapes, and editable `.drawio`.
+
+![The in-app visual diagram editor: an Excalidraw canvas over the engine Diagram IR, with a live engine export preview](../docs/assets/diagram-editor.png)
+
+Older diagrams saved as [D2](https://d2lang.com) source still open in the legacy text editor;
+free node positioning (dragging a node to a fixed spot) is a planned opt-in on top of the current
+auto-layout.
 
 ## Features
 
@@ -36,9 +43,9 @@ yet, so a diagram you tune here and a diagram authored as IR JSON are different 
   where it came from
 - **One-click guides**: study guide, briefing, FAQ, timeline, and mind map, each a grounded
   generation from your sources
-- **Six artifact kinds**: presentations, documents, spreadsheets, D2 diagrams (rendered
-  client-side, see "How it fits together" above), infographics, and two-host podcast audio
-  overviews
+- **Six artifact kinds**: presentations, documents, spreadsheets, architecture diagrams (edited on
+  an in-app visual canvas, see "How it fits together" above), infographics, and two-host podcast
+  audio overviews
 - **A brand kit** (logo, accent color, fonts) applied to every generation and every export
 - **Local-first**: SQLite by default and nothing to configure; Postgres is a `DOCLOOM_DB_URL` away
   for a multi-node deployment

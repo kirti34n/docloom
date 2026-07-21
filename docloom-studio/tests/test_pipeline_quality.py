@@ -11,8 +11,10 @@
 - providers.complete() detects a truncated response (Ollama done_reason,
   OpenAI finish_reason, Anthropic stop_reason) instead of wasting retries
   on a misleading parse error
-- generate._looks_like_d2 rejects Mermaid syntax that a bare "->"/"--"
-  substring check would otherwise let through
+- generate._diagram_ir_errors (the diagram IR lint gate that replaced D2)
+  catches duplicate node ids, dangling edges, and empty diagrams by actually
+  running solve(), and run_diagram_pipeline saves a diagram_ir payload with
+  render.svg/render.png primed
 
 A few directly-adjacent fixes (openai param shape, the ollama mid-stream
 error, the coverage-floor depth guarantee, crypto's fail-loud key loading)
@@ -518,35 +520,118 @@ def test_raise_for_status_reads_body_on_a_streaming_response(monkeypatch):
     assert "overloaded" in str(exc.value)
 
 
-# ============================================================ 6. D2/Mermaid
+# ==================================================== 6. diagram IR pipeline
 
 
-@pytest.mark.parametrize("src", [
-    "flowchart TD\nA --> B",
-    "graph LR\nA --> B",
-    "A --> B",                       # bare mermaid arrow, no prefix line
-    "a[Start] -> b[End]",            # mermaid node-bracket syntax
-    "sequenceDiagram\nA->>B: hi",
-])
-def test_looks_like_d2_rejects_mermaid(src):
-    assert gen._looks_like_d2(src), f"expected {src!r} to be rejected"
+def _diagram_gen(title="Checkout Flow", nodes=None, edges=None, groups=None):
+    from docloom import DiagramEdge, DiagramGroup, DiagramNode
 
-
-def test_looks_like_d2_accepts_valid_d2():
-    src = (
-        "direction: right\n"
-        "user: User { shape: person }\n"
-        "api: API service\n"
-        "db: Store { shape: cylinder }\n"
-        "user -> api\n"
-        "api -> db\n"
+    return gen.DiagramGen(
+        title=title,
+        direction="LR",
+        nodes=nodes if nodes is not None else [
+            DiagramNode(id="user", label="Shopper", type="client"),
+            DiagramNode(id="api", label="Checkout API", type="service", group="vpc"),
+            DiagramNode(id="db", label="Orders", type="store", group="vpc"),
+        ],
+        edges=edges if edges is not None else [
+            DiagramEdge(source="user", target="api", label="HTTPS"),
+            DiagramEdge(source="api", target="db"),
+        ],
+        groups=groups if groups is not None else [
+            DiagramGroup(id="vpc", label="VPC"),
+        ],
     )
-    assert gen._looks_like_d2(src) == []
 
 
-def test_looks_like_d2_rejects_empty_and_unbalanced():
-    assert gen._looks_like_d2("")
-    assert gen._looks_like_d2("a -> b { shape: cylinder")  # unbalanced brace
+def test_diagram_ir_errors_accepts_a_well_formed_diagram():
+    assert gen._diagram_ir_errors(_diagram_gen()) == []
+
+
+def test_diagram_ir_errors_rejects_empty_diagram():
+    errors = gen._diagram_ir_errors(_diagram_gen(nodes=[], edges=[], groups=[]))
+    assert errors and "no nodes" in errors[0]
+
+
+def test_diagram_ir_errors_rejects_duplicate_node_ids():
+    from docloom import DiagramNode
+
+    d = _diagram_gen(
+        nodes=[DiagramNode(id="a", label="First"), DiagramNode(id="a", label="Second")],
+        edges=[], groups=[],
+    )
+    errors = gen._diagram_ir_errors(d)
+    assert errors and "duplicate" in errors[0].lower()
+
+
+def test_diagram_ir_errors_rejects_dangling_edge():
+    from docloom import DiagramEdge, DiagramNode
+
+    d = _diagram_gen(
+        nodes=[DiagramNode(id="a", label="A")],
+        edges=[DiagramEdge(source="a", target="ghost")],
+        groups=[],
+    )
+    errors = gen._diagram_ir_errors(d)
+    assert errors and "'a'->'ghost'" in errors[0]
+
+
+def test_run_diagram_pipeline_saves_diagram_ir_and_primes_renders(monkeypatch, tmp_path):
+    """The new lint gate replacing _looks_like_d2 (design section 3d): a
+    valid Diagram IR is saved as a `diagram_ir` payload (not `source`/D2),
+    and render.svg/render.png are primed so the editor's first paint and a
+    same-second export both find a ready render."""
+    monkeypatch.setattr(gen, "data_dir", lambda: tmp_path)
+    diagram = _diagram_gen()
+
+    async def fake_generate_validated(cfg, messages, schema, parse, lint_fn=None,
+                                      max_rounds=3, on_round=None):
+        assert lint_fn(diagram) == []  # the generated diagram must solve cleanly
+        return diagram
+
+    monkeypatch.setattr(gen, "generate_validated", fake_generate_validated)
+
+    nb = _notebook()
+    artifact_id = gen.create_artifact(nb, "diagram")
+    ctx = FakeCtx()
+    asyncio.run(gen.run_diagram_pipeline(ctx, nb, artifact_id, "draw the checkout flow"))
+
+    row = query_one("SELECT payload_json FROM artifacts WHERE id = ?", (artifact_id,))
+    payload = json.loads(row["payload_json"])
+    assert payload["type"] == "diagram_ir"
+    assert payload["diagram_ir"]["title"] == "Checkout Flow"
+    assert payload["diagram_ir"]["nodes"][0]["id"] == "user"
+    assert payload["layout"] == "native"
+    assert payload["overlay"] is None
+    assert "source" not in payload  # no D2 source, ever, on the new path
+
+    save = [e for e in ctx.events if e[0] == "save" and e[1] == "done"]
+    assert save and save[0][3]["title"] == "Checkout Flow"
+
+    adir = tmp_path / "artifacts" / artifact_id
+    assert (adir / "render.svg").is_file()
+    svg = (adir / "render.svg").read_text(encoding="utf-8")
+    assert "Shopper" in svg and "Checkout API" in svg
+
+
+def test_repair_diagram_returns_diagram_ir_shape(monkeypatch):
+    """repair_diagram operates on IR now: given a solve() error it asks for
+    a corrected Diagram and returns {"diagram_ir": ...}, not a D2 string."""
+    fixed = _diagram_gen(title="Fixed")
+
+    async def fake_generate_validated(cfg, messages, schema, parse, lint_fn=None,
+                                      max_rounds=3, on_round=None):
+        assert lint_fn(fixed) == []
+        return fixed
+
+    monkeypatch.setattr(gen, "generate_validated", fake_generate_validated)
+
+    bad = json.dumps({"type": "diagram", "title": "Bad",
+                      "nodes": [{"id": "a", "label": "A"},
+                                {"id": "a", "label": "B"}],
+                      "edges": [], "groups": []})
+    out = asyncio.run(gen.repair_diagram(bad, "duplicate id 'a'", None))
+    assert out == {"diagram_ir": fixed.model_dump(exclude_none=True)}
 
 
 # ============================================================= bonus: extras

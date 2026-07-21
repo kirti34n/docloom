@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type { Block, ListItem, SeriesT, Stat } from './types'
 import { RichText, plain } from './RichText'
 
@@ -310,6 +311,101 @@ function MiniChart({ block }: { block: Block }) {
   )
 }
 
+// artifact_id -> in-flight/resolved render.svg fetch. Shared across every
+// mount of the same block: the deck re-renders on unrelated edits elsewhere
+// in the doc, and this cache is what keeps that from re-fetching (or
+// flickering) a diagram's preview each time.
+const artifactSvgCache = new Map<string, Promise<string | null>>()
+
+/** Fetch and cache a diagram/artifact block's engine-rendered render.svg by
+ * artifact_id — the same file `_resolve_artifact_render` bakes into the
+ * export, so the in-deck preview becomes pixel-faithful to it. Exported for
+ * testing. Resolves to `null` (never rejects) on a 404 or network failure so
+ * callers can fall back to the legacy `block.path` <img>. */
+export function fetchArtifactSvg(artifactId: string): Promise<string | null> {
+  const cached = artifactSvgCache.get(artifactId)
+  if (cached) return cached
+  const pending = fetch(`/api/artifacts/${artifactId}/render.svg`)
+    .then((r) => (r.ok ? r.text() : null))
+    .catch(() => null)
+  artifactSvgCache.set(artifactId, pending)
+  return pending
+}
+
+/** Test-only: forget every cached render.svg fetch. */
+export function _resetArtifactSvgCacheForTests(): void {
+  artifactSvgCache.clear()
+}
+
+/** The engine's SVG output always opens with a single `<svg xmlns=... ...>`
+ * tag at fixed native pixel dimensions (docloom's own `_stamp_hash` in
+ * diagram_svg.py relies on the same invariant to inject its content-hash
+ * attribute) — inject a style attribute the same way, so the inlined
+ * diagram scales to its block instead of overflowing or rendering tiny.
+ * Exported for testing. */
+export function scaleSvgMarkup(svg: string): string {
+  const marker = '<svg '
+  const i = svg.indexOf(marker)
+  if (i === -1) return svg
+  const at = i + marker.length
+  return `${svg.slice(0, at)}style="max-width:100%;height:auto;display:block" ${svg.slice(at)}`
+}
+
+/** image / artifact block: prefer the engine-rendered render.svg (resolved
+ * by artifact_id) over the legacy `block.path` <img>, which stays null until
+ * export's bake() sets it (irx.py). Falls back to `path` when there's no
+ * artifact_id, or the artifact has no render yet (404). */
+function ArtifactImage({ block }: { block: Block }) {
+  const artifactId = block.artifact_id ?? null
+  const [svg, setSvg] = useState<string | null>(null)
+  const [pending, setPending] = useState(!!artifactId)
+
+  useEffect(() => {
+    if (!artifactId) {
+      setSvg(null)
+      setPending(false)
+      return
+    }
+    let cancelled = false
+    setPending(true)
+    fetchArtifactSvg(artifactId).then((result) => {
+      if (cancelled) return
+      setSvg(result)
+      setPending(false)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [artifactId])
+
+  if (artifactId && pending) {
+    // usually resolves instantly (cached) or near-instantly; avoid flashing
+    // the "empty image slot" placeholder while it's in flight
+    return <div className="blk-image-slot" aria-busy="true" />
+  }
+  if (artifactId && svg) {
+    return (
+      <figure className="blk-figure">
+        <div style={{ maxWidth: '100%' }} dangerouslySetInnerHTML={{ __html: scaleSvgMarkup(svg) }} />
+        {block.caption && <div className="blk-caption">{block.caption}</div>}
+      </figure>
+    )
+  }
+
+  if (!block.path)
+    return (
+      <div className="blk-image-slot">
+        <span>{block.query ? `image: ${block.query}` : 'empty image slot'}</span>
+      </div>
+    )
+  return (
+    <figure className="blk-figure">
+      <img src={toUrl(block.path)} alt={block.alt ?? ''} className="blk-image" />
+      {block.caption && <div className="blk-caption">{block.caption}</div>}
+    </figure>
+  )
+}
+
 export function BlockView({ block, citeNumbers }: BlockProps) {
   switch (block.type) {
     case 'heading':
@@ -369,18 +465,7 @@ export function BlockView({ block, citeNumbers }: BlockProps) {
       )
     case 'image':
     case 'artifact':
-      if (!block.path)
-        return (
-          <div className="blk-image-slot">
-            <span>{block.query ? `image: ${block.query}` : 'empty image slot'}</span>
-          </div>
-        )
-      return (
-        <figure className="blk-figure">
-          <img src={toUrl(block.path)} alt={block.alt ?? ''} className="blk-image" />
-          {block.caption && <div className="blk-caption">{block.caption}</div>}
-        </figure>
-      )
+      return <ArtifactImage block={block} />
     case 'callout':
       return (
         <div className={`blk-callout style-${block.style ?? 'info'}`}>

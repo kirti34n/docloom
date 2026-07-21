@@ -8,11 +8,13 @@ import re
 import shutil
 from pathlib import Path
 
-from docloom import FORMATS, lint, render
+from docloom import FORMATS, Diagram, Theme, lint, render, render_diagram
 from docloom.render import RenderError, slug
+from docloom.render.diagram_dot import DotUnavailable, solve_dot
+from docloom.render.diagram_svg import layout_report, solve
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .auth import current_user, require_artifact, require_notebook
 from .db import execute, now, query_all, query_one
@@ -231,11 +233,117 @@ class SavePayload(BaseModel):
 async def update_payload(
     artifact_id: str, body: SavePayload, user: dict = Depends(current_user)
 ) -> dict:
-    """Generic payload save for non-Document artifacts (diagram/infographic)."""
+    """Generic payload save for non-Document artifacts (diagram/infographic).
+
+    Diagram artifacts saved through here may use either payload shape:
+      - legacy: {"source": "<d2 source>", ...} -- the hand-written D2 editor.
+      - current: {"type": "diagram_ir", "diagram_ir": {<Diagram JSON>},
+        "theme_name": str, "layout": "native"|"dot"|"auto", "overlay": null,
+        "render": "svg"} -- the IR canvas. `overlay` is reserved for a future
+        opt-in manual-position mode and is ignored today; `diagram_ir` is
+        validated by /diagram/layout and /diagram/render, not here, so a
+        partially-edited working IR can still be autosaved mid-edit.
+    Both shapes are accepted as an opaque dict and round-tripped untouched;
+    this route itself does not branch on payload shape."""
     require_artifact(user["id"], artifact_id)
     row = _artifact_row(artifact_id)
     version = save_artifact(artifact_id, row["title"], body.payload)
     return {"version": version}
+
+
+def _diagram_theme(theme_name: str | None, user_id: str) -> Theme:
+    """The same 6-key theme overlay export_artifact builds (artifacts.py
+    export_artifact, above): studio theme -> brand overrides -> docloom
+    Theme. Shared by both diagram routes below so the canvas preview and the
+    export always resolve theme identically."""
+    from .assets import apply_brand
+
+    return to_docloom_theme(apply_brand(studio_theme(theme_name or "paper"), user_id))
+
+
+def _load_diagram_ir(diagram_ir: dict) -> Diagram:
+    try:
+        return Diagram.model_validate(diagram_ir)
+    except ValidationError as e:
+        raise HTTPException(422, str(e)) from e
+
+
+class DiagramLayoutRequest(BaseModel):
+    diagram_ir: dict
+    layout: str = "native"
+    theme_name: str | None = None
+
+
+@router.post("/artifacts/{artifact_id}/diagram/layout")
+async def diagram_layout(
+    artifact_id: str, body: DiagramLayoutRequest, user: dict = Depends(current_user)
+) -> dict:
+    """Solve a *working* Diagram IR (not necessarily saved yet) into the
+    geometry JSON the IR canvas seeds from. Never persists anything --
+    /diagram/render + PUT /payload do that once an edit settles."""
+    require_artifact(user["id"], artifact_id)
+    d = _load_diagram_ir(body.diagram_ir)
+    theme = _diagram_theme(body.theme_name, user["id"])
+    theme_dict = {"primary": theme.primary, "accent": theme.accent,
+                  "surface": theme.surface, "text": theme.text,
+                  "muted": theme.muted, "background": theme.background}
+    warning = None
+    if body.layout in ("dot", "auto"):
+        try:
+            solved = solve_dot(d, theme_dict)
+        except DotUnavailable as e:
+            warning = str(e)
+            solved = None
+    else:
+        solved = None
+    try:
+        if solved is None:
+            solved = solve(d, theme_dict)
+    except ValueError as e:
+        # duplicate node/group ids -- solve() cannot lay these out (see its
+        # own docstring); surface as a client error instead of a 500.
+        raise HTTPException(422, str(e)) from e
+    report = layout_report(solved)
+    if warning:
+        report["warning"] = warning
+    return report
+
+
+class DiagramRenderRequest(BaseModel):
+    diagram_ir: dict
+    theme_name: str | None = None
+    layout: str = "native"
+
+
+def _write_renders(artifact_id: str, svg: str | None, png_bytes: bytes | None) -> None:
+    adir = data_dir() / "artifacts" / artifact_id
+    adir.mkdir(parents=True, exist_ok=True)
+    if svg:
+        (adir / "render.svg").write_text(svg, encoding="utf-8")
+    if png_bytes is not None:
+        (adir / "render.png").write_bytes(png_bytes)
+
+
+@router.post("/artifacts/{artifact_id}/diagram/render")
+async def diagram_render(
+    artifact_id: str, body: DiagramRenderRequest, user: dict = Depends(current_user)
+) -> dict:
+    """The parity engine: renders the working Diagram IR through the exact
+    same docloom.render_diagram() path export uses, and writes
+    render.svg/render.png via the same fixed-name file plumbing
+    save_renders/_resolve_artifact_render read (below / irx.py). So the
+    editor's preview pane and the deck/export bake are the same bytes by
+    construction -- see docs/editor-design.md section 2."""
+    require_artifact(user["id"], artifact_id)
+    d = _load_diagram_ir(body.diagram_ir)
+    theme = _diagram_theme(body.theme_name, user["id"])
+    try:
+        svg = render_diagram(d, theme, "svg", layout=body.layout)
+        png = render_diagram(d, theme, "png", layout=body.layout)  # None if [diagrams] extra is missing
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    _write_renders(artifact_id, svg, png)
+    return {"svg": svg}
 
 
 class RepairRequest(BaseModel):
@@ -272,12 +380,7 @@ async def save_renders(
             png_bytes = base64.b64decode(body.png_base64, validate=True)
         except (binascii.Error, ValueError) as e:
             raise HTTPException(400, f"invalid png_base64: {e}")
-    adir = data_dir() / "artifacts" / artifact_id
-    adir.mkdir(parents=True, exist_ok=True)
-    if body.svg:
-        (adir / "render.svg").write_text(body.svg, encoding="utf-8")
-    if png_bytes is not None:
-        (adir / "render.png").write_bytes(png_bytes)
+    _write_renders(artifact_id, body.svg, png_bytes)
     return {"ok": True}
 
 

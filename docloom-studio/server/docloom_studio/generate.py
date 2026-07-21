@@ -10,13 +10,14 @@ from typing import Literal
 
 import httpx
 from docloom import (
-    AUTHORING_GUIDE, Column, Document, Sheet, Slide, Source, Span, ensure_ids,
-    lint, llm_schema,
+    AUTHORING_GUIDE, Column, Diagram, Document, Sheet, Slide, Source, Span,
+    ensure_ids, lint, llm_schema, render_diagram,
 )
 from docloom.ir import (
     Block, BulletList, Chart, Code, Heading, Image, NumberedList, StatRow,
     Table, plain,
 )
+from docloom.render.diagram_svg import solve
 # Fit-by-budget constants (see _budget_errors below) are docloom's own, not a
 # second, drifting copy: docloom/src/docloom/lint.py already defines and
 # tunes MAX_BULLETS_PER_SLIDE / MAX_BULLET_CHARS / MAX_TITLE_CHARS for the
@@ -945,61 +946,103 @@ async def run_sheet_pipeline(
 # ------------------------------------------------------------------ diagram
 
 
-class DiagramGen(BaseModel):
-    title: str
-    d2: str = Field(description="complete D2 (d2lang) diagram source, code only")
+class DiagramGen(Diagram):
+    """LLM-facing diagram schema: docloom's own coordinate-free Diagram IR
+    (nodes/edges/groups/direction -- see docloom.ir.Diagram) with `title`
+    promoted from optional to required, so every generated diagram gets a
+    real name without a second, drifting copy of the node/edge/group
+    fields. `id`/`caption`/`alt` are inherited but harmless: `id` is editor
+    bookkeeping llm_schema() already strips from the emitted schema, and
+    `caption`/`alt` stay optional."""
+
+    title: str = Field(description="short diagram title, e.g. 'Order Processing Flow'")
 
 
 DIAGRAM_SYSTEM = """\
-You produce architecture and process diagrams as D2 (d2lang) source only.
-D2 is NOT Mermaid: never write `flowchart`, `graph`, `[...]` node brackets, or
-`-->`. Use D2 syntax exactly like the example.
+You design architecture and process diagrams as a structured, coordinate-free
+graph: nodes, edges, and groups only. Never invent coordinates, sizes, or
+routing -- the renderer lays everything out.
 
-Rules:
-- First line: `direction: right` (or `down`).
-- A node is `id: Label`. A connection is `a -> b`. Chains `a -> b -> c` are fine.
-- Special shapes: `{ shape: cylinder }` for databases/stores, `{ shape: person }`
-  for users/actors, `{ shape: document }` for files/outputs.
+- `direction`: "LR" (left-to-right, most flows) or "TB" (top-to-bottom).
+- Each node has a short `id` (referenced by edges/groups, never shown) and a
+  `label`. Pick the closest `type`: `client` (user/browser/app), `service`
+  (API/business logic), `store` (database), `queue` (message bus/queue),
+  `security` (auth/firewall/gateway), `cloud` (external cloud platform), or
+  `external` (third-party system). Set `sublabel` for a tech detail (e.g.
+  "PostgreSQL 16") when it helps.
+- Each edge has a `source` and `target` that MUST be ids of nodes you
+  defined, plus an optional `label`. `style` is "solid" (default), "dashed"
+  (async/optional), "emphasis" (the critical path), or "secure" (TLS/
+  encrypted).
+- A `group` is a labeled boundary box: give it an `id` and `label`, then set
+  every member node's `group` to that id (e.g. everything inside "VPC").
 - Keep to at most 20 nodes with short labels.
 
-Example of the exact format:
-direction: right
-user: User { shape: person }
-api: API service
-db: Store { shape: cylinder }
-user -> api
-api -> db
+Example (as JSON, matching the schema):
+{"title": "Checkout Flow", "direction": "LR",
+ "nodes": [{"id": "user", "label": "Shopper", "type": "client"},
+           {"id": "api", "label": "Checkout API", "type": "service", "group": "vpc"},
+           {"id": "db", "label": "Orders", "type": "store", "group": "vpc"}],
+ "edges": [{"source": "user", "target": "api", "label": "HTTPS"},
+           {"source": "api", "target": "db"}],
+ "groups": [{"id": "vpc", "label": "VPC"}]}
 
-Output ONLY valid D2 source in the `d2` field, nothing else."""
-
-
-_MERMAID_PREFIX = re.compile(
-    r"^\s*(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram)\b",
-    re.IGNORECASE,
-)
-_MERMAID_NODE_BRACKETS = re.compile(r"[A-Za-z0-9_]\s*\[[^\[\]]+\]")
+Give the diagram a short, descriptive `title`."""
 
 
-def _looks_like_d2(src: str) -> list[str]:
-    s = src.strip()
-    if not s:
-        return ["empty diagram"]
-    # Mermaid is the exact failure the prompt warns against: "A --> B" passes
-    # a bare "'->' in s" check because "-->" contains "->" as a substring, and
-    # Mermaid's own bracket node syntax ("a[Label]") isn't D2 either.
-    if _MERMAID_PREFIX.search(s):
-        return ["this is Mermaid syntax (flowchart/graph/sequenceDiagram/...), "
-                "not D2 -- start with `direction: right` and use `a -> b`"]
-    if "-->" in s:
-        return ["this is a Mermaid arrow (-->); a D2 connection uses a single `->`"]
-    if _MERMAID_NODE_BRACKETS.search(s):
-        return ["this is Mermaid node bracket syntax (e.g. `a[Label]`); "
-                "a D2 node is `id: Label`"]
-    if "->" not in s and "--" not in s:
-        return ["a D2 diagram needs at least one connection, e.g. `a -> b`"]
-    if s.count("{") != s.count("}"):
-        return ["unbalanced braces"]
+def _diagram_ir_errors(d: Diagram) -> list[str]:
+    """Lint gate for generated/repaired diagrams: replaces the old D2-syntax
+    sniffing (_looks_like_d2) now that generation emits the coordinate-free
+    Diagram IR directly. A diagram is only as good as its ability to lay
+    out, so the check IS running solve() once -- the exact validation
+    /diagram/layout and /diagram/render perform on save (artifacts.py) --
+    not a syntax check. Dangling edges are checked explicitly first for a
+    clear, actionable retry message; solve() itself would otherwise raise a
+    bare KeyError for the same problem (and ValueError for duplicate node/
+    group ids), so it's still wrapped below as a catch-all."""
+    if not d.nodes:
+        return ["diagram has no nodes"]
+    node_ids = {n.id for n in d.nodes}
+    dangling = sorted(
+        f"{e.source!r}->{e.target!r}" for e in d.edges
+        if e.source not in node_ids or e.target not in node_ids
+    )
+    if dangling:
+        return ["edge(s) reference a node id that doesn't exist (every edge "
+                "source/target must be one of the node ids you defined): "
+                + ", ".join(dangling)]
+    try:
+        solve(d)
+    except Exception as e:
+        return [f"diagram failed to lay out: {e}"]
     return []
+
+
+def _write_diagram_renders(artifact_id: str, svg: str | None, png: bytes | None) -> None:
+    """Write render.svg/render.png under the artifact's data dir -- the same
+    fixed-name file plumbing artifacts.py's _write_renders/save_renders and
+    irx.py's _resolve_artifact_render read (editor-design.md section 2), so
+    the editor preview and the export bake are the same bytes by
+    construction. Duplicated here (not imported from artifacts.py) to avoid
+    a generate.py <-> artifacts.py import cycle: artifacts.py already
+    imports pipelines from this module at module load time."""
+    adir = data_dir() / "artifacts" / artifact_id
+    adir.mkdir(parents=True, exist_ok=True)
+    if svg:
+        (adir / "render.svg").write_text(svg, encoding="utf-8")
+    if png is not None:
+        (adir / "render.png").write_bytes(png)
+
+
+def _diagram_theme(theme_name: str, owner: str | None):
+    """Same 6-key-overlay theme resolution as artifacts.py's _diagram_theme
+    (studio theme -> brand overrides -> docloom Theme), so a diagram primed
+    at generation time renders identically to one solved/rendered later
+    through /diagram/layout|render."""
+    from .assets import apply_brand
+    from .irx import studio_theme, to_docloom_theme
+
+    return to_docloom_theme(apply_brand(studio_theme(theme_name), owner))
 
 
 async def run_diagram_pipeline(
@@ -1016,12 +1059,30 @@ async def run_diagram_pipeline(
          {"role": "user", "content": prompt + _context_block(context_lines, cite=False)}],
         schema=llm_schema(DiagramGen),
         parse=lambda t: parse_llm_output(t, DiagramGen),
-        lint_fn=lambda d: _looks_like_d2(d.d2),
+        lint_fn=_diagram_ir_errors,
     )
     ctx.emit("body", "done", detail=result.title)
+    d = Diagram(**result.model_dump(exclude_none=True))
+    theme_name = get_setting("deck.theme", owner) or "paper"
     save_artifact(artifact_id, result.title, {
-        "source": result.d2, "render": None,
+        "type": "diagram_ir",
+        "diagram_ir": d.model_dump(exclude_none=True),
+        "theme_name": theme_name,
+        "layout": "native",
+        "overlay": None,
+        "render": "svg",
     })
+    # prime render.svg/render.png (best-effort: a raster backend can be
+    # missing; _resolve_artifact_render server-rasterizes at export anyway)
+    # so the editor's first paint and a same-second export both find a
+    # ready render instead of racing the canvas's own /diagram/render call.
+    try:
+        theme = _diagram_theme(theme_name, owner)
+        svg = render_diagram(d, theme, "svg")
+        png = render_diagram(d, theme, "png")
+        _write_diagram_renders(artifact_id, svg, png)
+    except Exception as e:
+        ctx.emit("render", "skipped", data={"error": str(e)[:200]})
     ctx.emit("save", "done", data={"artifact_id": artifact_id, "title": result.title})
 
 
@@ -1211,26 +1272,45 @@ async def run_podcast_pipeline(
     ctx.emit("save", "done", data={"artifact_id": artifact_id, "title": script.title})
 
 
-async def repair_diagram(src: str, error: str, user_id: str | None) -> str:
+async def repair_diagram(diagram_ir_json: str, error: str, user_id: str | None) -> dict:
+    """Repair a Diagram IR that failed to lay out (see _diagram_ir_errors):
+    given the solve() error and the offending diagram, ask the LLM for a
+    corrected docloom Diagram and return {"diagram_ir": ...} for the
+    artifact payload's `diagram_ir` key (editor-design.md section 3d).
+
+    `diagram_ir_json` is the failing diagram serialized as JSON text (the
+    caller's own working IR, JSON-encoded) rather than a dict, so this stays
+    callable the same way the old D2 `src` string was.
+
+    NOTE for whoever owns artifacts.py: the current /repair route still does
+    `fixed = await repair_diagram(body.src, body.error, user["id"]); return
+    {"source": fixed}` -- both `body.src`'s "a D2 string" framing and the
+    `{"source": ...}` response shape predate this IR switch and need a
+    matching update (request should carry a serialized `diagram_ir`;
+    response should forward this function's {"diagram_ir": ...} return
+    value directly) before the editor's repair flow works end to end. Not
+    changed here: out of this module's ownership."""
     cfg = ProviderConfig(**get_setting("provider.generation", user_id))
     out: DiagramGen = await generate_validated(
         cfg,
         [{"role": "system", "content": DIAGRAM_SYSTEM},
          {"role": "user", "content":
-            f"This D2 diagram failed to parse with error:\n{error}\n\n"
-            f"Code:\n{src}\n\nReturn ONLY the corrected D2 source."}],
+            f"This diagram failed to lay out with error:\n{error}\n\n"
+            f"Diagram JSON:\n{diagram_ir_json}\n\n"
+            "Return the complete corrected diagram JSON."}],
         schema=llm_schema(DiagramGen),
         parse=lambda t: parse_llm_output(t, DiagramGen),
-        lint_fn=lambda d: _looks_like_d2(d.d2),
+        lint_fn=_diagram_ir_errors,
     )
-    return out.d2
+    d = Diagram(**out.model_dump(exclude_none=True))
+    return {"diagram_ir": d.model_dump(exclude_none=True)}
 
 
 def _context_block(context_lines: list[str] | None, cite: bool = True) -> str:
     """`cite=False` for schemas with no Span type to set a `cite` on (SheetDoc
-    cells, DiagramGen.d2, InfographicSpec labels, PodcastScript) -- appending
-    the citation instruction there just invites cite-shaped garbage in a D2
-    source string or a spreadsheet cell."""
+    cells, DiagramGen node/edge labels, InfographicSpec labels, PodcastScript)
+    -- appending the citation instruction there just invites cite-shaped
+    garbage in a diagram label or a spreadsheet cell."""
     if not context_lines:
         return ""
     instruction = "Ground every factual claim in this evidence" + (
