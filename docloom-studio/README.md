@@ -20,20 +20,21 @@ gets generated into a validated document and renders it deterministically.
 
 ![Architecture: studio orchestrates sources and generation, the engine renders the validated IR](../docs/assets/architecture.png)
 
-### Visual diagram editor (in-app)
+### Visual diagram editor — real draw.io, self-hosted and offline
 
-Diagrams are the engine's own coordinate-free `Diagram` IR end to end: generation emits IR (not
-D2), and you edit it on a **visual canvas inside the studio** — add, connect, retype, and group
-nodes on an [Excalidraw](https://excalidraw.com) canvas, with a live **export preview** that is the
-exact same engine render your deck ships (preview == export, by construction). The layout is solved
-for you (`native` or the compact Graphviz **`dot`** backend for dense graphs); the same
-`Diagram` IR renders to SVG, native PPTX shapes, and editable `.drawio`.
+Diagrams generate as the engine's coordinate-free `Diagram` IR, and you edit them in **the real
+[draw.io](https://www.drawio.com) editor, embedded in the studio and running fully offline** — no
+cloud, no CDN, no account (verified: it boots with zero external network requests). Generation solves
+the layout for you (`native`, or the compact Graphviz **`dot`** backend for dense graphs) and seeds
+it straight into draw.io as mxGraph XML; from there you have draw.io's complete toolset. Every edit
+writes back a `render.svg` through the same path decks already bake, so the diagram you edit is
+exactly the one your presentation ships.
 
-![The in-app visual diagram editor: an Excalidraw canvas over the engine Diagram IR, with a live engine export preview](../docs/assets/diagram-editor.png)
+![The real draw.io editor, self-hosted offline in the studio, seeded with a docloom architecture diagram](../docs/assets/diagram-editor.png)
 
-Older diagrams saved as [D2](https://d2lang.com) source still open in the legacy text editor;
-free node positioning (dragging a node to a fixed spot) is a planned opt-in on top of the current
-auto-layout.
+The ~144MB draw.io app is fetched once by `scripts/fetch-drawio.*` (pinned + checksummed, Apache-2.0),
+not committed — the launcher self-heals it on first run. Older diagrams saved as
+[D2](https://d2lang.com) source still open in the legacy text editor.
 
 ## Features
 

@@ -13,7 +13,7 @@ from docloom.render import RenderError, slug
 from docloom.render.diagram_dot import DotUnavailable, solve_dot
 from docloom.render.diagram_svg import layout_report, solve
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, ValidationError
 
 from .auth import current_user, require_artifact, require_notebook
@@ -235,15 +235,21 @@ async def update_payload(
 ) -> dict:
     """Generic payload save for non-Document artifacts (diagram/infographic).
 
-    Diagram artifacts saved through here may use either payload shape:
+    Diagram artifacts saved through here may use any of three payload shapes:
       - legacy: {"source": "<d2 source>", ...} -- the hand-written D2 editor.
-      - current: {"type": "diagram_ir", "diagram_ir": {<Diagram JSON>},
+      - {"type": "diagram_ir", "diagram_ir": {<Diagram JSON>},
         "theme_name": str, "layout": "native"|"dot"|"auto", "overlay": null,
         "render": "svg"} -- the IR canvas. `overlay` is reserved for a future
         opt-in manual-position mode and is ignored today; `diagram_ir` is
         validated by /diagram/layout and /diagram/render, not here, so a
         partially-edited working IR can still be autosaved mid-edit.
-    Both shapes are accepted as an opaque dict and round-tripped untouched;
+      - {"type": "diagram_drawio", "drawio_xml": "<mxfile>...",
+        "theme_name": str, "render": "svg", "diagram_ir": {<Diagram JSON>}}
+        -- the draw.io editor. `drawio_xml` becomes canonical the moment it
+        exists: GET /diagram/drawio returns it verbatim instead of re-seeding
+        from `diagram_ir`, which is retained only as non-authoritative
+        provenance (e.g. to reseed a brand-new draw.io fork later).
+    All shapes are accepted as an opaque dict and round-tripped untouched;
     this route itself does not branch on payload shape."""
     require_artifact(user["id"], artifact_id)
     row = _artifact_row(artifact_id)
@@ -344,6 +350,36 @@ async def diagram_render(
         raise HTTPException(422, str(e)) from e
     _write_renders(artifact_id, svg, png)
     return {"svg": svg}
+
+
+@router.get("/artifacts/{artifact_id}/diagram/drawio")
+async def diagram_drawio_seed(
+    artifact_id: str, user: dict = Depends(current_user)
+) -> Response:
+    """mxGraph XML for the draw.io editor.
+
+    Returns the forked, already-edited XML verbatim if this artifact has
+    one (canonical the moment a draw.io save has happened -- see the
+    `diagram_drawio` payload shape documented on update_payload above).
+    Otherwise seeds fresh mxGraph XML from the Diagram IR through the same
+    theme overlay export/diagram_render use, so colors match the bake.
+    A legacy D2 {"source": ...} artifact has no IR to seed from -- the
+    draw.io editor is IR-based, so that case is a 422, not a silent
+    fallback."""
+    require_artifact(user["id"], artifact_id)
+    row = _artifact_row(artifact_id)
+    payload = json.loads(row["payload_json"])
+    if payload.get("drawio_xml"):
+        return Response(payload["drawio_xml"], media_type="application/xml")
+    if "diagram_ir" not in payload:
+        raise HTTPException(
+            422, "this diagram has no Diagram IR to seed from; the draw.io "
+            "editor works from Diagram IR, and this artifact is a legacy "
+            "D2-source diagram")
+    d = _load_diagram_ir(payload["diagram_ir"])
+    theme = _diagram_theme(payload.get("theme_name"), user["id"])
+    xml = render_diagram(d, theme, "drawio", layout=payload.get("layout", "native"))
+    return Response(xml, media_type="application/xml")
 
 
 class RepairRequest(BaseModel):

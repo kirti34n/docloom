@@ -19,6 +19,10 @@ export default defineConfig({
     port: 8898,
     proxy: {
       '/api': 'http://127.0.0.1:8899',
+      // The 144 MB vendored draw.io app is served by the backend, never
+      // copied into web/public -- proxy it in dev so it never enters the
+      // Vite module graph or dev-serve tree either.
+      '/drawio': 'http://127.0.0.1:8899',
     },
   },
 })

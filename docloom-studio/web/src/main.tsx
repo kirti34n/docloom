@@ -1,6 +1,6 @@
 import { lazy, StrictMode, Suspense, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createBrowserRouter, RouterProvider, useParams } from 'react-router'
+import { createBrowserRouter, RouterProvider, useParams, useSearchParams } from 'react-router'
 import { Loader2 } from 'lucide-react'
 import { api } from './api/client'
 // Self-hosted fonts (bundled by Vite; no CDN, works offline). Fraunces is the
@@ -50,9 +50,17 @@ import { PodcastEditor } from './screens/PodcastEditor'
 import { PresentMode } from './deck/PresentMode'
 
 // The IR canvas (Excalidraw) is a large chunk; lazy-load it so it only ships
-// to the browser for diagram artifacts that actually use it (below).
+// to the browser for diagram artifacts that actually use it (below). It is
+// kept around, reachable only via the `?editor=excalidraw` escape hatch, for
+// one release after DrawioCanvas takes over as the default diagram editor.
 const DiagramIRCanvas = lazy(() =>
   import('./screens/DiagramIRCanvas').then((m) => ({ default: m.DiagramIRCanvas })))
+
+// The draw.io canvas is a thin iframe wrapper (the 144 MB draw.io app itself
+// is vendored server-side and never enters this bundle); lazy-load it anyway
+// so it only ships to diagram routes.
+const DrawioCanvas = lazy(() =>
+  import('./screens/DrawioCanvas').then((m) => ({ default: m.DrawioCanvas })))
 
 const routeLoader = (
   <div className="flex h-full items-center justify-center bg-stage-bg text-stage-muted">
@@ -60,33 +68,55 @@ const routeLoader = (
   </div>
 )
 
-/** A diagram artifact's payload shape decides which editor mounts: the new
- *  coordinate-free IR canvas (payload.type === 'diagram_ir', or a bare
- *  `diagram_ir` key), or the legacy hand-written D2 editor for every diagram
- *  authored before it (`source`/`mermaid_src`). This is a *routing* decision
- *  only -- each editor still fetches the artifact itself for its own state
- *  (docs/editor-design.md section 4a). */
+/** A diagram artifact's payload shape decides which editor mounts:
+ *  - `{type:'diagram_drawio'}` (has a forked `drawio_xml`) or
+ *    `{type:'diagram_ir'}` (a bare `diagram_ir` key, pre-drawio or freshly
+ *    generated) both open in `DrawioCanvas` -- an IR artifact lazy-seeds its
+ *    mxGraph XML on first load via the drawio seed endpoint, so this is a
+ *    lazy IR->drawio migration, not a batch one.
+ *  - the legacy hand-written D2 editor (`source`/`mermaid_src`) for every
+ *    diagram authored before either of the above.
+ *  `?editor=excalidraw` is a one-release escape hatch back to the old
+ *  Excalidraw IR canvas for an IR artifact that hasn't been forked to
+ *  drawio yet; it has no effect on an already-forked `diagram_drawio`
+ *  artifact, since Excalidraw never understood mxGraph XML.
+ *  This is a *routing* decision only -- each editor still fetches the
+ *  artifact itself for its own state (docs/editor-design.md section 4a). */
 function DiagramRoute() {
   const { artifactId } = useParams()
-  const [kind, setKind] = useState<'loading' | 'ir' | 'legacy'>('loading')
+  const [searchParams] = useSearchParams()
+  const [kind, setKind] = useState<'loading' | 'drawio' | 'ir-excalidraw' | 'legacy'>('loading')
 
   useEffect(() => {
     if (!artifactId) return
     let cancelled = false
     setKind('loading')
-    api.get<{ payload?: { type?: string; diagram_ir?: unknown } }>(`/api/artifacts/${artifactId}`)
+    api.get<{ payload?: { type?: string; diagram_ir?: unknown; drawio_xml?: string } }>(`/api/artifacts/${artifactId}`)
       .then((a) => {
         if (cancelled) return
         const p = a.payload ?? {}
-        setKind(p.type === 'diagram_ir' || p.diagram_ir ? 'ir' : 'legacy')
+        const isDrawio = p.type === 'diagram_drawio' || Boolean(p.drawio_xml)
+        const isIr = p.type === 'diagram_ir' || Boolean(p.diagram_ir)
+        if (!isDrawio && isIr && searchParams.get('editor') === 'excalidraw') {
+          setKind('ir-excalidraw')
+        } else {
+          setKind(isDrawio || isIr ? 'drawio' : 'legacy')
+        }
       })
       // let the legacy editor's own load path surface the real error
       .catch(() => { if (!cancelled) setKind('legacy') })
     return () => { cancelled = true }
-  }, [artifactId])
+  }, [artifactId, searchParams])
 
   if (kind === 'loading') return routeLoader
-  if (kind === 'ir') {
+  if (kind === 'drawio') {
+    return (
+      <Suspense fallback={routeLoader}>
+        <DrawioCanvas />
+      </Suspense>
+    )
+  }
+  if (kind === 'ir-excalidraw') {
     return (
       <Suspense fallback={routeLoader}>
         <DiagramIRCanvas />
