@@ -80,6 +80,10 @@ LAYOUTS
   evidence, "two_column" for a direct comparison, "quote" for one big
   statement that deserves its own slide.
 - Vary layouts across the deck. Do not make every slide "content".
+- When the evidence describes a SYSTEM, an architecture, a pipeline, or how
+  components or steps connect, plan a "content" slide whose intent says to
+  SHOW it as a diagram (it will render an architecture/flow diagram, not
+  bullets). Include one where it genuinely helps the story; never force it.
 
 TITLES
 - Every slide title is a complete declarative sentence stating the
@@ -93,6 +97,35 @@ INTENT
   two numbers, a trend, or a ranking, say so, that slide should lead with
   a stats or chart block, not another bullet list.
 """
+
+# Shared "diagram" block guidance, injected into both the slide and the report
+# section authoring prompts. The Diagram block is already part of the docloom
+# Block union (so llm_schema exposes its structure), but the model never emits
+# one unless it is told the option exists and when to reach for it -- which is
+# exactly why generated decks/docs were all text and never showed an
+# architecture. It is coordinate-free: the model authors structure only and the
+# renderer lays it out (native editable shapes in PPTX, a rasterized SVG in
+# DOCX/PDF/HTML), so a diagram block needs no pre-rendered image to export.
+DIAGRAM_BLOCK_GUIDE = """\
+- The point is how the parts of a SYSTEM connect: an architecture, a data or
+  process FLOW, a pipeline of stages, or how services/components interact. Use
+  a "diagram" block, and prefer it over describing a system in prose or
+  bullets. It is coordinate-free -- author only structure, the renderer lays it
+  out (never invent coordinates, sizes, or routing):
+    * `direction`: "LR" (left-to-right, most flows) or "TB" (top-to-bottom).
+    * `nodes`: each a short `id` (referenced by edges, never shown), a `label`,
+      and the closest `type`: client, service, store, queue, security, cloud,
+      or external. Add a `sublabel` for a tech detail ("PostgreSQL 16") if it
+      helps.
+    * `edges`: each a `source` and `target` that MUST be ids of nodes you
+      defined, plus an optional `label`; `style` is solid (default), dashed
+      (async/optional), emphasis (the critical path), or secure (encrypted).
+    * `groups`: optional labeled boundary boxes (e.g. "VPC"); set each member
+      node's `group` to the group id.
+    * Set `layout` to "dot" when the graph branches or has more than ~6 nodes.
+  Keep it readable: short labels, a handful of nodes on a slide (a few more in
+  a report), and every edge connecting real node ids."""
+
 
 SLIDE_SYSTEM = AUTHORING_GUIDE + f"""
 You are drafting ONE slide of a deck as a single JSON object matching the
@@ -115,6 +148,7 @@ BLOCK SELECTION (do not default to bullets; pick what the evidence needs)
 - The point is a sequence of steps: a "numbered" list.
 - Items are genuinely parallel, discrete, and few: up to 5 short "bullets"
   (each under 12 words). Anything else reads better as a short paragraph.
+{DIAGRAM_BLOCK_GUIDE}
 - two_column slides put contrasting material in `blocks` (left) and
   `right`. quote slides carry exactly one quote block, the single
   strongest line.
@@ -266,6 +300,23 @@ def _fallback_topic(prompt: str) -> str:
 _VISUAL_BLOCKS = (Table, Chart, StatRow, Image, Diagram, Artifact, Code)
 
 
+def _diagram_block_errors(blocks) -> list[str]:
+    """Validate every inline `diagram` block the same way the standalone
+    diagram pipeline does -- by actually running solve() on it (see
+    _diagram_ir_errors). Now that slides and report sections may emit a
+    diagram block, an unlayoutable one (a dangling edge, a duplicate id, no
+    nodes) would otherwise render as a placeholder box in the export; folding
+    it into the hard-error set instead makes generate_validated re-ask for a
+    fixed diagram, so a real one ships. (_diagram_ir_errors is defined later
+    in this module; resolved at call time, after the module finishes loading.)"""
+    errors: list[str] = []
+    for b in blocks:
+        if isinstance(b, Diagram):
+            errors += [f"diagram block ({b.title or 'untitled'}): {m}"
+                       for m in _diagram_ir_errors(b)]
+    return errors
+
+
 def _slide_content_errors(slide: Slide) -> list[str]:
     all_blocks = slide.blocks + slide.right
     needs_content = slide.layout in ("content", "two_column", "quote")
@@ -352,7 +403,8 @@ def _slide_hard_errors(deck_title: str, slide: Slide, source_ids: set[str]) -> l
     fallback treats this set -- and only this set -- as grounds to discard
     the slide for an empty skeleton."""
     return (_lint_errors(source_ids, title=deck_title, slides=[slide])
-            + _slide_content_errors(slide))
+            + _slide_content_errors(slide)
+            + _diagram_block_errors(slide.blocks + slide.right))
 
 
 def _slide_errors(deck_title: str, slide: Slide, source_ids: set[str]) -> list[str]:
@@ -653,6 +705,9 @@ STRUCTURE (answer-first)
   detail, then implications. Base them on what the evidence actually
   covers, not a generic template.
 - Do not add a section that only restates another section's content.
+- Where the report explains a SYSTEM, an architecture, or a process/data
+  flow, include a section whose intent is to PRESENT it as a diagram with a
+  short explanation (it will render an architecture/flow diagram, not prose).
 
 HEADINGS
 - A heading states a claim or topic in a specific noun phrase (e.g. "APAC
@@ -662,10 +717,10 @@ HEADINGS
   it will lean on (a stat, a comparison, a quote).
 """
 
-DOC_SECTION_SYSTEM = AUTHORING_GUIDE + """
+DOC_SECTION_SYSTEM = AUTHORING_GUIDE + f"""
 You are drafting ONE section of a report as a JSON object with a `blocks`
 array (docloom blocks: paragraph, bullets, numbered, quote, callout, table,
-stats, chart, heading). Do NOT repeat this section's own title as a heading
+stats, chart, diagram, heading). Do NOT repeat this section's own title as a heading
 block (level 1 or 2); that title is added for you. You MAY use level-3
 sub-headings inside the section to break it into chunks (see below).
 If this section is the executive summary, open with the single main
@@ -686,6 +741,7 @@ BLOCK SELECTION (pick the block the evidence calls for)
 - A genuinely parallel, discrete, short list (at most 5-6 items):
   "bullets". Otherwise write it as prose, walls of bullets are not
   analysis.
+{DIAGRAM_BLOCK_GUIDE}
 - Every chart, table, or image gets a short title and a one-line takeaway
   caption stating what it shows.
 
@@ -707,7 +763,8 @@ def _section_content_errors(section: DocSection) -> list[str]:
 
 def _section_errors(doc_title: str, section: DocSection, source_ids: set[str]) -> list[str]:
     return (_lint_errors(source_ids, title=doc_title, blocks=section.blocks)
-            + _section_content_errors(section))
+            + _section_content_errors(section)
+            + _diagram_block_errors(section.blocks))
 
 
 def _default_doc_outline(prompt: str) -> DocOutline:
