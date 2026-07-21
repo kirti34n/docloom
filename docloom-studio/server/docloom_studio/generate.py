@@ -14,7 +14,7 @@ from docloom import (
     ensure_ids, lint, llm_schema, render_diagram,
 )
 from docloom.ir import (
-    Artifact, Block, BulletList, Chart, Code, Diagram, Heading, Image,
+    Artifact, Block, BulletList, Chart, Code, Diagram, Formula, Heading, Image,
     NumberedList, StatRow, Table, plain,
 )
 from docloom.render.diagram_svg import solve
@@ -23,7 +23,10 @@ from docloom.render.diagram_svg import solve
 # tunes MAX_BULLETS_PER_SLIDE / MAX_BULLET_CHARS / MAX_TITLE_CHARS for the
 # exact same rule (deck/too-many-bullets, deck/title-too-long), and docloom
 # is a real installed dependency here, so import instead of redeclaring.
-from docloom.lint import MAX_BULLET_CHARS, MAX_BULLETS_PER_SLIDE, MAX_TITLE_CHARS
+from docloom.lint import (
+    MAX_BULLET_CHARS, MAX_BULLETS_PER_SLIDE, MAX_SLIDE_CHARS, MAX_TITLE_CHARS,
+    _block_chars,
+)
 from docloom.llm import parse_llm_output
 from pydantic import BaseModel, Field
 
@@ -392,6 +395,37 @@ def _budget_errors(slide: Slide) -> list[str]:
                     f'{b.type} item is {len(text)} chars, over the '
                     f'{MAX_BULLET_CHARS}-char budget ("{text[:60]}..."); '
                     "shorten it instead of relying on autofit to shrink it")
+    # Total on-slide character budget, mirroring docloom's deck/overflow gate
+    # (lint.py) EXACTLY -- counted with docloom's own _block_chars so the two
+    # cannot drift. Without this, a content/quote slide could be generated
+    # cleanly (no bullets, one long paragraph) yet exceed MAX_SLIDE_CHARS, where
+    # deck/overflow is severity="error": the export re-lints unfiltered and
+    # 422s, so ONE overflowing slide blocks the WHOLE deck's export. As a
+    # fit-by-budget check it shapes retries (asks the model to trim) without
+    # discarding content. Half-width layouts get half the budget, matching the
+    # gate; content/quote is the one the gate hard-errors on.
+    if slide.layout in ("content", "quote"):
+        total = sum(_block_chars(b) for b in all_blocks)
+        if total > MAX_SLIDE_CHARS:
+            errors.append(
+                f"~{total} chars of on-slide text, over the {MAX_SLIDE_CHARS}-char "
+                "budget; this overflows the slide and blocks export -- split it "
+                "across slides or move detail to speaker notes")
+    elif slide.layout == "two_column":
+        for name, blocks in (("left", slide.blocks), ("right", slide.right)):
+            total = sum(_block_chars(b) for b in blocks)
+            if total > MAX_SLIDE_CHARS // 2:
+                errors.append(
+                    f"~{total} chars in the {name} column, over the "
+                    f"{MAX_SLIDE_CHARS // 2}-char half-width budget; tighten it "
+                    "or move detail to speaker notes")
+    elif slide.layout in ("hero", "image_left", "image_right"):
+        total = sum(_block_chars(b) for b in all_blocks)
+        if total > MAX_SLIDE_CHARS // 2:
+            errors.append(
+                f"~{total} chars beside the image, over the "
+                f"{MAX_SLIDE_CHARS // 2}-char budget; tighten it or move detail "
+                "to speaker notes")
     return errors
 
 
@@ -438,8 +472,8 @@ def _default_outline(prompt: str) -> Outline:
 
 
 # Nano Banana (Gemini image generation) is for illustrative slide imagery
-# only -- diagrams stay on the deterministic D2 path (see run_diagram_pipeline
-# below). The model only emits a bare 2-4 word `image.query`; enriching it
+# only -- diagrams stay on the deterministic Diagram-IR path (see
+# run_diagram_pipeline below). The model only emits a bare 2-4 word `image.query`; enriching it
 # with a fixed style suffix and an aspect matching the layout before calling
 # the provider is the single biggest lever on output quality (see
 # understand-image-diagram-gen.md 3.4).
@@ -606,7 +640,15 @@ async def run_deck_pipeline(
         # (HIGH-1: a budget-only failure must never discard authored content).
         last_hard_ok: dict[str, Slide] = {}
 
-        def _lint_fn(s: Slide, ids=slide_ids) -> list[str]:
+        def _lint_fn(s: Slide, ids=slide_ids, intended=item.layout) -> list[str]:
+            # A model sometimes mislabels a body slide as layout="title", which
+            # is legitimately body-less and so escapes the NEVER-EMPTY content
+            # guard. run_deck_pipeline rewrites a non-opener 'title' back to its
+            # intended layout AFTER generation (below), so normalize it HERE too,
+            # before validating -- otherwise an empty-bodied fake-title passes the
+            # guard and then ships as a blank content/two_column/quote slide.
+            if s.layout == "title" and intended != "title":
+                s.layout = intended
             hard = _slide_hard_errors(outline.deck_title, s, ids)
             if not hard:
                 last_hard_ok["slide"] = s
@@ -922,6 +964,16 @@ def _sheet_text(sheet: Sheet) -> list[str]:
 def _sheet_content_errors(sheet: Sheet) -> list[str]:
     if not (sheet.columns and sheet.rows):
         return ["a sheet needs at least one column and at least one data row"]
+    # An empty formula cell ({"formula": ""}) validates as a Formula but the
+    # export gate hard-errors on it (sheet/empty-formula, severity="error" ->
+    # HTTP 422): the xlsx renderer writes a blank cell, yet the deck/sheet
+    # cannot export. Catch it during generation so generate_validated re-prompts
+    # for a real formula instead of shipping a saved-but-un-exportable sheet.
+    for r, row in enumerate(sheet.rows):
+        for c, cell in enumerate(row):
+            if isinstance(cell, Formula) and not cell.formula.strip():
+                return [f"row {r + 1}, column {c + 1} has an empty formula; give "
+                        "it a real formula like =SUM(B2:B10) or a plain value"]
     return _placeholder_errors(_sheet_text(sheet))
 
 
@@ -1351,40 +1403,6 @@ async def run_podcast_pipeline(
         ctx.emit("audio", "skipped", detail=str(e)[:200])
 
     ctx.emit("save", "done", data={"artifact_id": artifact_id, "title": script.title})
-
-
-async def repair_diagram(diagram_ir_json: str, error: str, user_id: str | None) -> dict:
-    """Repair a Diagram IR that failed to lay out (see _diagram_ir_errors):
-    given the solve() error and the offending diagram, ask the LLM for a
-    corrected docloom Diagram and return {"diagram_ir": ...} for the
-    artifact payload's `diagram_ir` key (editor-design.md section 3d).
-
-    `diagram_ir_json` is the failing diagram serialized as JSON text (the
-    caller's own working IR, JSON-encoded) rather than a dict, so this stays
-    callable the same way the old D2 `src` string was.
-
-    NOTE for whoever owns artifacts.py: the current /repair route still does
-    `fixed = await repair_diagram(body.src, body.error, user["id"]); return
-    {"source": fixed}` -- both `body.src`'s "a D2 string" framing and the
-    `{"source": ...}` response shape predate this IR switch and need a
-    matching update (request should carry a serialized `diagram_ir`;
-    response should forward this function's {"diagram_ir": ...} return
-    value directly) before the editor's repair flow works end to end. Not
-    changed here: out of this module's ownership."""
-    cfg = ProviderConfig(**get_setting("provider.generation", user_id))
-    out: DiagramGen = await generate_validated(
-        cfg,
-        [{"role": "system", "content": DIAGRAM_SYSTEM},
-         {"role": "user", "content":
-            f"This diagram failed to lay out with error:\n{error}\n\n"
-            f"Diagram JSON:\n{diagram_ir_json}\n\n"
-            "Return the complete corrected diagram JSON."}],
-        schema=llm_schema(DiagramGen),
-        parse=lambda t: parse_llm_output(t, DiagramGen),
-        lint_fn=_diagram_ir_errors,
-    )
-    d = Diagram(**out.model_dump(exclude_none=True))
-    return {"diagram_ir": d.model_dump(exclude_none=True)}
 
 
 def _context_block(context_lines: list[str] | None, cite: bool = True) -> str:

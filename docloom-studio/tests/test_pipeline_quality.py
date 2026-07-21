@@ -614,26 +614,6 @@ def test_run_diagram_pipeline_saves_diagram_ir_and_primes_renders(monkeypatch, t
     assert "Shopper" in svg and "Checkout API" in svg
 
 
-def test_repair_diagram_returns_diagram_ir_shape(monkeypatch):
-    """repair_diagram operates on IR now: given a solve() error it asks for
-    a corrected Diagram and returns {"diagram_ir": ...}, not a D2 string."""
-    fixed = _diagram_gen(title="Fixed")
-
-    async def fake_generate_validated(cfg, messages, schema, parse, lint_fn=None,
-                                      max_rounds=3, on_round=None):
-        assert lint_fn(fixed) == []
-        return fixed
-
-    monkeypatch.setattr(gen, "generate_validated", fake_generate_validated)
-
-    bad = json.dumps({"type": "diagram", "title": "Bad",
-                      "nodes": [{"id": "a", "label": "A"},
-                                {"id": "a", "label": "B"}],
-                      "edges": [], "groups": []})
-    out = asyncio.run(gen.repair_diagram(bad, "duplicate id 'a'", None))
-    assert out == {"diagram_ir": fixed.model_dump(exclude_none=True)}
-
-
 # ============================================================= bonus: extras
 
 

@@ -16,7 +16,6 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@excalidraw/excalidraw": "^0.18.1",
-    "@excalidraw/mermaid-to-excalidraw": "^2.2.2",
     "@mermaid-js/layout-elk": "^0.2.2",
     "@tailwindcss/vite": "^4.3.2",
     "@terrastruct/d2": "^0.1.33",

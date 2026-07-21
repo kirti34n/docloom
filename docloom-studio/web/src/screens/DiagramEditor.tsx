@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
-import { AlertCircle, Check, Download, Loader2, Sparkles } from 'lucide-react'
+import { AlertCircle, Check, Download, Loader2 } from 'lucide-react'
 import { api } from '../api/client'
 import { toast } from '../ui/toast'
-import { Button } from '../ui'
 import type { ArtifactT } from '../deck/types'
 import { renderD2, svgToPng } from '../diagram/d2'
 
@@ -31,7 +30,6 @@ export function DiagramEditor() {
   const [svg, setSvg] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [state, setState] = useState<'saved' | 'dirty' | 'saving'>('saved')
-  const [repairing, setRepairing] = useState(false)
   const [renders, setRenders] = useState<{ svg: boolean; png: boolean }>({ svg: false, png: false })
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // the first src-triggered render after (re)loading an artifact must not
@@ -97,20 +95,6 @@ export function DiagramEditor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src])
 
-  const fixWithAI = async () => {
-    if (!error) return
-    setRepairing(true)
-    try {
-      const res = await api.post<{ source?: string; d2?: string; mermaid?: string }>(
-        `/api/artifacts/${artifactId}/repair`, { src, error })
-      setSrc(res.source ?? res.d2 ?? res.mermaid ?? src)
-    } catch (e) {
-      toast.error(`Fix with AI failed: ${e instanceof Error ? e.message : e}`)
-    } finally {
-      setRepairing(false)
-    }
-  }
-
   const downloadRender = (ext: RenderExt) => {
     if (!renders[ext]) {
       toast.error(`No ${ext.toUpperCase()} render yet. Fix the diagram and wait for it to save.`)
@@ -163,9 +147,6 @@ export function DiagramEditor() {
                 <AlertCircle size={14} className="mt-0.5 shrink-0" />
                 <span className="font-mono">{error.slice(0, 200)}</span>
               </div>
-              <Button variant="accent" onClick={fixWithAI} disabled={repairing} className="mt-2 text-[12px]">
-                {repairing ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Fix with AI
-              </Button>
             </div>
           )}
         </div>

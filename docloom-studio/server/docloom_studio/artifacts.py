@@ -19,7 +19,7 @@ from pydantic import BaseModel, ValidationError
 from .auth import current_user, require_artifact, require_notebook
 from .db import execute, now, query_all, query_one
 from .generate import (
-    create_artifact, repair_diagram, run_deck_pipeline, run_diagram_pipeline,
+    create_artifact, run_deck_pipeline, run_diagram_pipeline,
     run_doc_pipeline, run_infographic_pipeline, run_podcast_pipeline,
     run_sheet_pipeline, save_artifact,
 )
@@ -380,20 +380,6 @@ async def diagram_drawio_seed(
     theme = _diagram_theme(payload.get("theme_name"), user["id"])
     xml = render_diagram(d, theme, "drawio", layout=payload.get("layout", "native"))
     return Response(xml, media_type="application/xml")
-
-
-class RepairRequest(BaseModel):
-    src: str
-    error: str
-
-
-@router.post("/artifacts/{artifact_id}/repair")
-async def repair(
-    artifact_id: str, body: RepairRequest, user: dict = Depends(current_user)
-) -> dict:
-    require_artifact(user["id"], artifact_id)
-    fixed = await repair_diagram(body.src, body.error, user["id"])
-    return {"source": fixed}
 
 
 class RendersRequest(BaseModel):
