@@ -40,7 +40,8 @@ Short scripts that each show one part of the API:
 
 ## Diagrams (docloom studio)
 
-Diagrams render in the studio with the D2 engine, offline. Paste a sample into the Diagram editor:
-
-- [`diagrams/architecture.d2`](diagrams/architecture.d2)
-- [`diagrams/mindmap.d2`](diagrams/mindmap.d2)
+The studio generates diagrams as the engine's coordinate-free `Diagram` IR from a prompt, lays them
+out with the engine's own solver, and edits them in a self-hosted, offline draw.io canvas seeded
+from that IR. For the engine-side path, see [`dogfood/architecture.json`](dogfood/architecture.json)
+(a `Diagram` IR authored as JSON) and its rendered output under
+[`dogfood/output/`](dogfood/output/).

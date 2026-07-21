@@ -104,15 +104,13 @@ docloom studio is a free, local-first app built on the engine. You add sources t
 - Runs on your machine; a local model works offline
 
 > [!NOTE]
-> **Diagrams are two unconnected systems today.** docloom studio's diagram editor generates
-> [D2](https://d2lang.com) (d2lang) source with an LLM and renders it client-side in the browser
-> (WASM); the rendered picture is baked into whatever you export. The core `docloom` engine has its
-> own, separate coordinate-free `Diagram` IR with a deterministic solver and SVG/PPTX/`.drawio`
-> emitters (see [`docloom/README.md`](docloom/README.md#architecture-diagrams)), reachable only
-> through the JSON/CLI/MCP path today. They do not talk to each other: a diagram tuned in the
-> studio and a diagram authored as IR JSON are different pipelines producing different pictures.
-> Unifying them is an open decision, not yet done (see
-> [`docs/diagram-status.md`](docs/diagram-status.md)).
+> **Diagrams share one pipeline.** docloom studio generates the engine's coordinate-free `Diagram`
+> IR (nodes/edges/groups, no coordinates), lays it out with the engine's own solver, and edits it in
+> a self-hosted, offline [draw.io](https://www.drawio.com) editor seeded from that IR (see
+> [`docloom/README.md`](docloom/README.md#architecture-diagrams) for the IR and its SVG/PPTX/`.drawio`
+> emitters). Generated decks and reports embed the same IR inline, so a diagram is authored, edited,
+> and rendered through one system. The old client-side [D2](https://d2lang.com) editor survives only
+> to open diagrams authored before the switch.
 
 One command brings the studio up — installs dependencies, builds the frontend, launches the
 server (API + SPA on one port), and opens a browser. Run it from the repository root:
@@ -134,9 +132,9 @@ studio diagrams/charts/infographics can never silently export blank. See
 > absent — HTML, Markdown, and PDF embed them as true vector SVG (no rasterizer involved either
 > way), and PPTX/DOCX fall back to a data table (charts) or a labeled placeholder (diagrams)
 > instead of a picture. The one place `[diagrams]` actually prevents a blank is docloom studio's
-> separate, browser-rendered diagram/infographic editor (see the note above): if the browser never
-> saved a picture for one of those, HTML/Markdown/PDF/DOCX export it as nothing at all (PPTX alone
-> shows a placeholder) unless the server can rasterize it itself, which needs `[diagrams]`. `.[dev]`
+> browser-rendered infographic editor: if the browser never saved a picture for an infographic,
+> HTML/Markdown/PDF/DOCX export it as nothing at all (PPTX alone shows a placeholder) unless the
+> server can rasterize it itself, which needs `[diagrams]`. `.[dev]`
 > installs pytest only; running the ingest test suite also needs the separate `.[ingest]` extra
 > (EPUB and YouTube-transcript parsing), and podcast audio generation needs the separate
 > `.[podcast]` extra (`kokoro` + `soundfile`) on `docloom-studio`.

@@ -123,6 +123,7 @@ configured separately, and the model list is fetched live from whichever base UR
 | **llama.cpp server** | The most reliable local option: real JSON-schema enforcement instead of a prompt-injected schema. |
 | **LM Studio** | Enable its local server and point the base URL at it. |
 | **OpenAI** / **Anthropic** | Paste an API key; nothing local to install. |
+| **Google Gemini** | Paste an API key (a free tier is available); schema-enforced structured output. |
 
 ## Docker
 

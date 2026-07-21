@@ -1,6 +1,6 @@
 # Docloom diagram work: final report
 
-## Status as of 2026-07-20: resolved except one open decision
+## Status as of 2026-07-21: fully resolved (unification done)
 
 This report originally shipped with 16 findings and a red test suite. Re-verified against HEAD on
 branch `diagrams-2026-07-16`: **all 16 findings below are fixed**, and the full docloom suite is
@@ -9,12 +9,12 @@ yourself: `cd docloom && ./.venv/Scripts/python.exe -m pytest -q`. The original 
 below, unedited, as a record of what was wrong and why; treat every one of them as **FIXED AT
 HEAD**, not as open work. Do not re-do this work.
 
-**The one thing that is still genuinely open** is the "open decision" section near the end: the
-`docloom-studio` diagram editor still generates D2 source and renders it client-side in the
-browser, entirely separate from the `Diagram` IR this report is about. That decision was
-explicitly left to the repo owner and, as of this writing, has not been made — `docloom-studio`
-has not been re-pointed at the `Diagram` IR. If you are looking for remaining diagram work, that
-unification is it; everything else in this document is closed.
+**Update (2026-07-21): the one remaining open decision below is now done.** `docloom-studio` has
+been re-pointed at the `Diagram` IR: `run_diagram_pipeline` emits `type: 'diagram_ir'`, the engine
+solves and renders it server-side (`render_diagram`), and the in-app editor is the self-hosted,
+offline draw.io canvas seeded from that IR. The old D2/WASM editor remains only to open diagrams
+authored before the switch. The "open decision" section near the end is kept below as history;
+treat it as **CLOSED**.
 
 ## The honest state, at the time this was written
 

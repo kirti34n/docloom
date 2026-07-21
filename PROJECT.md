@@ -194,17 +194,19 @@ required). Grounded chat then retrieves relevant chunks via embeddings and ranki
 answer cites where it came from.
 
 **Five one-click "guides"** are preset grounded generations: Study guide, Briefing, FAQ, and
-Timeline (all `kind='doc'`), plus Mind map (`kind='diagram'`, a D2 diagram).
+Timeline (all `kind='doc'`), plus Mind map (`kind='diagram'`, a Diagram-IR diagram).
 
 ### Six artifact kinds
 
 The studio generates six kinds of artifact through six pipelines: **decks** (presentations),
-**documents**, **spreadsheets**, **D2 diagrams** (rendered client-side in the browser via WASM),
-**infographics**, and **two-host podcast** audio overviews. Only the three Document-IR kinds —
-**decks** (PPTX), **documents** (DOCX / PDF / HTML / MD), and **spreadsheets** (XLSX) — export
-through docloom into the six file formats. **D2 diagrams** and **infographics** render client-side
-to SVG/PNG and are only carried into those formats when embedded as Artifact blocks in a deck or
-document; podcast **audio** is synthesized straight to `.wav` and never touches docloom's renderers.
+**documents**, **spreadsheets**, **diagrams** (the engine's coordinate-free Diagram IR, laid out
+and rendered server-side, edited in the embedded draw.io canvas), **infographics**, and
+**two-host podcast** audio overviews. Only the three Document-IR kinds — **decks** (PPTX),
+**documents** (DOCX / PDF / HTML / MD), and **spreadsheets** (XLSX) — export through docloom into
+the six file formats; a diagram is also embeddable inline in a deck or document (rendered as native
+PPTX shapes or a vector SVG). **Infographics** render client-side to SVG/PNG and are carried into
+those formats when embedded as Artifact blocks; podcast **audio** is synthesized straight to `.wav`
+and never touches docloom's renderers.
 
 A **brand kit** (logo, accent color, fonts) is applied to every generation and every export.
 
@@ -314,10 +316,12 @@ hallucinated references ship.
 
 ### The other three pipelines
 
-- **Diagram** (studio): generates **D2** (d2lang) source text — not docloom's coordinate-free
-  Diagram IR — lint-validates that it looks like D2 (rejecting Mermaid `flowchart` / `graph` /
-  `-->` / `a[Label]` patterns), and saves `{source, render: None}`; the rendered SVG/PNG is posted
-  back from the browser. A repair endpoint exists for D2 that fails to compile.
+- **Diagram** (studio): generates docloom's coordinate-free **Diagram IR** (`DiagramGen`: nodes /
+  edges / groups / direction), lint-validates it by actually running the engine's `solve()` layout
+  (rejecting dangling edges, duplicate ids, and otherwise-unlayoutable graphs), and saves
+  `{type: 'diagram_ir', diagram_ir, theme_name, layout: 'native', render: 'svg'}`; the engine primes
+  `render.svg` / `render.png` server-side via `render_diagram`, and the diagram is edited in the
+  embedded draw.io canvas.
 - **Infographic**: emits an `InfographicSpec` (a style, a title, and 3–6 items) mapped to one of
   four curated AntV templates (list / steps / pyramid / grid), with deterministic text clamping to
   fixed card limits.
@@ -381,29 +385,24 @@ source key). Beyond simply producing them, docloom invests in making them *good*
 
 ---
 
-## Diagrams (the honest account)
+## Diagrams
 
-Diagrams in this project are **two unconnected systems.** This is a real, documented state of
-affairs, not a simplification.
+Diagrams are **one system**: the studio generates the engine's coordinate-free Diagram IR, edits it
+in a self-hosted draw.io canvas seeded from that IR, and the engine lays it out and renders it. An
+older client-side D2 editor survives only to open diagrams authored before the switch.
 
-### Studio: the D2 editor
+### Studio: the draw.io editor, seeded from the IR
 
-In the studio app today, a user edits a diagram by typing **D2** (d2lang) source into a plain
-`<textarea>` labeled "D2 source" in the left pane. There is **no** node/edge GUI, no drag-and-drop,
-and no WYSIWYG canvas. The preview compiles that D2 source to SVG **entirely client-side** via D2's
-WASM/ELK layout engine — offline, in the browser — and shows it live in the right pane; every
-keystroke re-renders, with a debounced 700 ms save. The studio applies its brand palette
-deterministically as a D2 glob-selector "theme preamble" prepended to the model's source (the model
-owns structure and shapes; the renderer owns the look). The default LOOM palette is node `#F2F1EC`,
-stroke `#1F3D63`.
-
-A diagram that fails to D2-compile is still saved (a render error is a preview-only concern); the
-error is shown with a "Fix with AI" button that POSTs the source and error to a `/repair` endpoint.
-The studio's PNG is produced by rasterizing the SVG **in the browser** via a `<canvas>` / `Image`
-(`svgToPng`); the SVG and base64 PNG are then POSTed to the server, which writes `render.svg` /
-`render.png`. resvg is **not** used on the studio diagram path. (A legacy payload field,
-`mermaid_src`, is read once and re-saved as `source`, confirming the studio engine was migrated
-from Mermaid to D2 — not to the IR.)
+In the studio app, `run_diagram_pipeline` generates the coordinate-free Diagram IR (`DiagramGen`)
+from a prompt, validates it by running the engine's `solve()` layout, and saves
+`{type: 'diagram_ir', diagram_ir, theme_name, layout: 'native', render: 'svg'}`. The engine primes
+`render.svg` / `render.png` server-side via `render_diagram` (PNG needs the `[diagrams]` resvg
+extra). The user edits the diagram in **the real [draw.io](https://www.drawio.com) editor, embedded
+in the studio and running fully offline**: the IR is seeded into draw.io as mxGraph XML on first
+open, and every edit writes back a `render.svg` through the same path decks bake, so the diagram you
+edit is the one your deck ships. A legacy D2/Mermaid text editor remains only for diagrams authored
+before the switch (a legacy `source` / `mermaid_src` payload); newly generated diagrams never take
+that path.
 
 ### Engine: the coordinate-free Diagram IR
 
@@ -424,7 +423,8 @@ Determinism is explicit — no randomness, no order-sensitive iteration. The sol
 with a full Sugiyama-style pipeline written by hand in Python: rank assignment (longest-path
 layering on an acyclic projection), proper-graph dummy nodes, barycenter crossing-minimization,
 median coordinate straightening, orthogonal routing, and a grid-packing "bands" pass. There is no
-external layout engine, no DOM, and no browser — the studio's D2/ELK/WASM path is entirely separate.
+external layout engine, no DOM, and no browser: the studio generates and renders through this same
+solver server-side.
 
 **The .drawio export is a derived, one-way export.** docloom never reads a `.drawio` file back.
 Repositioning shapes in draw.io forks the file; regenerating overwrites it with no merge. An IR
@@ -445,11 +445,12 @@ sparsest layout **and** emits a warning — an earlier silent-degradation bug is
 five report formats render an IR diagram and none silently drop it (HTML inlines vector SVG with an
 `aria-label`; DOCX degrades to a visible `[diagram: alt]` placeholder when resvg is absent).
 
-### The unification is the one open decision
+### The unification (done)
 
-The studio D2 system and the core Diagram IR share no code. The studio editor points at D2/WASM and
-has never been re-pointed at the Diagram IR; the design docs record this as the one still-open
-decision. As a consequence, the studio preview and any IR-exported deck can drift.
+The studio has been re-pointed at the Diagram IR: `run_diagram_pipeline` emits `type: 'diagram_ir'`,
+the engine solves and renders it server-side, and the embedded draw.io canvas edits it, so the
+studio and the engine now share one IR and one render path. The legacy D2/WASM editor remains only
+to open pre-switch artifacts.
 
 ---
 
@@ -492,7 +493,7 @@ Anthropic `/v1/messages`, and Gemini's native `generateContent` / `streamGenerat
 Settings, and the model list is fetched live from the base URL.
 
 The **in-code default** generation provider is **Ollama** with model `qwen3.5:9b` and `max_tokens`
-16384 (raised from 8192); embeddings default to Ollama `nomic-embed-text`; both point at
+32768; embeddings default to Ollama `nomic-embed-text`; both point at
 `http://localhost:11434`. Gemini is a fully supported generation provider (its native Generative
 Language API); `gemini-2.5-flash` allows 65536 output tokens, so `max_tokens` can be raised through
 the provider setting. Any non-default provider/model — for instance running Gemini as the default —
