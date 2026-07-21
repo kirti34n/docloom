@@ -55,6 +55,12 @@ if [ "$("$VENV_PY" -c 'import importlib.util as u; print(1 if u.find_spec("resvg
   uv pip install --python "$VENV_PY" "resvg-py>=0.3.3"
 fi
 
+# 2b. self-heal the Graphviz dot layout backend (compact dense-diagram layouts).
+if [ "$("$VENV_PY" -c 'import importlib.util as u; print(1 if u.find_spec("pygraphviz") else 0)')" != "1" ]; then
+  printf '!!  pygraphviz not installed -- installing so complex diagrams can use the compact dot layout.\n'
+  uv pip install --python "$VENV_PY" "pygraphviz>=1.11" || printf '!!  pygraphviz install failed; diagrams fall back to native layout.\n'
+fi
+
 # 3. web build.
 if [ "$REBUILD" = "1" ] || [ ! -f "$WEB/dist/index.html" ]; then
   [ -d "$WEB/node_modules" ] || { step "Installing web dependencies (npm install)..."; npm --prefix "$WEB" install; }

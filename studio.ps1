@@ -86,6 +86,14 @@ if ($hasResvg -ne '1') {
     if ($LASTEXITCODE -ne 0) { Die 'installing resvg-py failed.' }
 }
 
+# --- 2b. self-heal the Graphviz dot layout backend (dense-diagram layouts) ---
+$hasDot = (& $VenvPy -c "import importlib.util as u; print(1 if u.find_spec('pygraphviz') else 0)").Trim()
+if ($hasDot -ne '1') {
+    Warn 'pygraphviz not installed -- installing so complex diagrams can use the compact dot layout.'
+    uv pip install --python $VenvPy "pygraphviz>=1.11"
+    if ($LASTEXITCODE -ne 0) { Warn 'pygraphviz install failed; diagrams will fall back to the native layout.' }
+}
+
 # --- 3. web frontend build (served by the server on one port) --------------
 $IndexHtml = Join-Path $Web 'dist\index.html'
 if ($Rebuild -or -not (Test-Path $IndexHtml)) {

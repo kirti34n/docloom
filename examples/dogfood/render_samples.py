@@ -51,19 +51,20 @@ def main() -> None:
             render(doc, fmt, OUT / f"{stem}.{ext}", AURORA)
         print(f"{stem}: {', '.join(fmts)}")
 
-    # Architecture diagrams: SVG + PNG + editable .drawio, both layout backends.
-    for src, stem, layout in [
-        ("architecture.json", "architecture", "native"),
-        ("architecture-full.json", "architecture-full", "dot"),
-    ]:
+    # Architecture diagrams: SVG + PNG + editable .drawio. Each renders with the
+    # layout backend its own IR declares (Diagram.layout) -- the full branching
+    # architecture uses "dot" (Graphviz, compact group boxes; needs the
+    # [dotlayout] extra, falls back to native if absent).
+    for src, stem in [("architecture.json", "architecture"),
+                      ("architecture-full.json", "architecture-full")]:
         d = Diagram.model_validate(_load(src))
         for fmt in ("svg", "png", "drawio"):
-            data = render_diagram(d, AURORA, fmt, layout=layout)
+            data = render_diagram(d, AURORA, fmt)  # honors d.layout
             path = OUT / f"{stem}.{fmt}"
             mode = "wb" if isinstance(data, bytes) else "w"
             with open(path, mode, **({} if mode == "wb" else {"encoding": "utf-8"})) as f:
                 f.write(data)
-        print(f"{stem} diagram ({layout} layout): svg, png, drawio")
+        print(f"{stem} diagram ({d.layout} layout): svg, png, drawio")
 
 
 if __name__ == "__main__":
