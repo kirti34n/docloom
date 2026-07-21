@@ -85,18 +85,18 @@ cd docloom
 
 # from docloom-studio/, create the studio venv and install both packages editable:
 uv venv
-uv pip install -e "../docloom[pdf,diagrams]"  # the render engine. [diagrams] is what pulls the
-                                               # resvg rasterizer. docloom's own Chart/Diagram
-                                               # blocks still render everywhere without it (SVG in
-                                               # HTML/MD/PDF, a data table or placeholder in
-                                               # PPTX/DOCX); what [diagrams] prevents is a blank
-                                               # export of THIS studio's own browser-rendered
-                                               # diagrams/infographics when no picture was saved
-                                               # client-side. Installing the engine WITHOUT the
-                                               # extra (`-e ../docloom` alone) satisfies the
-                                               # studio's `docloom[pdf,diagrams]` dependency by
-                                               # name and silently omits resvg -- which is why the
-                                               # launcher re-checks it on every start.
+uv pip install -e "../docloom[pdf,diagrams,dotlayout]"  # the render engine. PPTX/DOCX/XLSX and
+                                               # HTML/MD need NO extra (their libs are core / pure
+                                               # Python); only these three add capability: [pdf] =
+                                               # Typst (PDF), [diagrams] = the resvg rasterizer
+                                               # (charts/diagrams as real pictures in PPTX/DOCX,
+                                               # and non-blank studio diagram/infographic exports),
+                                               # [dotlayout] = the compact Graphviz dot layout for
+                                               # complex diagrams. Installing the engine WITHOUT the
+                                               # extras (`-e ../docloom` alone) satisfies the
+                                               # dependency by NAME and silently omits them -- which
+                                               # is why the launcher re-checks resvg + pygraphviz on
+                                               # every start.
 uv pip install -e "."                          # the studio backend. Extras: [dev] (pytest),
                                                # [ingest] (EPUB/YouTube sources), [podcast]
                                                # (kokoro + soundfile audio), [postgres].
