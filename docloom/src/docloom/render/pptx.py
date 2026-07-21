@@ -1782,7 +1782,10 @@ def _hero_slide(slide, s: Slide, doc: Document, theme: Theme, numbers: dict[str,
         slide.background.fill.solid()
         slide.background.fill.fore_color.rgb = _rgb(theme.primary)
     blocks = s.blocks + s.right
-    if not (s.title or s.subtitle or blocks):
+    # A caption-only hero (image + caption, no title/subtitle/blocks) still has
+    # content to draw: s.image.caption is authored content every other renderer
+    # keeps, so the caption band below must be reached instead of returning here.
+    if not (s.title or s.subtitle or blocks or (pic is not None and s.image and s.image.caption)):
         return
     # scrim: true fill transparency isn't exposed by python-pptx, so the title
     # sits in a solid theme.text band flush with the bottom edge instead

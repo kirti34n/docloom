@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import diagram_svg
+from . import chart_svg, diagram_svg
 from ..ir import (
     Artifact,
     Block,
@@ -244,7 +244,7 @@ def _chart_md(b: Chart, copier: _AssetCopier | None = None) -> str:
     # no rendered image: GFM data-table fallback (series x labels)
     header, rows = normalize_table(
         [""] + list(b.labels),
-        [[s.name] + ["" if v is None else f"{v:g}" for v in s.values]
+        [[s.name] + ["" if chart_svg._finite(v) is None else chart_svg._fmt(v) for v in s.values]
          for s in b.series],
     )
     table = _table_md(

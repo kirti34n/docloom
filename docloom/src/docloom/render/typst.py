@@ -301,8 +301,6 @@ def _block(b: Block, theme: Theme, numbers: dict[str, int]) -> list[str]:
         return lines
     if isinstance(b, Chart):
         lines = []
-        if b.title:
-            lines.append(f'#text(weight: "bold")[{_esc(b.title)}]')
         path = Path(b.path) if b.path else None
         fmt = _typst_format(path) if path and path.is_file() else None
         if path and fmt:
@@ -316,6 +314,13 @@ def _block(b: Block, theme: Theme, numbers: dict[str, int]) -> list[str]:
             if b.caption:
                 lines.append(_caption(b.caption, theme))
             return lines
+        # Data-table fallback only: the painted SVG and the pre-rendered image
+        # both bake the chart title into the artwork, so a standalone title
+        # line there would render it twice (mirror html.py's _chart_html, which
+        # titles only this branch). The bare data table carries no title, so
+        # emit one here.
+        if b.title:
+            lines.append(f'#text(weight: "bold")[{_esc(b.title)}]')
         rows = [
             [s.name] + ["" if chart_svg._finite(v) is None else chart_svg._fmt(v) for v in s.values]
             for s in b.series

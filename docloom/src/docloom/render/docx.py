@@ -457,6 +457,18 @@ def _render_image_or_placeholder(docx_doc, block: Image, theme: Theme) -> None:
         return
     if not block.path or not Path(block.path).is_file():
         return
+    # python-docx cannot embed an SVG directly (so _render_image failed above),
+    # but it can be rasterized -- the same path _render_chart/_render_diagram
+    # take -- so an SVG Image/Artifact keeps its picture instead of degrading
+    # to the "[image: alt]" text stub below.
+    if raster.is_svg(block.path):
+        png = raster.svg_file_to_png(
+            block.path,
+            width=DIAGRAM_RASTER_PX,
+            font_files=raster.theme_font_files(theme),
+        )
+        if png is not None and _embed_png(docx_doc, png, block.caption, theme):
+            return
     par = docx_doc.add_paragraph()
     par.alignment = WD_ALIGN_PARAGRAPH.CENTER
     run = par.add_run(f"[image: {block.alt}]" if block.alt else "[image]")

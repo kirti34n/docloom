@@ -202,8 +202,15 @@ def test_docx_chart_without_prerendered_path_is_titled_captioned_table(tmp_path,
 # --------------------------------------------------------- docx: findings
 
 
-def test_docx_svg_artifact_gets_placeholder_not_silent_drop(tmp_path):
+def test_docx_svg_artifact_renders_picture_or_placeholder(tmp_path):
+    # An SVG Image/Artifact used to always degrade to a "[image: alt]" text
+    # stub in DOCX even though Chart/Diagram SVGs are rasterized. It now
+    # rasterizes to a real embedded picture when the rasterizer is present,
+    # and only falls back to the labeled placeholder when it is absent --
+    # never a silent drop either way.
     import docx as docx_lib
+
+    from docloom.render import raster
 
     svg_path = tmp_path / "diagram.svg"
     svg_path.write_text(
@@ -218,20 +225,57 @@ def test_docx_svg_artifact_gets_placeholder_not_silent_drop(tmp_path):
     out = render(doc, "docx", tmp_path / "a.docx")
     d = docx_lib.Document(str(out))
     text = "\n".join(p.text for p in d.paragraphs)
-    assert "architecture diagram" in text  # placeholder alt text, not a silent drop
-    assert "Fig 1" in text
     assert "before" in text and "after" in text
+    assert "Fig 1" in text  # caption is kept either way
+    # never a silent drop: an embedded picture (rasterized SVG) OR the alt placeholder
+    assert len(d.inline_shapes) >= 1 or "architecture diagram" in text
+    if raster.available():
+        assert len(d.inline_shapes) >= 1  # the fix: a real picture, not a text stub
+        assert "architecture diagram" not in text
 
 
-def test_docx_svg_image_block_gets_placeholder_too(tmp_path):
+def test_docx_svg_image_block_is_not_silently_dropped(tmp_path):
     import docx as docx_lib
 
     svg_path = tmp_path / "pic.svg"
-    svg_path.write_text('<svg xmlns="http://www.w3.org/2000/svg"><circle r="1"/></svg>', encoding="utf-8")
+    svg_path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><circle cx="4" cy="4" r="3"/></svg>',
+        encoding="utf-8",
+    )
     doc = Document(title="T", blocks=[ImageBlock(path=str(svg_path), alt="a circle")])
     out = render(doc, "docx", tmp_path / "i.docx")
     d = docx_lib.Document(str(out))
-    assert "a circle" in "\n".join(p.text for p in d.paragraphs)
+    text = "\n".join(p.text for p in d.paragraphs)
+    # embedded picture (rasterized) OR the alt placeholder -- never nothing
+    assert len(d.inline_shapes) >= 1 or "a circle" in text
+
+
+def test_typst_titled_chart_title_not_duplicated(tmp_path):
+    # The painted chart SVG already bakes in the chart title, so the PDF
+    # (typst) renderer must NOT also emit a standalone bold title line above
+    # it -- that shipped the title twice. It belongs only to the data-table
+    # fallback, which carries no title of its own.
+    title = "Revenue by Quarter"
+    chart = Chart(chart="column", title=title, labels=["Q1", "Q2"],
+                  series=[Series(name="Rev", values=[1.0, 2.0])])
+    doc = Document(title="T", slides=[Slide(layout="content", title="s", blocks=[chart])])
+    out = render(doc, "typ", tmp_path / "c.typ")
+    src = out.read_text(encoding="utf-8")
+    assert f'#text(weight: "bold")[{title}]' not in src
+
+
+def test_chart_datatable_fallback_formats_numbers_readably(tmp_path):
+    # When a chart cannot be painted (an all-non-positive pie), the html and
+    # markdown data-table fallbacks must show readable, comma-grouped numbers,
+    # not Python's scientific "%g" form ("-1.5e+06").
+    pie = Chart(chart="pie", title="Losses", labels=["A", "B"],
+                series=[Series(name="usd", values=[-1500000.0, -500000.0])])
+    doc = Document(title="T", slides=[Slide(layout="content", title="s", blocks=[pie])])
+    for fmt, ext in (("html", ".html"), ("md", ".md")):
+        out = render(doc, fmt, tmp_path / f"c{ext}")
+        src = out.read_text(encoding="utf-8")
+        assert "1,500,000" in src
+        assert "1.5e+06" not in src
 
 
 def test_docx_missing_image_path_still_skipped_silently(tmp_path):
