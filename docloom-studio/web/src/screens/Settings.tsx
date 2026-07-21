@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { CheckCircle2, Loader2, XCircle } from 'lucide-react'
 import { api } from '../api/client'
 import { toast } from '../ui/toast'
-import { Button, Eyebrow, Field, Panel } from '../ui'
+import { Button, Empty, Eyebrow, Field, Panel } from '../ui'
 import { useThemes } from '../deck/useThemes'
 
 interface ProviderConfig {
@@ -28,7 +28,7 @@ interface ImageProviderConfig {
   enabled: boolean
 }
 
-interface AllSettings {
+export interface AllSettings {
   'provider.generation': ProviderConfig
   'provider.embeddings': ProviderConfig
   'provider.tts': TtsConfig
@@ -76,6 +76,18 @@ const PROVIDER_PRESETS: Record<string, { label: string; base_url: string; hint: 
 
 function needsApiKey(kind: string): boolean {
   return kind === 'openai' || kind === 'anthropic' || kind === 'gemini'
+}
+
+/** The /api/settings fetch, kept as a plain function (no hooks) so its
+ *  error handling is testable without mounting the component. */
+export function loadSettings(
+  onSettings: (s: AllSettings) => void,
+  onError: (message: string) => void,
+): Promise<void> {
+  return api
+    .get<AllSettings>('/api/settings')
+    .then(onSettings)
+    .catch((e) => onError(e instanceof Error ? e.message : String(e)))
 }
 
 function ProviderFields({
@@ -161,6 +173,7 @@ function ProviderFields({
 
 export function Settings() {
   const [settings, setSettings] = useState<AllSettings | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [genModels, setGenModels] = useState<string[]>([])
   const [embModels, setEmbModels] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
@@ -181,12 +194,33 @@ export function Settings() {
     setEmbModels(emb.models)
   }, [])
 
-  useEffect(() => {
-    api.get<AllSettings>('/api/settings').then((s) => {
+  const load = useCallback(() => {
+    setLoadError(null)
+    loadSettings((s) => {
       setSettings(s)
       refreshModels()
-    })
+    }, setLoadError)
   }, [refreshModels])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  if (loadError) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <Empty
+          title="Couldn't load settings"
+          body={loadError}
+          action={
+            <Button variant="quiet" onClick={load}>
+              Retry
+            </Button>
+          }
+        />
+      </div>
+    )
+  }
 
   if (!settings) {
     return (

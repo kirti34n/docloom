@@ -4,6 +4,7 @@ All scoped to the current user's notebooks/artifacts."""
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -25,6 +26,11 @@ from .jobs import cancel_job, job_state, sse_events, start_job
 from .settings import data_dir
 
 router = APIRouter(prefix="/api", tags=["artifacts"])
+
+# render/audio file extensions are always a bare alnum token (svg, png, wav) —
+# this allowlist also stops a crafted ext from reflecting into get_audio's
+# media_type header.
+_EXT_RE = re.compile(r"[A-Za-z0-9]+")
 
 
 class GenerateRequest(BaseModel):
@@ -150,7 +156,7 @@ async def export_artifact(
     if body.format not in FORMATS:
         raise HTTPException(400, f"unknown format {body.format!r}")
     payload = json.loads(row["payload_json"])
-    doc = bake(load_document(payload))
+    doc = bake(load_document(payload), user["id"])
     from .assets import apply_brand, brand_logo_image
     from docloom.ir import Image as IRImage
 
@@ -282,8 +288,11 @@ async def get_render(
     artifact_id: str, ext: str, user: dict = Depends(current_user)
 ) -> FileResponse:
     require_artifact(user["id"], artifact_id)
-    path = data_dir() / "artifacts" / artifact_id / f"render.{ext}"
-    if not path.is_file():
+    if not _EXT_RE.fullmatch(ext):
+        raise HTTPException(404, "no render yet")
+    root = (data_dir() / "artifacts" / artifact_id).resolve()
+    path = (root / f"render.{ext}").resolve()
+    if path.parent != root or not path.is_file():
         raise HTTPException(404, "no render yet")
     return FileResponse(path)
 
@@ -295,8 +304,11 @@ async def get_audio(
     """Serve a podcast's synthesized audio. Starlette's FileResponse handles
     HTTP Range requests, so the player can seek/scrub."""
     require_artifact(user["id"], artifact_id)
-    path = data_dir() / "artifacts" / artifact_id / f"audio.{ext}"
-    if not path.is_file():
+    if not _EXT_RE.fullmatch(ext):
+        raise HTTPException(404, "no audio yet")
+    root = (data_dir() / "artifacts" / artifact_id).resolve()
+    path = (root / f"audio.{ext}").resolve()
+    if path.parent != root or not path.is_file():
         raise HTTPException(404, "no audio yet")
     return FileResponse(path, media_type=f"audio/{ext}")
 

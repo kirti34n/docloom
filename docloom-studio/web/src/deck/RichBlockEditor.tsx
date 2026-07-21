@@ -2,12 +2,8 @@
  * used to render read-only. Each keeps the block's shape intact and calls
  * onChange with a new block so the deck/doc store persists it. */
 import { Plus, Trash2 } from 'lucide-react'
-import type { Block, SeriesT, Stat } from './types'
+import type { Block, RichText as RichTextT, SeriesT, Stat } from './types'
 import { plain } from './RichText'
-
-function asText(v: unknown): string {
-  return typeof v === 'string' ? v : plain((v ?? '') as never)
-}
 
 function Btn({ onClick, children, title }: {
   onClick: () => void; children: React.ReactNode; title?: string
@@ -22,37 +18,62 @@ function Btn({ onClick, children, title }: {
 
 // pad a ragged row/header up to n cells so a write past its current end
 // never leaves a hole (holes serialize to JSON null, which docloom rejects)
-export function padded(row: string[], n: number): string[] {
+export function padded(row: RichTextT[], n: number): RichTextT[] {
   const out = [...row]
   while (out.length < n) out.push('')
   return out
 }
 
-function TableEditor({ block, onChange }: { block: Block; onChange: (b: Block) => void }) {
-  const header = (block.header ?? []).map(asText)
-  const rows = (block.rows ?? []).map((r) => r.map(asText))
-  const cols = Math.max(header.length, ...rows.map((r) => r.length), 1)
+function tableCols(block: Block): number {
+  const header = block.header ?? []
+  const rows = block.rows ?? []
+  return Math.max(header.length, ...rows.map((r) => r.length), 1)
+}
 
-  const setHeader = (i: number, v: string) => {
-    const h = padded(header, cols); h[i] = v; onChange({ ...block, header: h })
-  }
-  const setCell = (r: number, c: number, v: string) => {
-    const next = rows.map((row) => padded(row, cols))
-    next[r][c] = v
-    onChange({ ...block, rows: next })
-  }
-  const addRow = () => onChange({ ...block, rows: [...rows, Array(cols).fill('')] })
-  const addCol = () => onChange({
+export function tableSetHeader(block: Block, i: number, v: string): Block {
+  const cols = tableCols(block)
+  const h = padded(block.header ?? [], cols)
+  h[i] = v
+  return { ...block, header: h }
+}
+
+export function tableSetCell(block: Block, r: number, c: number, v: string): Block {
+  const cols = tableCols(block)
+  const next = (block.rows ?? []).map((row) => padded(row, cols))
+  next[r][c] = v
+  return { ...block, rows: next }
+}
+
+export function tableAddRow(block: Block): Block {
+  const cols = tableCols(block)
+  return { ...block, rows: [...(block.rows ?? []), Array(cols).fill('')] }
+}
+
+export function tableAddColumn(block: Block): Block {
+  const cols = tableCols(block)
+  return {
     ...block,
-    header: [...header, `Column ${cols + 1}`],
-    rows: rows.map((r) => [...r, '']),
-  })
-  const delRow = (r: number) => onChange({ ...block, rows: rows.filter((_, i) => i !== r) })
-  const delCol = (c: number) => onChange({
+    header: [...(block.header ?? []), `Column ${cols + 1}`],
+    rows: (block.rows ?? []).map((r) => [...r, '']),
+  }
+}
+
+export function tableDeleteRow(block: Block, r: number): Block {
+  return { ...block, rows: (block.rows ?? []).filter((_, i) => i !== r) }
+}
+
+export function tableDeleteColumn(block: Block, c: number): Block {
+  return {
     ...block,
-    header: header.filter((_, i) => i !== c),
-    rows: rows.map((row) => row.filter((_, i) => i !== c)),
-  })
+    header: (block.header ?? []).filter((_, i) => i !== c),
+    rows: (block.rows ?? []).map((row) => row.filter((_, i) => i !== c)),
+  }
+}
+
+function TableEditor({ block, onChange }: { block: Block; onChange: (b: Block) => void }) {
+  const header = block.header ?? []
+  const rows = block.rows ?? []
+  const cols = tableCols(block)
 
   return (
     <div className="rbe">
@@ -61,9 +82,9 @@ function TableEditor({ block, onChange }: { block: Block; onChange: (b: Block) =
           <tr>
             {Array.from({ length: cols }, (_, c) => (
               <th key={c}>
-                <input value={header[c] ?? ''} onChange={(e) => setHeader(c, e.target.value)}
+                <input value={plain(header[c])} onChange={(e) => onChange(tableSetHeader(block, c, e.target.value))}
                   placeholder={`Column ${c + 1}`} />
-                <button className="rbe-x" title="Delete column" aria-label="Delete column" onClick={() => delCol(c)}>×</button>
+                <button className="rbe-x" title="Delete column" aria-label="Delete column" onClick={() => onChange(tableDeleteColumn(block, c))}>×</button>
               </th>
             ))}
           </tr>
@@ -73,19 +94,19 @@ function TableEditor({ block, onChange }: { block: Block; onChange: (b: Block) =
             <tr key={r}>
               {Array.from({ length: cols }, (_, c) => (
                 <td key={c}>
-                  <input value={row[c] ?? ''} onChange={(e) => setCell(r, c, e.target.value)} />
+                  <input value={plain(row[c])} onChange={(e) => onChange(tableSetCell(block, r, c, e.target.value))} />
                 </td>
               ))}
               <td className="rbe-rowdel">
-                <button title="Delete row" aria-label="Delete row" onClick={() => delRow(r)}><Trash2 size={12} /></button>
+                <button title="Delete row" aria-label="Delete row" onClick={() => onChange(tableDeleteRow(block, r))}><Trash2 size={12} /></button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
       <div className="rbe-actions">
-        <Btn onClick={addRow}><Plus size={11} /> Row</Btn>
-        <Btn onClick={addCol}><Plus size={11} /> Column</Btn>
+        <Btn onClick={() => onChange(tableAddRow(block))}><Plus size={11} /> Row</Btn>
+        <Btn onClick={() => onChange(tableAddColumn(block))}><Plus size={11} /> Column</Btn>
       </div>
       <input className="rbe-caption" value={block.caption ?? ''}
         placeholder="Caption (optional)"

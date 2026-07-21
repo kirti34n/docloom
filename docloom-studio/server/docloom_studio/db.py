@@ -17,6 +17,7 @@ Short synchronous calls run inline with FastAPI's event loop; heavy work
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import secrets
@@ -155,6 +156,12 @@ MIGRATIONS = [
     """
     ALTER TABLE artifacts ADD COLUMN status TEXT NOT NULL DEFAULT 'ready';
     """,
+    # v8 — job liveness heartbeat, so a multi-node deployment can tell 'my
+    # sibling's live job' from 'a zombie left by a crashed node' instead of
+    # reconciling on status alone. 0 means never heartbeated (fail-close).
+    """
+    ALTER TABLE jobs ADD COLUMN heartbeat REAL NOT NULL DEFAULT 0;
+    """,
 ]
 
 
@@ -222,6 +229,32 @@ def _backfill_orphan_notebooks(conn: Any, translate: bool) -> None:
     run("UPDATE notebooks SET workspace_id = ? WHERE workspace_id IS NULL", (wid,))
 
 
+def _backfill_orphan_assets(conn: Any, translate: bool) -> None:
+    """Migration v3 follow-up, run in the same transaction right after it adds
+    assets.user_id. Assets predating v3 were a flat global library with no owner
+    column; the asset library queries and irx.py's export resolver both now
+    scope by user_id, so an orphan (user_id NULL) would be invisible in every
+    library, dropped from every export, and un-deletable. Adopt orphans into the
+    oldest existing user — they were shared before multi-tenancy, so the oldest
+    account is the closest thing to an owner — reusing the same rescue user as
+    _backfill_orphan_notebooks when no real user exists (a pre-auth install with
+    assets but no accounts)."""
+
+    def run(sql: str, params: tuple = ()):
+        return conn.execute(_to_pg_placeholders(sql) if translate else sql, params)
+
+    if run("SELECT 1 FROM assets WHERE user_id IS NULL").fetchone() is None:
+        return
+    user_row = run("SELECT id FROM users ORDER BY created LIMIT 1").fetchone()
+    if user_row is None:
+        uid = new_id()
+        run("INSERT INTO users (id, email, password_hash, created) "
+            "VALUES (?, ?, ?, ?)", (uid, "rescue@local.invalid", "", now()))
+    else:
+        uid = user_row["id"]
+    run("UPDATE assets SET user_id = ? WHERE user_id IS NULL", (uid,))
+
+
 # ---------------------------------------------------------------- SQLite
 
 def _connect_sqlite() -> sqlite3.Connection:
@@ -250,6 +283,8 @@ def _init_sqlite() -> None:
                     conn.execute(stmt)
                 if i == 2:
                     _backfill_orphan_notebooks(conn, translate=False)
+                if i == 3:
+                    _backfill_orphan_assets(conn, translate=False)
                 conn.execute(f"PRAGMA user_version = {i}")
             except Exception:
                 conn.rollback()
@@ -293,6 +328,8 @@ def _init_postgres() -> None:
                 conn.execute(stmt)
             if i == 2:
                 _backfill_orphan_notebooks(conn, translate=True)
+            if i == 3:
+                _backfill_orphan_assets(conn, translate=True)
             conn.execute("UPDATE schema_version SET version = %s", (i,))
         conn.commit()
 
@@ -345,6 +382,48 @@ def query_all(sql: str, params: tuple = ()) -> list[Any]:
 
 def execute(sql: str, params: tuple = ()) -> None:
     _run(sql, params, None)
+
+
+class _Tx:
+    """Handle bound to one open transaction. Same `?`-placeholder SQL and
+    mapping rows (sqlite3.Row / psycopg dict_row) as execute/query_one, so
+    statements move between the one-shot helpers and a transaction unchanged."""
+
+    def __init__(self, conn: Any, translate: bool):
+        self._conn = conn
+        self._translate = translate
+
+    def execute(self, sql: str, params: tuple = ()):
+        return self._conn.execute(
+            _to_pg_placeholders(sql) if self._translate else sql, params)
+
+
+@contextlib.contextmanager
+def transaction():
+    """All statements inside run on ONE connection in ONE transaction:
+    committed on clean exit, rolled back on exception. The one-shot helpers
+    above open a new auto-committing connection per statement, so any
+    read-modify-write sequence built from them races with concurrent writers;
+    this is the seam for making such a sequence atomic. SQLite takes the write
+    lock up front (BEGIN IMMEDIATE) so two writers serialize at entry — under
+    busy_timeout — instead of deadlocking on a mid-transaction lock upgrade."""
+    if IS_POSTGRES:
+        # psycopg opens the transaction at the first execute; the connection
+        # context manager commits on clean exit, rolls back on exception, and
+        # closes either way — the same semantics _run already relies on.
+        with _pg_connect() as conn:
+            yield _Tx(conn, translate=True)
+        return
+    conn = _connect_sqlite()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        yield _Tx(conn, translate=False)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def rows_to_dicts(rows: list[Any]) -> list[dict[str, Any]]:

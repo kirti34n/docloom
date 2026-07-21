@@ -134,33 +134,47 @@ export const useDoc = create<DocState>()(
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let saveSeq = 0
+let inFlight = false
 
 function save(): void {
-  const mySeq = ++saveSeq
+  saveSeq++
   if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(async () => {
-    const s = useDoc.getState()
-    if (!s.artifactId || !s.dirty) return
-    useDoc.setState({ saving: true })
-    try {
-      const res = await api.put<{ version: number; findings: Finding[] }>(
-        `/api/artifacts/${s.artifactId}/ir`,
-        { payload: { ir: s.toDocument(), theme_name: s.themeName, brand_kit_id: null } },
-      )
-      // another save() ran while this PUT was in flight (saveSeq moved on):
-      // its edits are not in this payload, so leave dirty alone and let its
-      // own already-scheduled timer send them
-      const clean = saveSeq === mySeq
-      useDoc.setState({
-        rev: res.version,
-        findings: res.findings,
-        saving: false,
-        ...(clean ? { dirty: false } : {}),
-      })
-    } catch {
-      useDoc.setState({ saving: false })
-    }
-  }, 700)
+  saveTimer = setTimeout(() => void flush(), 700)
+}
+
+// At most one PUT may be in flight at a time, so responses can never arrive
+// out of order and clobber rev/findings with stale data. Edits made while a
+// PUT is in flight are coalesced into one trailing re-flush once it resolves.
+async function flush(): Promise<void> {
+  if (inFlight) return
+  const s = useDoc.getState()
+  if (!s.artifactId || !s.dirty) return
+  const mySeq = saveSeq
+  inFlight = true
+  useDoc.setState({ saving: true })
+  let retry = false
+  try {
+    const res = await api.put<{ version: number; findings: Finding[] }>(
+      `/api/artifacts/${s.artifactId}/ir`,
+      { payload: { ir: s.toDocument(), theme_name: s.themeName, brand_kit_id: null } },
+    )
+    // another save() ran while this PUT was in flight (saveSeq moved on):
+    // its edits are not in this payload, so leave dirty alone and re-flush
+    // once inFlight clears below
+    const clean = saveSeq === mySeq
+    useDoc.setState({
+      rev: res.version,
+      findings: res.findings,
+      saving: false,
+      ...(clean ? { dirty: false } : {}),
+    })
+    retry = !clean
+  } catch {
+    useDoc.setState({ saving: false })
+  } finally {
+    inFlight = false
+  }
+  if (retry) void flush()
 }
 
 export const docHistory = {

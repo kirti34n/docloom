@@ -1,5 +1,5 @@
 """Stage A regression: the provider.generation settings default declares the
-8192 generation token cap, and it survives the get_setting -> ProviderConfig
+16384 generation token cap, and it survives the get_setting -> ProviderConfig
 round trip both for a fresh install (no row saved yet) and for a config saved
 before this field existed (ProviderConfig's own field default must supply the
 cap so generate_validated never sees a config missing max_tokens)."""
@@ -22,15 +22,15 @@ def _db():
     execute("DELETE FROM settings")
 
 
-def test_defaults_declare_the_8192_token_cap():
-    assert DEFAULTS["provider.generation"]["max_tokens"] == 8192
+def test_defaults_declare_the_16384_token_cap():
+    assert DEFAULTS["provider.generation"]["max_tokens"] == 16384
 
 
 def test_get_setting_default_round_trips_into_provider_config():
     # No row saved yet: get_setting falls back to DEFAULTS, which now carries
     # max_tokens, and ProviderConfig must accept and keep it.
     cfg = ProviderConfig(**get_setting("provider.generation"))
-    assert cfg.max_tokens == 8192
+    assert cfg.max_tokens == 16384
 
 
 def test_old_saved_config_without_max_tokens_still_gets_the_default():
@@ -44,4 +44,4 @@ def test_old_saved_config_without_max_tokens_still_gets_the_default():
     assert "max_tokens" not in stored  # confirms this exercises the back-compat path, not DEFAULTS
 
     cfg = ProviderConfig(**stored)
-    assert cfg.max_tokens == 8192
+    assert cfg.max_tokens == 16384

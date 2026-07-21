@@ -28,7 +28,7 @@ DEFAULTS: dict[str, Any] = {
         "base_url": "http://localhost:11434",
         "api_key": "",
         "model": "qwen3.5:9b",
-        "max_tokens": 8192,
+        "max_tokens": 16384,  # raised from 8192 so large docs/sections don't truncate
     },
     "provider.embeddings": {
         "kind": "ollama",
@@ -179,9 +179,11 @@ def unmask_value(key: str, value: Any, user_id: str | None = None) -> Any:
         if key in _SECRET_KEYS and value == SECRET_MASK:
             return get_setting(key, user_id) or ""
         return value
-    stored = get_setting(key, user_id) or {}
+    stored = get_setting(key, user_id)
+    if not isinstance(stored, dict):
+        stored = {}
     value = dict(value)
     for field in _SECRET_FIELDS:
         if value.get(field) == SECRET_MASK:
-            value[field] = (stored or {}).get(field, "")
+            value[field] = stored.get(field, "")
     return value

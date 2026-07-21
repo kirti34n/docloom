@@ -13,11 +13,20 @@ from docloom import (
     AUTHORING_GUIDE, Column, Document, Sheet, Slide, Source, Span, ensure_ids,
     lint, llm_schema,
 )
-from docloom.ir import Block, Chart, Code, Heading, Image, StatRow, Table, plain
+from docloom.ir import (
+    Block, BulletList, Chart, Code, Heading, Image, NumberedList, StatRow,
+    Table, plain,
+)
+# Fit-by-budget constants (see _budget_errors below) are docloom's own, not a
+# second, drifting copy: docloom/src/docloom/lint.py already defines and
+# tunes MAX_BULLETS_PER_SLIDE / MAX_BULLET_CHARS / MAX_TITLE_CHARS for the
+# exact same rule (deck/too-many-bullets, deck/title-too-long), and docloom
+# is a real installed dependency here, so import instead of redeclaring.
+from docloom.lint import MAX_BULLET_CHARS, MAX_BULLETS_PER_SLIDE, MAX_TITLE_CHARS
 from docloom.llm import parse_llm_output
 from pydantic import BaseModel, Field
 
-from .db import execute, new_id, now, owner_of_notebook, query_one
+from .db import execute, new_id, now, owner_of_notebook, query_one, transaction
 from .jobs import JobCtx
 from .providers import (
     GenerationFailed, ProviderConfig, ProviderError, TruncatedOutput,
@@ -84,7 +93,7 @@ INTENT
   a stats or chart block, not another bullet list.
 """
 
-SLIDE_SYSTEM = AUTHORING_GUIDE + """
+SLIDE_SYSTEM = AUTHORING_GUIDE + f"""
 You are drafting ONE slide of a deck as a single JSON object matching the
 provided schema (a docloom Slide). Follow the requested layout and intent,
 but you own the content: pick the block type the evidence calls for.
@@ -93,8 +102,8 @@ ONE IDEA
 - This slide makes exactly one assertion. If you find yourself wanting to
   say two things, drop the weaker one or move it to speaker notes.
 - Title = the takeaway, not a label: a complete sentence with a verb,
-  5-15 words (e.g. "Support tickets dropped 30 percent after the rollout",
-  never "Support Tickets" or "Results").
+  5-15 words and at most {MAX_TITLE_CHARS} characters (e.g. "Support tickets
+  dropped 30 percent after the rollout", never "Support Tickets" or "Results").
 
 BLOCK SELECTION (do not default to bullets; pick what the evidence needs)
 - The point is one or two numbers: a "stats" block (a big, bold value plus
@@ -111,7 +120,11 @@ BLOCK SELECTION (do not default to bullets; pick what the evidence needs)
 
 LIMITS
 - At most 6 blocks/elements and about 25 words of on-slide body text.
-  Bullets: under 130 chars each, at most 6 per slide, fewer is better.
+  Bullets and numbered items: under {MAX_BULLET_CHARS} chars each, at most
+  {MAX_BULLETS_PER_SLIDE} per SLIDE in total (not per list -- on a two_column
+  slide that means `blocks` and `right` combined), fewer is better. These are
+  hard budgets, not suggestions -- a slide that needs shrink-to-fit to read is
+  already a bad slide, so cut content instead of writing long lines.
   Tables: at most 4x4 on a slide. Put everything else in speaker `notes`.
 - Every chart, table, or image carries its own short title and a one-line
   takeaway caption (what the reader should conclude from it), not just
@@ -252,9 +265,80 @@ def _slide_content_errors(slide: Slide) -> list[str]:
     return _placeholder_errors(texts)
 
 
-def _slide_errors(deck_title: str, slide: Slide, source_ids: set[str]) -> list[str]:
+# Fit-by-budget: a slide whose body text had to be autofit-shrunk to fit its
+# box is already a bad slide -- prevention beats autofit. docloom's
+# llm_schema() strips minLength/maxLength/pattern before the schema reaches
+# the model (see llm.py), so a Field(description=...) budget is advisory
+# prose the model may ignore; these caps are enforced here, deterministically,
+# against the PARSED slide, and fed back through the same generate_validated
+# retry loop as every other lint finding (see providers.py). Because slides
+# are generated one at a time (the per-slide generate_validated call in
+# run_deck_pipeline's loop above), a budget violation re-asks for THIS slide
+# only -- the rest of the deck is untouched.
+#
+# MAX_BULLETS_PER_SLIDE / MAX_BULLET_CHARS / MAX_TITLE_CHARS are imported from
+# docloom.lint above, not redeclared: docloom's deck/too-many-bullets and
+# deck/title-too-long rules already enforce this exact budget at
+# severity="warning" (never "error" -- see the standing rule at
+# docloom/src/docloom/lint.py:349-365 that quality/density rules must stay
+# warnings, because hard-blocking them destroys valid documents). A second,
+# hardcoded copy here would silently drift from docloom's tuned values, which
+# is exactly what happened before (6 here vs. 7 there).
+def _budget_errors(slide: Slide) -> list[str]:
+    """Deterministic per-slot capacity check: title length, total bullet/
+    numbered item count, and per-item length. Item count is summed across
+    the WHOLE slide (blocks + right), matching docloom's own
+    deck/too-many-bullets rule (lint.py:616-624) exactly: a two_column slide
+    with 5 items on the left and 5 on the right is 10 bullets on one slide
+    and must be caught, even though neither list alone is over budget."""
+    errors: list[str] = []
+    if slide.title and len(slide.title) > MAX_TITLE_CHARS:
+        errors.append(
+            f"title is {len(slide.title)} chars, over the {MAX_TITLE_CHARS}-char "
+            "budget; shorten it to one punchy sentence")
+    all_blocks = slide.blocks + slide.right
+    n_items = sum(
+        len(b.items) for b in all_blocks if isinstance(b, (BulletList, NumberedList))
+    )
+    if n_items > MAX_BULLETS_PER_SLIDE:
+        errors.append(
+            f"{n_items} bullet/numbered items on this slide (counted across "
+            f"all lists on the slide, not per list), over the "
+            f"{MAX_BULLETS_PER_SLIDE}-item budget; cut the weakest ones or "
+            "move them to speaker notes")
+    for b in all_blocks:
+        if not isinstance(b, (BulletList, NumberedList)):
+            continue
+        for it in b.items:
+            text = plain(it.text)
+            if len(text) > MAX_BULLET_CHARS:
+                errors.append(
+                    f'{b.type} item is {len(text)} chars, over the '
+                    f'{MAX_BULLET_CHARS}-char budget ("{text[:60]}..."); '
+                    "shorten it instead of relying on autofit to shrink it")
+    return errors
+
+
+def _slide_hard_errors(deck_title: str, slide: Slide, source_ids: set[str]) -> list[str]:
+    """Errors that mean a slide is genuinely unusable: broken/hallucinated
+    citations, missing content blocks, placeholder text. Unlike a fit-by-
+    budget overflow (see _budget_errors), there is no authored content worth
+    keeping when one of these fires, so run_deck_pipeline's retry-exhaustion
+    fallback treats this set -- and only this set -- as grounds to discard
+    the slide for an empty skeleton."""
     return (_lint_errors(source_ids, title=deck_title, slides=[slide])
             + _slide_content_errors(slide))
+
+
+def _slide_errors(deck_title: str, slide: Slide, source_ids: set[str]) -> list[str]:
+    """Full lint_fn for the per-slide generate_validated call: hard errors
+    plus the fit-by-budget checks. Budget violations still shape retries (the
+    model is asked to trim, exactly like any other finding) but must never by
+    themselves be the reason a slide's content gets discarded -- see
+    run_deck_pipeline, which tracks the last hard-error-free parse separately
+    so retry exhaustion can fall back to real content instead of a blank
+    skeleton (HIGH-1)."""
+    return _slide_hard_errors(deck_title, slide, source_ids) + _budget_errors(slide)
 
 
 def _default_outline(prompt: str) -> Outline:
@@ -390,7 +474,7 @@ async def run_deck_pipeline(
     # a touch of targeted retrieval for the outline call too, not just the
     # per-slide calls below: the same evidence resurfaced right before the
     # generation point instead of only buried in the broad context block
-    outline_evidence = await _section_block(notebook_id, prompt, context_block, bool(sources))
+    outline_evidence, _ = await _section_block(notebook_id, prompt, context_block, bool(sources))
     try:
         outline: Outline = await generate_validated(
             cfg,
@@ -421,16 +505,37 @@ async def run_deck_pipeline(
     plan_lines = "\n".join(
         f"{i + 1}. [{s.layout}] {s.title}" for i, s in enumerate(outline.slides)
     )
+    known_sources: dict[str, dict] = {s["id"]: s for s in sources}
+    broad_ids = set(known_sources)
     for index, item in enumerate(outline.slides):
         ctx.emit("slide", "running", detail=item.title,
                  data={"index": index + 1, "total": len(outline.slides)})
-        sec_block = await _section_block(
+        sec_block, sec_sources = await _section_block(
             notebook_id, f"{item.title} - {item.intent}", context_block, bool(sources))
+        for s in sec_sources:
+            known_sources.setdefault(s["id"], s)
+        slide_ids = broad_ids | {s["id"] for s in sec_sources}
         user = (
             f'Deck: "{outline.deck_title}"\nFull outline:\n{plan_lines}\n\n'
             f'Draft slide {index + 1}: "{item.title}" (layout: {item.layout}).\n'
             f"Intent: {item.intent}{sec_block}"
         )
+        # last_hard_ok captures the most recent round's parsed slide that had
+        # NO hard errors (see _slide_hard_errors) even if it still tripped a
+        # fit-by-budget check -- generate_validated itself only ever returns
+        # the object on a fully clean round or raises GenerationFailed with
+        # round diagnostics (no object) on exhaustion, so this closure is the
+        # only way to keep hold of real, usable content across the retry loop
+        # (HIGH-1: a budget-only failure must never discard authored content).
+        last_hard_ok: dict[str, Slide] = {}
+
+        def _lint_fn(s: Slide, ids=slide_ids) -> list[str]:
+            hard = _slide_hard_errors(outline.deck_title, s, ids)
+            if not hard:
+                last_hard_ok["slide"] = s
+            return hard + _budget_errors(s)
+
+        degraded = False
         try:
             slide: Slide = await generate_validated(
                 cfg,
@@ -438,18 +543,29 @@ async def run_deck_pipeline(
                  {"role": "user", "content": user}],
                 schema=llm_schema(Slide),
                 parse=lambda t: parse_llm_output(t, Slide),
-                lint_fn=lambda s: _slide_errors(
-                    outline.deck_title, s, {so["id"] for so in sources}),
+                lint_fn=_lint_fn,
             )
         except _UNIT_FAILURES as e:
-            # one flaky call (a timeout, a 5xx, an exhausted retry budget)
-            # must not sink the whole deck: keep a skeleton slide the user
-            # can fill in and move on to the next one
-            ctx.emit("slide", "skipped", detail=item.title, data={
-                "index": index + 1, "total": len(outline.slides),
-                "error": str(e)[:200]})
-            slide = Slide(layout=item.layout, title=item.title,
-                          notes=f"(generation failed) intent: {item.intent}")
+            if "slide" in last_hard_ok:
+                # every round kept tripping the fit-by-budget check (e.g. the
+                # model would not shorten a list under repeated feedback), but
+                # at least one round produced real, grounded, non-empty
+                # content with no hard errors -- keep that content instead of
+                # discarding it for a blank skeleton. docloom's own lint(doc)
+                # call below still surfaces the overflow as its native
+                # warning-severity finding (deck/too-many-bullets or
+                # deck/title-too-long), it just does not block the deck.
+                slide = last_hard_ok["slide"]
+                degraded = True
+            else:
+                # one flaky call (a timeout, a 5xx, an exhausted retry budget)
+                # must not sink the whole deck: keep a skeleton slide the user
+                # can fill in and move on to the next one
+                ctx.emit("slide", "skipped", detail=item.title, data={
+                    "index": index + 1, "total": len(outline.slides),
+                    "error": str(e)[:200]})
+                slide = Slide(layout=item.layout, title=item.title,
+                              notes=f"(generation failed) intent: {item.intent}")
         if slide.layout == "title":
             slide.layout = item.layout  # only the opener is a title slide
         if not slide.title:
@@ -458,13 +574,14 @@ async def run_deck_pipeline(
         ctx.emit("slide", "done", detail=item.title, data={
             "index": index + 1, "total": len(outline.slides),
             "slide": slide.model_dump(exclude_none=True),
+            **({"budget_degraded": True} if degraded else {}),
         })
 
     doc = Document(
         title=outline.deck_title, slides=slides,
-        sources=[Source(**s) for s in sources],
+        sources=[Source(**s) for s in known_sources.values()],
     )
-    _citation_gate(doc, {s["id"] for s in sources})
+    _citation_gate(doc, set(known_sources))
     doc = ensure_ids(doc)
     # lint the model's content before image slots are filled with asset:// refs
     # (those are baked to real files at export, so linting them here is spurious)
@@ -592,7 +709,7 @@ async def run_doc_pipeline(
     context_block = _context_block(context_lines)
 
     ctx.emit("outline", "running")
-    outline_evidence = await _section_block(notebook_id, prompt, context_block, bool(sources))
+    outline_evidence, _ = await _section_block(notebook_id, prompt, context_block, bool(sources))
     try:
         outline: DocOutline = await generate_validated(
             cfg,
@@ -612,12 +729,17 @@ async def run_doc_pipeline(
              "sections": [s.heading for s in outline.sections]})
 
     blocks: list[Block] = []
+    known_sources: dict[str, dict] = {s["id"]: s for s in sources}
+    broad_ids = set(known_sources)
     for i, item in enumerate(outline.sections):
         ctx.emit("section", "running", detail=item.heading,
                  data={"index": i + 1, "total": len(outline.sections)})
         blocks.append(Heading(level=2, text=item.heading))
-        sec_block = await _section_block(
+        sec_block, sec_sources = await _section_block(
             notebook_id, f"{item.heading} - {item.intent}", context_block, bool(sources))
+        for s in sec_sources:
+            known_sources.setdefault(s["id"], s)
+        section_ids = broad_ids | {s["id"] for s in sec_sources}
         try:
             section: DocSection = await generate_validated(
                 cfg,
@@ -627,8 +749,8 @@ async def run_doc_pipeline(
                     f"Intent: {item.intent}{sec_block}"}],
                 schema=llm_schema(DocSection),
                 parse=lambda t: parse_llm_output(t, DocSection),
-                lint_fn=lambda s: _section_errors(
-                    outline.doc_title, s, {so["id"] for so in sources}),
+                lint_fn=lambda s, ids=section_ids: _section_errors(
+                    outline.doc_title, s, ids),
             )
             blocks.extend(section.blocks)
         except _UNIT_FAILURES as e:
@@ -641,8 +763,8 @@ async def run_doc_pipeline(
                  data={"index": i + 1, "total": len(outline.sections)})
 
     doc = Document(title=outline.doc_title, blocks=blocks,
-                   sources=[Source(**s) for s in sources])
-    _citation_gate(doc, {s["id"] for s in sources})
+                   sources=[Source(**s) for s in known_sources.values()])
+    _citation_gate(doc, set(known_sources))
     doc = ensure_ids(doc)
     findings = lint(doc)
     ctx.emit("lint", "done", data={"findings": [f.model_dump() for f in findings]})
@@ -742,7 +864,7 @@ async def run_sheet_pipeline(
     # a touch of targeted retrieval for the whole-workbook request, the same
     # mechanism the deck/doc per-unit calls use, instead of leaving the
     # sheet pipeline on the broad context block alone
-    outline_evidence = await _section_block(notebook_id, prompt, context_block, have_sources)
+    outline_evidence, _ = await _section_block(notebook_id, prompt, context_block, have_sources)
 
     ctx.emit("sheet", "running")
     try:
@@ -790,7 +912,7 @@ async def run_sheet_pipeline(
         for i, item in enumerate(outline.sheets):
             ctx.emit("sheet", "running", detail=item.name,
                      data={"index": i + 1, "total": len(outline.sheets)})
-            sec_block = await _section_block(
+            sec_block, _ = await _section_block(
                 notebook_id, f"{item.name} - {item.intent}", context_block, have_sources)
             try:
                 sheet: Sheet = await generate_validated(
@@ -1118,12 +1240,16 @@ def _context_block(context_lines: list[str] | None, cite: bool = True) -> str:
 
 async def _section_block(
     notebook_id: str, query: str, base_block: str, have_sources: bool, k: int = 6
-) -> str:
+) -> tuple[str, list[dict]]:
     """Retrieve evidence targeted at ONE section/slide and append it to the
     broad context block. Falls back to just `base_block` when the notebook has
-    no sources or retrieval finds nothing (keeps stubbed tests deterministic)."""
+    no sources or retrieval finds nothing (keeps stubbed tests deterministic).
+    Also returns the distinct sources surfaced in THIS block (id/title), so
+    callers can widen their citation-validation id-set to match what the
+    model was actually shown -- otherwise a compliant cite to a section-only
+    source is flagged cite/unknown-source and the unit is discarded."""
     if not have_sources:
-        return base_block
+        return base_block, []
     try:
         from .embeddings import retrieve
 
@@ -1131,13 +1257,17 @@ async def _section_block(
     except Exception:
         chunks = []
     if not chunks:
-        return base_block
+        return base_block, []
     lines = [
         f'[cite id: "{c.source_id}"] '
         f'({c.source_title}{f", p.{c.page}" if c.page else ""}) {c.text}'
         for c in chunks
     ]
-    return base_block + "\n\nMost relevant to THIS section:\n" + "\n".join(lines)
+    seen: dict[str, dict] = {}
+    for c in chunks:
+        seen.setdefault(c.source_id, {"id": c.source_id, "title": c.source_title})
+    return (base_block + "\n\nMost relevant to THIS section:\n" + "\n".join(lines),
+            list(seen.values()))
 
 
 def _set_artifact_status(artifact_id: str, status: str) -> None:
@@ -1165,19 +1295,39 @@ def create_artifact(notebook_id: str, kind: str, title: str = "") -> str:
 
 
 def save_artifact(artifact_id: str, title: str, payload: dict) -> int:
-    row = query_one("SELECT version FROM artifacts WHERE id = ?", (artifact_id,))
-    version = (row["version"] if row else 0) + 1
+    """Persist payload as the artifact's next version. The head bump, the
+    version snapshot, and the status flip land in ONE transaction, and the
+    version is allocated by the UPDATE itself (version = version + 1 ...
+    RETURNING), so two concurrent saves get distinct consecutive versions
+    instead of both computing the same one and silently clobbering each
+    other's payload. Raises LookupError if the artifact does not exist
+    (previously this silently allocated version 1 for a nonexistent id)."""
     text = json.dumps(payload)
-    execute("UPDATE artifacts SET title = ?, version = ?, payload_json = ?, "
-            "updated = ? WHERE id = ?",
-            (title, version, text, now(), artifact_id))
-    execute("INSERT INTO artifact_versions (artifact_id, version, payload_json, "
-            "created) VALUES (?, ?, ?, ?)",
-            (artifact_id, version, text, now()))
-    # a payload just landed (first generation, a manual edit, or a revert):
-    # the artifact is viewable/exportable, so it's 'ready' regardless of
-    # which caller reached this point
-    _set_artifact_status(artifact_id, "ready")
+    t = now()
+    with transaction() as tx:
+        # a payload just landed (first generation, a manual edit, or a
+        # revert): the artifact is viewable/exportable, so it's 'ready'
+        # regardless of which caller reached this point
+        rows = tx.execute(
+            "UPDATE artifacts SET title = ?, version = version + 1, "
+            "payload_json = ?, updated = ?, status = 'ready' "
+            "WHERE id = ? RETURNING version",
+            (title, text, t, artifact_id)).fetchall()
+        # fetchall (not fetchone): sqlite3 must step the RETURNING statement
+        # to completion before commit, or the commit sees it still pending
+        if not rows:
+            raise LookupError(f"artifact {artifact_id} not found")
+        version = rows[0]["version"]
+        # belt for a legacy DB the OLD racy code corrupted (a snapshot row at
+        # this version already present): overwrite it so head and snapshot
+        # agree — DO NOTHING would freeze exactly the divergence being fixed,
+        # and no clause at all would make this artifact permanently unsavable
+        tx.execute(
+            "INSERT INTO artifact_versions (artifact_id, version, "
+            "payload_json, created) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (artifact_id, version) DO UPDATE SET "
+            "payload_json = excluded.payload_json, created = excluded.created",
+            (artifact_id, version, text, t))
     return version
 
 

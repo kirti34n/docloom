@@ -12,14 +12,26 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 import traceback
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from .db import execute, new_id, now, query_all, query_one
+from .db import IS_POSTGRES, execute, new_id, now, query_all, query_one
 
 _SENTINEL = {"stage": "__end__"}
 log = logging.getLogger("docloom_studio.jobs")
+
+# Concurrent reapers on shared Postgres can both try to reclaim the same
+# zombie job; the terminal event insert races on the (job_id, seq) PK, and
+# only one writer should win.
+_INTEGRITY_ERRORS: tuple[type[BaseException], ...] = (sqlite3.IntegrityError,)
+if IS_POSTGRES:
+    try:
+        import psycopg
+        _INTEGRITY_ERRORS += (psycopg.IntegrityError,)
+    except ImportError:
+        pass
 
 # Bound concurrent job bodies so N simultaneous uploads/generations don't
 # stampede the model provider and the DB. Tune via env; work queues past it.
@@ -31,7 +43,15 @@ _sem: asyncio.Semaphore | None = None
 # than most proxies'/load balancers' idle timeout and drops the connection,
 # freezing the build UI. A `:` comment line is valid SSE (EventSource ignores
 # it) that just keeps the connection alive.
-_HEARTBEAT_SECONDS = 15.0
+_SSE_KEEPALIVE_SECONDS = 15.0
+
+# DB job-liveness heartbeat (distinct from the SSE keepalive above): how
+# often a running job's row gets its `heartbeat` column refreshed, and the
+# minimum lease a caller may use to reclaim jobs by that column. A single
+# provider call can be silent for up to providers.TIMEOUT=600s, so the lease
+# must comfortably outlast several missed beats before a live job looks dead.
+_HEARTBEAT_INTERVAL = 30.0
+_MIN_LEASE_SECONDS = 4 * _HEARTBEAT_INTERVAL
 
 # Cap in-memory retention of finished jobs so full per-slide payloads don't
 # leak for the server's lifetime; job_events (the DB) is the durable record
@@ -79,26 +99,55 @@ def _events_for(job_id: str) -> list[dict[str, Any]]:
              "t": r["t"]} for r in rows]
 
 
-def reconcile_jobs() -> int:
+def reconcile_jobs(lease_seconds: float | None = None) -> int:
     """Fail-close jobs orphaned by a restart.
 
-    A job marked 'running' in the DB has no live task after the process that
-    owned it exits (in-process queue, not persisted). At startup we can only
-    have zombies, so mark every DB 'running' job 'failed' with a terminal
-    event. Returns how many were reconciled. Idempotent.
+    lease_seconds is None (default): blanket mode. A job marked 'running' in
+    the DB has no live task after the process that owned it exits (in-process
+    queue, not persisted), so at a single-node boot every DB 'running' job
+    must be a zombie — mark all of them 'failed' with a terminal event, and
+    fail every 'building' artifact too. This is the SQLite single-node path.
+
+    lease_seconds is set: lease mode, for a shared multi-node DB where
+    'running' alone can't distinguish a crashed node's zombie from a sibling
+    node's live job. Only jobs whose heartbeat is older than
+    `now() - lease_seconds` are reclaimed; an artifact stays 'building' as
+    long as some job still within its lease backs it.
+
+    Returns how many jobs were reconciled. Idempotent.
     """
-    rows = query_all("SELECT id FROM jobs WHERE status = 'running'")
+    if lease_seconds is None:
+        rows = query_all("SELECT id FROM jobs WHERE status = 'running'")
+    else:
+        if lease_seconds < _MIN_LEASE_SECONDS:
+            raise ValueError(
+                f"lease_seconds={lease_seconds} is below the minimum "
+                f"{_MIN_LEASE_SECONDS} (4x the {_HEARTBEAT_INTERVAL}s heartbeat "
+                "interval) and would reap jobs that are alive but merely "
+                "between beats")
+        cutoff = now() - lease_seconds
+        rows = query_all(
+            "SELECT id FROM jobs WHERE status = 'running' AND heartbeat < ?", (cutoff,))
     for row in rows:
         nxt = query_one("SELECT COALESCE(MAX(seq), 0) AS m FROM job_events "
                         "WHERE job_id = ?", (row["id"],))["m"] + 1
-        _append_event(row["id"], nxt, "job", "failed",
-                      "interrupted by server restart", None)
+        try:
+            _append_event(row["id"], nxt, "job", "failed",
+                          "interrupted by server restart", None)
+        except _INTEGRITY_ERRORS:
+            pass  # a concurrent reaper already appended this job's terminal event
         execute("UPDATE jobs SET status = 'failed', updated = ? WHERE id = ?",
                 (now(), row["id"]))
-    # Any artifact still 'building' at startup is orphaned (its job cannot be
-    # live), so fail it too. Otherwise it spins forever in the UI and, being
-    # non-terminal, can be neither opened nor deleted.
-    execute("UPDATE artifacts SET status = 'failed' WHERE status = 'building'")
+    if lease_seconds is None:
+        # Any artifact still 'building' at startup is orphaned (its job cannot
+        # be live), so fail it too. Otherwise it spins forever in the UI and,
+        # being non-terminal, can be neither opened nor deleted.
+        execute("UPDATE artifacts SET status = 'failed' WHERE status = 'building'")
+    else:
+        execute(
+            "UPDATE artifacts SET status = 'failed' WHERE status = 'building' AND "
+            "id NOT IN (SELECT artifact_id FROM jobs WHERE status = 'running' "
+            "AND heartbeat >= ? AND artifact_id IS NOT NULL)", (cutoff,))
     if rows:
         log.warning("reconciled %d interrupted job(s) on startup", len(rows))
     return len(rows)
@@ -119,7 +168,11 @@ class JobCtx:
                  "data": data, "t": now()}
         self._job.events.append(event)
         # append-only: one row per event, not a rewrite of the whole log
-        _append_event(self._job.id, self._job.seq, stage, status, detail, data)
+        try:
+            _append_event(self._job.id, self._job.seq, stage, status, detail, data)
+        except _INTEGRITY_ERRORS:
+            pass  # a reaper already appended a terminal event at this seq;
+                  # the in-memory event above still reaches live SSE readers
         for q in list(self._job.queues):
             q.put_nowait(event)
 
@@ -133,6 +186,35 @@ def _prune_finished_jobs() -> None:
     excess = len(finished) - _MAX_FINISHED_JOBS_KEPT
     for job in finished[:max(0, excess)]:
         JOBS.pop(job.id, None)
+
+
+async def _beat(job_id: str) -> None:
+    """Refresh a running job's heartbeat column periodically so a lease-mode
+    reconcile on another node can tell it's alive. Runs for the job's entire
+    lifetime -- including time spent queued behind _MAX_CONCURRENT, since the
+    row is already status='running' in the DB the moment it's inserted, well
+    before the semaphore lets its body actually execute. The status='running'
+    guard in the UPDATE keeps a beat that loses a cancellation race from
+    reviving a job the runner's finally has already marked terminal.
+
+    This is a best-effort background nicety and must never affect job
+    outcome: a transient DB error (locked SQLite file, closed connection at
+    shutdown, ...) on one beat is logged and swallowed so the loop keeps
+    beating on the next tick, rather than dying and handing an exception to
+    whoever awaits this task."""
+    while True:
+        try:
+            await asyncio.sleep(_HEARTBEAT_INTERVAL)
+            await asyncio.to_thread(
+                execute,
+                "UPDATE jobs SET heartbeat = ? WHERE id = ? AND status = 'running'",
+                (now(), job_id),
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.warning("job %s heartbeat update failed; will retry next tick",
+                        job_id, exc_info=True)
 
 
 def _fail_artifact(artifact_id: str) -> None:
@@ -161,13 +243,19 @@ def start_job(
     JOBS[job.id] = job
     execute(
         "INSERT INTO jobs (id, kind, status, notebook_id, artifact_id, "
-        "events_json, created, updated) VALUES (?, ?, 'running', ?, ?, '[]', ?, ?)",
-        (job.id, kind, notebook_id, artifact_id, now(), now()),
+        "events_json, created, updated, heartbeat) "
+        "VALUES (?, ?, 'running', ?, ?, '[]', ?, ?, ?)",
+        (job.id, kind, notebook_id, artifact_id, now(), now(), now()),
     )
     ctx = JobCtx(job)
     log.info("job %s start kind=%s notebook=%s", job.id, kind, notebook_id)
 
     async def runner() -> None:
+        # Started before the semaphore: a job queued behind _MAX_CONCURRENT is
+        # already status='running' in the DB (the INSERT above) and must keep
+        # beating while it waits, or a lease-mode reconcile on another node
+        # could reap it before its body ever runs.
+        beat_task = asyncio.get_event_loop().create_task(_beat(job.id))
         try:
             async with _semaphore():   # bounded concurrency for the heavy body
                 await work(ctx)
@@ -188,6 +276,19 @@ def start_job(
             if artifact_id:
                 _fail_artifact(artifact_id)
         finally:
+            beat_task.cancel()
+            try:
+                await beat_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                # The heartbeat is a best-effort nicety (and _beat already
+                # swallows non-cancellation errors internally) -- but even a
+                # bug there must never be allowed to skip the terminal UPDATE
+                # or the sentinel push below, which is what unblocks the SSE
+                # generator and lets a completed job's status be observed.
+                log.warning("job %s heartbeat task raised on shutdown",
+                            job.id, exc_info=True)
             execute("UPDATE jobs SET status = ?, updated = ? WHERE id = ?",
                     (job.status, now(), job.id))
             for q in list(job.queues):
@@ -248,7 +349,7 @@ async def sse_events(job_id: str) -> AsyncIterator[str]:
             return
         while True:
             try:
-                event = await asyncio.wait_for(queue.get(), timeout=_HEARTBEAT_SECONDS)
+                event = await asyncio.wait_for(queue.get(), timeout=_SSE_KEEPALIVE_SECONDS)
             except asyncio.TimeoutError:
                 yield ": heartbeat\n\n"  # SSE comment: keeps the connection alive,
                 continue                # ignored by EventSource, no event fires

@@ -124,21 +124,234 @@ def test_irx_bake_resolves_asset_paths(monkeypatch):
     from docloom_studio.irx import bake, load_document
     from docloom_studio.settings import data_dir
 
-    # an asset on disk
+    # an asset on disk, owned by a user
+    user_id = new_id()
     asset_id = new_id()
     adir = data_dir() / "assets" / asset_id
     adir.mkdir(parents=True, exist_ok=True)
     (adir / "logo.png").write_bytes(b"\x89PNG\r\n")
-    execute("INSERT INTO assets (id, type, filename, tags, created) "
-            "VALUES (?, 'logo', 'logo.png', '', ?)", (asset_id, now()))
+    execute("INSERT INTO assets (id, type, filename, tags, created, user_id) "
+            "VALUES (?, 'logo', 'logo.png', '', ?, ?)", (asset_id, now(), user_id))
 
     payload = {"ir": {"title": "T", "blocks": [
         {"type": "image", "path": f"asset://{asset_id}", "alt": "logo"},
     ]}, "theme_name": "paper"}
     doc = load_document(payload)
-    baked = bake(doc)
+    baked = bake(doc, user_id)
     assert baked.blocks[0].path.endswith("logo.png")
     assert "asset://" not in baked.blocks[0].path
+
+
+_MINIMAL_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="60">'
+    '<rect width="100" height="60" fill="#fff"/></svg>'
+)
+
+
+def test_irx_bake_rasterizes_artifact_svg_when_png_missing():
+    """A diagram/infographic Artifact whose render.png was never saved (the
+    resvg-py-missing hole) must not silently resolve to path=None: bake()
+    falls back to rasterizing render.svg server-side."""
+    from docloom_studio.irx import bake, load_document
+    from docloom_studio.generate import create_artifact
+    from docloom_studio.settings import data_dir
+
+    nb = _notebook()
+    user = _owner(nb)
+    aid = create_artifact(nb, "diagram")
+    adir = data_dir() / "artifacts" / aid
+    adir.mkdir(parents=True, exist_ok=True)
+    (adir / "render.svg").write_text(_MINIMAL_SVG, encoding="utf-8")
+
+    payload = {"ir": {"title": "T", "blocks": [
+        {"type": "artifact", "kind": "diagram", "artifact_id": aid, "alt": "diagram"},
+    ]}, "theme_name": "paper"}
+    doc = load_document(payload)
+    baked = bake(doc, user["id"])
+
+    path = baked.blocks[0].path
+    assert path, "Artifact should have resolved to a rasterized PNG, not None"
+    from pathlib import Path
+    assert Path(path).is_file()
+    assert Path(path).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_irx_bake_invalidates_stale_cached_render_after_svg_edit():
+    """MEDIUM-1 regression: InfographicEditor.tsx posts {svg} alone on every
+    edit (no png_base64), so render.png is never rewritten by that save --
+    it can only be brought up to date by bake()'s own server-side rasterize.
+    An edit that changes render.svg's content must not keep serving the
+    render.png cached for the *previous* content."""
+    from pathlib import Path
+    from docloom_studio.irx import bake, load_document
+    from docloom_studio.generate import create_artifact
+    from docloom_studio.settings import data_dir
+
+    nb = _notebook()
+    user = _owner(nb)
+    aid = create_artifact(nb, "infographic")
+    adir = data_dir() / "artifacts" / aid
+    adir.mkdir(parents=True, exist_ok=True)
+
+    payload = {"ir": {"title": "T", "blocks": [
+        {"type": "artifact", "kind": "infographic", "artifact_id": aid, "alt": "info"},
+    ]}, "theme_name": "paper"}
+    doc = load_document(payload)
+
+    # First bake: only render.svg exists -> server rasterizes and caches.
+    (adir / "render.svg").write_text(_MINIMAL_SVG, encoding="utf-8")
+    first_path = bake(doc, user["id"]).blocks[0].path
+    assert first_path and Path(first_path).is_file()
+    first_bytes = Path(first_path).read_bytes()
+
+    # Now stamp a stale render.png with older content/mtime than the new
+    # render.svg the "editor" is about to save, exactly like a cached render
+    # from a previous edit that the infographic editor's svg-only save never
+    # touches.
+    stale_png = adir / "render.png"
+    stale_png.write_bytes(b"\x89PNG\r\n\x1a\nSTALE")
+    import os as _os
+    import time as _time
+
+    new_svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120">'
+        '<rect width="200" height="120" fill="#000"/></svg>'
+    )
+    # ensure a strictly-later mtime than the stale png even on coarse clocks
+    _time.sleep(0.05)
+    (adir / "render.svg").write_text(new_svg, encoding="utf-8")
+    newer = _time.time() + 1
+    _os.utime(adir / "render.svg", (newer, newer))
+
+    second_path = bake(doc, user["id"]).blocks[0].path
+    assert second_path, "edited infographic must still resolve to a render"
+    second_bytes = Path(second_path).read_bytes()
+
+    assert second_bytes != b"\x89PNG\r\n\x1a\nSTALE", (
+        "bake() served the stale cached render.png instead of "
+        "re-rendering the edited render.svg")
+    # the new render reflects the new (larger) svg, not the first bake's
+    assert second_path != first_path or second_bytes != first_bytes
+
+
+def test_irx_bake_reuses_cached_render_for_unchanged_svg_content():
+    """Once a content hash has been rasterized and cached, re-exporting the
+    same (unedited) artifact must reuse the cache rather than re-rasterizing
+    or resolving to nothing."""
+    from pathlib import Path
+    from docloom_studio.irx import bake, load_document
+    from docloom_studio.generate import create_artifact
+    from docloom_studio.settings import data_dir
+
+    nb = _notebook()
+    user = _owner(nb)
+    aid = create_artifact(nb, "infographic")
+    adir = data_dir() / "artifacts" / aid
+    adir.mkdir(parents=True, exist_ok=True)
+    (adir / "render.svg").write_text(_MINIMAL_SVG, encoding="utf-8")
+
+    payload = {"ir": {"title": "T", "blocks": [
+        {"type": "artifact", "kind": "infographic", "artifact_id": aid, "alt": "info"},
+    ]}, "theme_name": "paper"}
+    doc = load_document(payload)
+
+    first_path = bake(doc, user["id"]).blocks[0].path
+    second_path = bake(doc, user["id"]).blocks[0].path
+    assert first_path == second_path
+    assert Path(first_path).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_irx_resolve_artifact_render_cleans_up_temp_fallback(monkeypatch, caplog):
+    """LOW-2 regression: when caching the rasterized PNG back to disk fails
+    (e.g. read-only/full disk), the mkstemp fallback file must be tracked
+    for cleanup instead of leaking forever."""
+    import logging
+    from pathlib import Path
+    from docloom_studio import irx
+    from docloom_studio.generate import create_artifact
+    from docloom_studio.settings import data_dir
+
+    nb = _notebook()
+    aid = create_artifact(nb, "infographic")
+    adir = data_dir() / "artifacts" / aid
+    adir.mkdir(parents=True, exist_ok=True)
+    (adir / "render.svg").write_text(_MINIMAL_SVG, encoding="utf-8")
+
+    real_write_bytes = Path.write_bytes
+
+    def _boom(self, data):
+        if self.name.startswith("render.") and self.suffix == ".png":
+            raise OSError("simulated read-only artifacts dir")
+        return real_write_bytes(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", _boom)
+
+    irx._TEMP_RENDER_FILES.clear()
+    with caplog.at_level(logging.WARNING, logger="docloom_studio.irx"):
+        path = irx._resolve_artifact_render(aid)
+
+    assert path is not None
+    assert Path(path).is_file()
+    assert path in irx._TEMP_RENDER_FILES
+
+    irx._cleanup_temp_renders()
+    assert not Path(path).exists(), "temp render fallback file was never cleaned up"
+
+
+def test_irx_bake_logs_when_artifact_render_skipped_for_non_owner(caplog):
+    """LOW-3 regression: the ownership guard must not silently short-circuit
+    to path=None with no observable trace -- it should log, same as the
+    other empty-slot cases, without weakening the ownership check itself."""
+    import logging
+    from docloom_studio.irx import bake, load_document
+    from docloom_studio.generate import create_artifact
+    from docloom_studio.settings import data_dir
+
+    owner_nb = _notebook()
+    owner = _owner(owner_nb)
+    aid = create_artifact(owner_nb, "diagram")
+    adir = data_dir() / "artifacts" / aid
+    adir.mkdir(parents=True, exist_ok=True)
+    (adir / "render.png").write_bytes(b"\x89PNG\r\n\x1a\n OWNER_ONLY")
+
+    other_nb = _notebook()
+    other_user = _owner(other_nb)
+    assert other_user["id"] != owner["id"]
+
+    payload = {"ir": {"title": "T", "blocks": [
+        {"type": "artifact", "kind": "diagram", "artifact_id": aid, "alt": "diagram"},
+    ]}, "theme_name": "paper"}
+    doc = load_document(payload)
+
+    with caplog.at_level(logging.WARNING, logger="docloom_studio.irx"):
+        baked = bake(doc, other_user["id"])
+
+    assert baked.blocks[0].path is None  # security behaviour unchanged
+    assert any(aid in r.message and "not own it" in r.message
+               for r in caplog.records), "non-owner render skip must be logged"
+
+
+def test_irx_bake_warns_when_artifact_has_no_render(caplog):
+    """When neither render.png nor render.svg exist, bake() must log a
+    warning instead of silently emitting path=None (the silent-blank-export
+    hole this closes)."""
+    import logging
+    from docloom_studio.irx import bake, load_document
+    from docloom_studio.generate import create_artifact
+
+    nb = _notebook()
+    user = _owner(nb)
+    aid = create_artifact(nb, "diagram")  # no renders/ dir at all for this artifact
+
+    payload = {"ir": {"title": "T", "blocks": [
+        {"type": "artifact", "kind": "diagram", "artifact_id": aid, "alt": "diagram"},
+    ]}, "theme_name": "paper"}
+    doc = load_document(payload)
+    with caplog.at_level(logging.WARNING, logger="docloom_studio.irx"):
+        baked = bake(doc, user["id"])
+
+    assert baked.blocks[0].path is None
+    assert any(aid in r.message and "empty slot" in r.message for r in caplog.records)
 
 
 def test_export_refuses_on_lint_errors():

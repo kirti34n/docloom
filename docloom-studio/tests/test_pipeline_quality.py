@@ -375,9 +375,16 @@ def test_fetch_url_revalidates_redirect_target(monkeypatch):
         status_code = 302
         headers = {"location": "http://169.254.169.254/latest/meta-data/"}
         has_redirect_location = True
+        extensions: dict = {}
 
         def raise_for_status(self):
             pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
 
     class _FakeClient:
         def __init__(self, *a, **k):
@@ -389,7 +396,7 @@ def test_fetch_url_revalidates_redirect_target(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def get(self, url):
+        def stream(self, method, url):
             return _RedirectResponse()
 
     monkeypatch.setattr(ingest.httpx, "Client", _FakeClient)
@@ -624,7 +631,7 @@ def test_crypto_fails_loudly_on_malformed_secret_key(monkeypatch):
 def test_sse_heartbeat_keeps_an_idle_connection_alive(monkeypatch):
     from docloom_studio import jobs as J
 
-    monkeypatch.setattr(J, "_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(J, "_SSE_KEEPALIVE_SECONDS", 0.05)
     job = J.Job(id=new_id(), kind="test", status="running")
     J.JOBS[job.id] = job
 

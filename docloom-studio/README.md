@@ -6,9 +6,10 @@
 
 A free, local-first AI document studio: think NotebookLM crossed with Gamma. Add sources to a
 notebook, chat with answers that cite the evidence, and generate editable decks, documents,
-spreadsheets, diagrams, infographics, and podcasts, exported through [docloom](../docloom) to real
-PPTX/DOCX/XLSX/PDF. No account with a third party, no cloud dependency: a local model runs it
-fully offline.
+spreadsheets, diagrams, and infographics, exported through [docloom](../docloom) to real
+PPTX/DOCX/XLSX/PDF/HTML/MD, plus two-host podcast audio overviews synthesized straight to `.wav`
+(podcasts never go through docloom's renderers). No account with a third party, no cloud
+dependency: a local model runs it fully offline.
 
 ![docloom studio: a notebook with sources, grounded chat, and one-click guides](../docs/assets/guides.png)
 
@@ -19,6 +20,14 @@ gets generated into a validated document and renders it deterministically.
 
 ![Architecture: studio orchestrates sources and generation, the engine renders the validated IR](../docs/assets/architecture.png)
 
+One deliberate exception: diagrams are two unconnected systems today. The diagram editor here
+generates [D2](https://d2lang.com) source with an LLM and renders it client-side in the browser
+(WASM); the resulting picture is baked into whatever you export. The docloom engine's own
+coordinate-free `Diagram` IR (solver + SVG/PPTX/`.drawio` emitters, see
+[`docloom/README.md`](../docloom/README.md#architecture-diagrams)) isn't wired into this studio
+yet, so a diagram you tune here and a diagram authored as IR JSON are different pipelines. See
+[`docs/diagram-status.md`](../docs/diagram-status.md) for the open decision on unifying them.
+
 ## Features
 
 - **Notebooks** with your own sources (file, URL, or pasted text) or agent web research: the agent
@@ -27,34 +36,73 @@ gets generated into a validated document and renders it deterministically.
   where it came from
 - **One-click guides**: study guide, briefing, FAQ, timeline, and mind map, each a grounded
   generation from your sources
-- **Six artifact kinds**: presentations, documents, spreadsheets, D2 diagrams, infographics, and
-  two-host podcast audio overviews
+- **Six artifact kinds**: presentations, documents, spreadsheets, D2 diagrams (rendered
+  client-side, see "How it fits together" above), infographics, and two-host podcast audio
+  overviews
 - **A brand kit** (logo, accent color, fonts) applied to every generation and every export
 - **Local-first**: SQLite by default and nothing to configure; Postgres is a `DOCLOOM_DB_URL` away
   for a multi-node deployment
 
 ## Quickstart
 
+One command brings the whole app up — it installs dependencies, builds the frontend, and starts
+the server (API + SPA) on one port, then opens a browser. Run it from the **repository root**:
+
+```powershell
+# Windows (PowerShell)
+.\studio.ps1
+```
+
+```bash
+# macOS / Linux / Git Bash
+./studio.sh
+```
+
+It needs [`uv`](https://docs.astral.sh/uv), [Node 22+](https://nodejs.org), and npm on `PATH`.
+The first run takes a few minutes (venv + npm install + web build); every run after that skips
+straight to launch. Useful flags: `-Rebuild` / `--rebuild` (force a fresh web build),
+`-Port 9000` / `--port 9000`, `-NoBrowser` / `--no-browser`, `-Setup` / `--setup` (force a
+dependency reinstall). On the first visit, register an account; everything you create lives in a
+workspace scoped to your login.
+
+The launcher also **verifies the SVG rasterizer (resvg) on every start**. Without it, generated
+diagrams, charts, and infographics export as silent blanks — a capability gap no test catches —
+so the script installs it if a partial setup left it out.
+
+<details>
+<summary>What the one command does (equivalent manual steps)</summary>
+
 ```bash
 git clone https://github.com/kirti34n/docloom.git
 cd docloom
 
-python -m venv .venv
-.venv\Scripts\activate            # Windows
-# source .venv/bin/activate       # macOS / Linux
+# from docloom-studio/, create the studio venv and install both packages editable:
+uv venv
+uv pip install -e "../docloom[pdf,diagrams]"  # the render engine. [diagrams] is what pulls the
+                                               # resvg rasterizer. docloom's own Chart/Diagram
+                                               # blocks still render everywhere without it (SVG in
+                                               # HTML/MD/PDF, a data table or placeholder in
+                                               # PPTX/DOCX); what [diagrams] prevents is a blank
+                                               # export of THIS studio's own browser-rendered
+                                               # diagrams/infographics when no picture was saved
+                                               # client-side. Installing the engine WITHOUT the
+                                               # extra (`-e ../docloom` alone) satisfies the
+                                               # studio's `docloom[pdf,diagrams]` dependency by
+                                               # name and silently omits resvg -- which is why the
+                                               # launcher re-checks it on every start.
+uv pip install -e "."                          # the studio backend. Extras: [dev] (pytest),
+                                               # [ingest] (EPUB/YouTube sources), [podcast]
+                                               # (kokoro + soundfile audio), [postgres].
 
-pip install -e "./docloom[pdf]"           # the render engine
-pip install -e "./docloom-studio[dev]"    # the studio backend
+cd web && npm install && npm run build && cd ..
 
-cd docloom-studio/web && npm install && npm run build && cd ../..
-
-python -m docloom_studio.main             # http://127.0.0.1:8899
+python -m docloom_studio.main                  # http://127.0.0.1:8899
 ```
+</details>
 
 The first run creates its data directory (SQLite DB, uploaded sources, exports) under
 `%LOCALAPPDATA%\docloom-studio` (Windows) or `~/docloom-studio` (macOS/Linux); set
-`DOCLOOM_STUDIO_HOME` to point it somewhere else. Register an account on first visit; everything
-you create lives in a workspace scoped to your login.
+`DOCLOOM_STUDIO_HOME` to point it somewhere else.
 
 ## Configuring a model
 

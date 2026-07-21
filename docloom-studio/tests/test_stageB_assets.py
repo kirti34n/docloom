@@ -123,12 +123,14 @@ def test_save_generated_image_writes_file_and_db_row():
 
 def test_save_generated_image_asset_url_resolves_and_is_user_scoped():
     a, a_uid = _register("gen-a@ex.com")
-    b, _b_uid = _register("gen-b@ex.com")
+    b, b_uid = _register("gen-b@ex.com")
     aid = assets.save_generated_image(a_uid, PNG, prompt="a mountain at sunrise")
 
-    # the render pipeline's own asset:// resolver finds the file
-    resolved = _resolve_path(f"asset://{aid}")
+    # the render pipeline's own asset:// resolver finds the file for the owner,
+    # but resolves nothing for another user (scoped to the exporting user)
+    resolved = _resolve_path(f"asset://{aid}", a_uid)
     assert resolved is not None and os.path.isfile(resolved)
+    assert _resolve_path(f"asset://{aid}", b_uid) is None
 
     # the owner can fetch it; a different user gets 404 (still user-scoped)
     assert a.get(f"/api/assets/{aid}/file").status_code == 200

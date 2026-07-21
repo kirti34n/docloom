@@ -107,7 +107,7 @@ def test_generation_fills_image_slot_and_bake_resolves(monkeypatch):
 
     img = payload["ir"]["slides"][1]["image"]
     assert img["path"] == f"asset://{aid}"
-    baked = bake(load_document(payload))
+    baked = bake(load_document(payload), u)
     assert baked.slides[1].image.path.endswith("pic.png")
     assert "asset://" not in baked.slides[1].image.path
 

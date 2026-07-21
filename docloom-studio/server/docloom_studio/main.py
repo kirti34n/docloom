@@ -53,6 +53,18 @@ log = logging.getLogger("docloom_studio")
 async def lifespan(_app: FastAPI):
     init_db()
     reconcile_jobs()  # logs its own count
+    from docloom.render import raster
+
+    if not raster.available():
+        # Silent before: every diagram/chart/infographic export just showed
+        # an empty slot, with no error anywhere, because PPTX/DOCX cannot
+        # embed SVG directly and this is the only rasterizer that can turn
+        # one into a PNG. A capability gap that blanks every export must
+        # never be silent again.
+        log.warning(
+            "SVG rasterizer not available: diagrams, charts, and "
+            "infographics will export as empty slots or placeholders. "
+            "Fix with: pip install \"docloom[pdf,diagrams]\"")
     log.info("docloom studio %s ready (docloom %s)", __version__, docloom.__version__)
     yield
 
@@ -125,15 +137,21 @@ async def write_settings(
 
 
 def provider_for(slot: str, user_id: str) -> ProviderConfig:
-    return ProviderConfig(**get_setting(f"provider.{slot}", user_id))
+    cfg = get_setting(f"provider.{slot}", user_id)
+    if not isinstance(cfg, dict):
+        raise ProviderError(f"no provider configured for slot {slot!r}")
+    try:
+        return ProviderConfig(**cfg)
+    except ValueError as e:  # pydantic ValidationError subclasses ValueError
+        raise ProviderError(f"invalid provider config for slot {slot!r}: {e}") from e
 
 
 @app.get("/api/providers/models")
 async def provider_models(
     slot: str = "generation", user: dict = Depends(current_user)
 ) -> dict:
-    cfg = provider_for(slot, user["id"])
     try:
+        cfg = provider_for(slot, user["id"])
         return {"models": await list_models(cfg)}
     except Exception as e:
         return {"models": [], "error": str(e)[:300]}
@@ -150,8 +168,8 @@ _TEST_SCHEMA = {
 
 @app.post("/api/providers/test")
 async def provider_test(user: dict = Depends(current_user)) -> dict:
-    cfg = provider_for("generation", user["id"])
     try:
+        cfg = provider_for("generation", user["id"])
         raw = await complete(
             cfg,
             [{"role": "user",

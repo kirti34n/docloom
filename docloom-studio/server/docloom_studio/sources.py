@@ -4,6 +4,7 @@ grounded chat streaming. All scoped to the current user's notebooks."""
 from __future__ import annotations
 
 import json
+import re
 import shutil
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
@@ -68,19 +69,25 @@ async def add_file(
         raise HTTPException(
             415, f"unsupported file type {ext or '(none)'}; allowed: "
                  + ", ".join(sorted(ALLOWED_EXT)))
+    # Windows (the default runtime, settings.py:18) forbids these characters in
+    # filenames; a POSIX-legal name like 'report|2024.txt' would otherwise reach
+    # dest.open('wb') and raise OSError(EINVAL) -> HTTP 500, leaving an orphan
+    # source dir. Reject before the source dir is created.
+    if re.search(r'[<>:"|?*\x00-\x1f]', name):
+        raise HTTPException(400, "invalid filename")
 
     sid = new_id()
     # containment: confirm the destination stays inside the source dir. The
     # basename strip above leaves a Windows drive prefix intact, so a name like
     # "D:pwned.txt" would otherwise write to D:'s root, escaping data_dir().
     base = _source_dir(sid).resolve()
-    dest = (base / name).resolve()
-    if dest.parent != base:
-        raise HTTPException(400, "invalid filename")
     # stream to disk with a hard size cap so an oversized upload is rejected
     # without buffering the whole file in memory
-    written = 0
     try:
+        dest = (base / name).resolve()
+        if dest.parent != base:
+            raise HTTPException(400, "invalid filename")
+        written = 0
         with dest.open("wb") as f:
             while True:
                 block = await file.read(1024 * 1024)
@@ -88,13 +95,15 @@ async def add_file(
                     break
                 written += len(block)
                 if written > MAX_UPLOAD_BYTES:
-                    f.close()
-                    shutil.rmtree(_source_dir(sid), ignore_errors=True)
                     raise HTTPException(
                         413, f"file exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit")
                 f.write(block)
     except HTTPException:
+        shutil.rmtree(_source_dir(sid), ignore_errors=True)
         raise
+    except OSError:
+        shutil.rmtree(_source_dir(sid), ignore_errors=True)
+        raise HTTPException(400, "invalid filename")
     execute(
         "INSERT INTO sources (id, notebook_id, kind, title, path, status, "
         "context_mode, meta_json, created) VALUES (?, ?, 'file', ?, ?, 'pending', "

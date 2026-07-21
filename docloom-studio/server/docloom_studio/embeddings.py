@@ -144,8 +144,7 @@ async def retrieve(notebook_id: str, query: str, k: int = 12) -> list[Retrieved]
     if not sources:
         return []
 
-    mats: list[np.ndarray] = []
-    index: list[tuple[str, str, dict]] = []  # (source_id, title, chunk)
+    loaded: list[tuple[str, str, np.ndarray, list[dict]]] = []
     for source_id, title, context_mode in sources:
         if context_mode == "insights":
             # feed the short standing summary instead of every chunk; if one
@@ -169,7 +168,23 @@ async def retrieve(notebook_id: str, query: str, k: int = 12) -> list[Retrieved]
         if len(chunks) != len(vecs):
             _mark_stale(source_id)  # surface it rather than skip silently
             continue
-        if mats and vecs.shape[1] != mats[0].shape[1]:
+        loaded.append((source_id, title, vecs, chunks))
+    if not loaded:
+        return []
+
+    # Embed the query first: its dimension is the current model's width, and
+    # is the authority for which loaded sources are stale (not whichever
+    # source happened to load first — that source may itself predate a model
+    # switch, which would flag the freshly re-embedded source instead).
+    q = await embed(_embed_cfg(owner_of_notebook(notebook_id)), [query])
+    q_dim = q.shape[1]
+    dims = [vecs.shape[1] for _, _, vecs, _ in loaded]
+    ref_dim = q_dim if q_dim in dims else dims[0]
+
+    mats: list[np.ndarray] = []
+    index: list[tuple[str, str, dict]] = []  # (source_id, title, chunk)
+    for source_id, title, vecs, chunks in loaded:
+        if vecs.shape[1] != ref_dim:
             _mark_stale(source_id)  # embedding dim changed (model switch): re-embed
             continue
         mats.append(vecs)
@@ -180,7 +195,6 @@ async def retrieve(notebook_id: str, query: str, k: int = 12) -> list[Retrieved]
 
     # dense cosine
     corpus = _normalize(np.vstack(mats).astype(np.float32))
-    q = await embed(_embed_cfg(owner_of_notebook(notebook_id)), [query])
     qn = _normalize(q.astype(np.float32))[0]
     if corpus.shape[1] == qn.shape[0]:
         cosine = corpus @ qn

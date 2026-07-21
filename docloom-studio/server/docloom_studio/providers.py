@@ -21,10 +21,19 @@ generateContent endpoint but with responseModalities:["IMAGE"], and return
 raw bytes instead of text. It is intentionally not a `kind` branch of
 complete()/stream_text(): those are text-shaped (schema, thinking, streaming)
 and image generation shares none of that.
+
+Every non-streaming POST (complete()'s four branches, embed()'s three) goes
+through _post_with_retry(): an HTTP 429 ("rate limited" -- notably Gemini's
+free-tier per-minute quota, which recovers on its own within about a minute)
+or 503 ("temporarily unavailable") is retried with backoff instead of
+raising immediately, so a transient quota blip doesn't ship an empty/failed
+slide. Every other error status still raises right away (as ProviderError,
+via _raise_for_status) with no retry -- see RateLimited.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from typing import Any, AsyncIterator, Awaitable, Callable, TypeVar
@@ -36,7 +45,11 @@ from pydantic import BaseModel
 T = TypeVar("T")
 
 TIMEOUT = httpx.Timeout(600.0, connect=10.0)
-DEFAULT_MAX_TOKENS = 8192  # anthropic requires an explicit cap; also complete()'s default
+DEFAULT_MAX_TOKENS = 16384  # anthropic requires an explicit cap; also complete()'s
+# default. Raised from 8192: a dense slide/section or a large document's outline
+# was truncating (Gemini raises TruncatedOutput, others silently cut off). 16384
+# is safe across every provider's model ceiling; the per-PC config can go higher
+# (gemini-2.5-flash allows 65536 output tokens) via the provider.generation setting.
 
 
 class ProviderConfig(BaseModel):
@@ -65,6 +78,20 @@ class ImageProviderConfig(BaseModel):
 
 class ProviderError(RuntimeError):
     pass
+
+
+class RateLimited(ProviderError):
+    """HTTP 429 ("too many requests" / Gemini's per-minute free-tier quota)
+    or 503 ("temporarily unavailable"). Both are transient -- the same call
+    typically succeeds within a minute -- unlike every other ProviderError,
+    which is treated as terminal. Kept as a ProviderError subclass so any
+    existing `except ProviderError` / `pytest.raises(ProviderError)` call
+    site keeps working unchanged if a retry ever exhausts its attempts and
+    this still ends up raised to the caller."""
+
+    def __init__(self, message: str, retry_after: float | None = None):
+        self.retry_after = retry_after
+        super().__init__(message)
 
 
 class TruncatedOutput(ProviderError):
@@ -282,7 +309,8 @@ async def complete(
                 body["output_config"] = {
                     "format": {"type": "json_schema", "schema": schema}
                 }
-            r = await client.post(
+            r = await _post_with_retry(
+                client,
                 (cfg.base_url or "https://api.anthropic.com").rstrip("/") + "/v1/messages",
                 json=body,
                 headers={
@@ -290,7 +318,6 @@ async def complete(
                     "anthropic-version": "2023-06-01",
                 },
             )
-            await _raise_for_status(r)
             data = r.json()
             if data.get("stop_reason") == "refusal":
                 raise ProviderError("the model declined this request")
@@ -312,8 +339,7 @@ async def complete(
             }
             if schema is not None:
                 body["format"] = schema
-            r = await client.post(cfg.base_url.rstrip("/") + "/api/chat", json=body)
-            await _raise_for_status(r)
+            r = await _post_with_retry(client, cfg.base_url.rstrip("/") + "/api/chat", json=body)
             data = r.json()
             if data.get("done_reason") == "length":
                 raise TruncatedOutput(
@@ -323,12 +349,12 @@ async def complete(
         if cfg.kind == "gemini":
             model = _gemini_model_id(cfg)
             body = _gemini_request_body(cfg, messages, schema, temperature, max_tokens)
-            r = await client.post(
+            r = await _post_with_retry(
+                client,
                 _gemini_base_url(cfg) + f"/v1beta/models/{model}:generateContent",
                 json=body,
                 headers={"x-goog-api-key": cfg.api_key},
             )
-            await _raise_for_status(r)
             return _gemini_parse_response(r.json(), max_tokens)
 
         # OpenAI-compatible: llama-server, lmstudio, openai
@@ -350,16 +376,29 @@ async def complete(
                 "json_schema": {"name": "output", "schema": payload, "strict": True},
             }
         headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
-        r = await client.post(
+        r = await _post_with_retry(
+            client,
             cfg.base_url.rstrip("/") + "/v1/chat/completions",
             json=body, headers=headers,
         )
-        await _raise_for_status(r)
         data = r.json()
-        if data["choices"][0].get("finish_reason") == "length":
+        choices = data.get("choices") or []
+        if not choices:
+            raise ProviderError("provider returned no choices")
+        choice = choices[0]
+        finish = choice.get("finish_reason")
+        if finish == "length":
             raise TruncatedOutput(
                 f"response was cut off at the {max_tokens}-token limit before finishing")
-        return data["choices"][0]["message"]["content"]
+        message = choice.get("message") or {}
+        if message.get("refusal"):
+            raise ProviderError("the model declined this request")
+        if finish == "content_filter":
+            raise ProviderError("the provider's content filter blocked this response")
+        content = message.get("content")
+        if content is None:
+            raise ProviderError(f"provider returned no content (finish_reason={finish})")
+        return content
 
 
 async def stream_text(
@@ -486,15 +525,16 @@ async def stream_text(
 async def embed(cfg: ProviderConfig, texts: list[str]) -> np.ndarray:
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         if cfg.kind == "ollama":
-            r = await client.post(
+            r = await _post_with_retry(
+                client,
                 cfg.base_url.rstrip("/") + "/api/embed",
                 json={"model": cfg.model, "input": texts},
             )
-            await _raise_for_status(r)
             return np.asarray(r.json()["embeddings"], dtype=np.float32)
         if cfg.kind == "gemini":
             model = _gemini_model_id(cfg)
-            r = await client.post(
+            r = await _post_with_retry(
+                client,
                 _gemini_base_url(cfg) + f"/v1beta/models/{model}:batchEmbedContents",
                 json={"requests": [
                     {"model": f"models/{model}",
@@ -504,15 +544,14 @@ async def embed(cfg: ProviderConfig, texts: list[str]) -> np.ndarray:
                 ]},
                 headers={"x-goog-api-key": cfg.api_key},
             )
-            await _raise_for_status(r)
             return np.asarray(
                 [e["values"] for e in r.json()["embeddings"]], dtype=np.float32)
         headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
-        r = await client.post(
+        r = await _post_with_retry(
+            client,
             cfg.base_url.rstrip("/") + "/v1/embeddings",
             json={"model": cfg.model, "input": texts}, headers=headers,
         )
-        await _raise_for_status(r)
         rows = sorted(r.json()["data"], key=lambda d: d["index"])
         return np.asarray([d["embedding"] for d in rows], dtype=np.float32)
 
@@ -622,6 +661,45 @@ async def generate_validated(
     raise GenerationFailed(rounds)
 
 
+_RETRYABLE_STATUS_CODES = (429, 503)
+# No explicit retry delay was recoverable from the response (see
+# _parse_retry_after_seconds below) -- fall back to this schedule, indexed by
+# attempt number (1st retry -> 2s, 2nd -> 8s, 3rd+ -> 30s).
+_BACKOFF_SCHEDULE_SECONDS = (2.0, 8.0, 30.0)
+_MAX_BACKOFF_SECONDS = 60.0
+_MAX_POST_ATTEMPTS = 4
+
+
+def _default_backoff_seconds(attempt: int) -> float:
+    idx = min(attempt - 1, len(_BACKOFF_SCHEDULE_SECONDS) - 1)
+    return _BACKOFF_SCHEDULE_SECONDS[idx]
+
+
+def _parse_retry_after_seconds(r: httpx.Response, body_text: str) -> float | None:
+    """How long the provider says to wait before retrying, if it said so.
+    Tries, in order: the standard Retry-After header (seconds form; the
+    HTTP-date form is rare from these APIs and not worth parsing), then
+    Gemini's JSON error body, which nests a RetryInfo detail shaped like
+    {"error": {"details": [{"@type": ".../google.rpc.RetryInfo",
+    "retryDelay": "37s"}]}}. Returns None (triggering the exponential
+    fallback) if neither is present or parseable."""
+    header = r.headers.get("retry-after")
+    if header:
+        try:
+            return max(0.0, float(header))
+        except ValueError:
+            pass
+    try:
+        data = json.loads(body_text)
+        for detail in data.get("error", {}).get("details", []):
+            delay = detail.get("retryDelay")
+            if isinstance(delay, str) and delay.endswith("s"):
+                return max(0.0, float(delay[:-1]))
+    except Exception:
+        pass
+    return None
+
+
 async def _raise_for_status(r: httpx.Response) -> None:
     if r.status_code >= 400:
         try:
@@ -630,7 +708,51 @@ async def _raise_for_status(r: httpx.Response) -> None:
             # an async stream"), which the bare except below swallowed --
             # silently losing the error body on every streaming call. aread()
             # is the async-safe equivalent and works for both response kinds.
-            detail = (await r.aread()).decode("utf-8", "replace")[:400]
+            body = (await r.aread()).decode("utf-8", "replace")
         except Exception:
-            detail = ""
+            body = ""
+        detail = body[:400]
+        if r.status_code in _RETRYABLE_STATUS_CODES:
+            raise RateLimited(
+                f"provider returned HTTP {r.status_code}: {detail}",
+                retry_after=_parse_retry_after_seconds(r, body),
+            )
         raise ProviderError(f"provider returned HTTP {r.status_code}: {detail}")
+
+
+async def _post_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    max_attempts: int = _MAX_POST_ATTEMPTS,
+    **kwargs: Any,
+) -> httpx.Response:
+    """POST, retrying with backoff on a transient HTTP 429 ("rate limited",
+    notably Gemini's free-tier per-minute quota) or 503 ("temporarily
+    unavailable") response instead of treating either as a permanent failure.
+    Every other status -- any other 4xx, or a 5xx that isn't 503 -- still
+    raises immediately via _raise_for_status with no retry, unchanged from
+    before this helper existed.
+
+    The wait between attempts prefers the provider's own stated delay
+    (Gemini's RetryInfo.retryDelay, or a Retry-After header for other
+    providers) and otherwise uses a fixed exponential schedule (2s, 8s, 30s);
+    either way it's capped so a single attempt never sleeps more than
+    _MAX_BACKOFF_SECONDS. After the last attempt the underlying error (a
+    RateLimited, which is-a ProviderError) is raised rather than retried
+    again."""
+    attempt = 0
+    while True:
+        attempt += 1
+        r = await client.post(url, **kwargs)
+        if r.status_code not in _RETRYABLE_STATUS_CODES or attempt >= max_attempts:
+            await _raise_for_status(r)
+            return r
+        try:
+            body = (await r.aread()).decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        delay = _parse_retry_after_seconds(r, body)
+        if delay is None:
+            delay = _default_backoff_seconds(attempt)
+        await asyncio.sleep(min(delay, _MAX_BACKOFF_SECONDS))

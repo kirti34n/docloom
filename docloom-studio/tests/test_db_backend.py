@@ -47,6 +47,20 @@ def test_every_migration_adapts_cleanly():
         assert stmts and all(s for s in stmts)
 
 
+def test_pg_translation_of_atomic_save_sql():
+    # the exact UPDATE...RETURNING save_artifact runs inside transaction():
+    # every bind `?` becomes `%s`, and the 'ready' string literal (which
+    # contains no `?`) survives untouched.
+    sql = (
+        "UPDATE artifacts SET title = ?, version = version + 1, "
+        "payload_json = ?, updated = ?, status = 'ready' "
+        "WHERE id = ? RETURNING version")
+    out = db._to_pg_placeholders(sql)
+    assert out.count("%s") == 4
+    assert "?" not in out
+    assert "'ready'" in out
+
+
 # ---- live Postgres round-trip (opt-in) -----------------------------------
 
 _PG = os.environ.get("DOCLOOM_DB_URL", "").startswith(("postgres://", "postgresql://"))
@@ -65,3 +79,53 @@ def test_postgres_roundtrip():
     assert abs(row["created"] - db.now()) < 5
     rows = db.query_all("SELECT id FROM users WHERE id = ?", (uid,))
     assert db.rows_to_dicts(rows)[0]["id"] == uid
+
+
+@pytest.mark.skipif(not _PG, reason="set DOCLOOM_DB_URL to a Postgres DSN to run")
+def test_postgres_concurrent_saves():
+    """Same lost-update race as test_artifact_save_race.py's sqlite test, run
+    against live Postgres: two savers at the same head version must not both
+    compute the same next version. Smaller than the sqlite version (4 threads
+    x 2 rounds) since this only runs opt-in against a real server."""
+    import threading
+
+    from docloom_studio.generate import save_artifact
+
+    db.init_db()
+    uid, wid, nid, aid = db.new_id(), db.new_id(), db.new_id(), db.new_id()
+    db.execute("INSERT INTO users (id, email, password_hash, created) "
+               "VALUES (?, ?, ?, ?)", (uid, f"{uid}@t.local", "x", db.now()))
+    db.execute("INSERT INTO workspaces (id, user_id, name, created) "
+               "VALUES (?, ?, ?, ?)", (wid, uid, "w", db.now()))
+    db.execute("INSERT INTO notebooks (id, name, created, updated, workspace_id) "
+               "VALUES (?, ?, ?, ?, ?)", (nid, "n", db.now(), db.now(), wid))
+    db.execute("INSERT INTO artifacts (id, notebook_id, kind, title, version, "
+               "payload_json, created, updated) VALUES (?, ?, 'deck', 'T', 0, "
+               "'{}', ?, ?)", (aid, nid, db.now(), db.now()))
+
+    n_threads, rounds = 4, 2
+    results: list[int] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+    for r in range(rounds):
+        barrier = threading.Barrier(n_threads)
+
+        def worker(i: int, r: int = r) -> None:
+            barrier.wait()
+            try:
+                v = save_artifact(aid, f"t-{r}-{i}", {"round": r, "i": i})
+                with lock:
+                    results.append(v)
+            except BaseException as e:  # noqa: BLE001 - collecting for assert
+                with lock:
+                    errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    total = n_threads * rounds
+    assert errors == []
+    assert sorted(results) == list(range(1, total + 1))

@@ -13,10 +13,15 @@ export interface PMText {
   text: string
   marks?: PMMark[]
 }
+/** A ProseMirror node in its JSON form. Text nodes are nodes too — they carry
+ *  `text`/`marks` instead of `content` — so those fields live here rather than
+ *  only on PMText, which stays the narrowed variant for the inline helpers. */
 export interface PMNode {
   type: string
   attrs?: Record<string, unknown>
   content?: PMNode[]
+  text?: string
+  marks?: PMMark[]
 }
 
 function spanToMarks(s: Span): PMMark[] {
@@ -148,18 +153,24 @@ export function docToListItems(doc: PMNode): ListItem[] {
   const walk = (list: PMNode, level: number) => {
     for (const li of list.content ?? []) {
       if (li.type !== 'listItem') continue
+      // a listItem with no paragraph child is a synthesized structural host
+      // (listItemsToDoc wraps a level>=1 first item this way) — it carries
+      // no authored text, only nested list children to recurse into
       const para = (li.content ?? []).find((n) => n.type === 'paragraph')
-      items.push({
-        text: inlineToRichText((para?.content as PMText[]) ?? []),
-        level,
-      })
+      if (para) items.push({ text: inlineToRichText((para.content as PMText[]) ?? []), level })
       for (const child of li.content ?? []) {
         if (child.type === 'bulletList' || child.type === 'orderedList')
           walk(child, level + 1)
       }
     }
   }
-  const root = (doc.content ?? [])[0]
-  if (root) walk(root, 0)
+  // a Shift-Tab lift can move a listItem's paragraph to the top level,
+  // alongside any remaining bulletList/orderedList siblings — walk every
+  // top-level node, not just the first, or the rest silently vanish
+  for (const node of doc.content ?? []) {
+    if (node.type === 'bulletList' || node.type === 'orderedList') walk(node, 0)
+    else if (node.type === 'paragraph')
+      items.push({ text: inlineToRichText((node.content as PMText[]) ?? []), level: 0 })
+  }
   return items
 }

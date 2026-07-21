@@ -62,11 +62,37 @@ def parse_pdf(path: Path) -> list[tuple[int, str]]:
     return [(i, (p.extract_text() or "")) for i, p in enumerate(reader.pages, start=1)]
 
 
+MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024   # 200 MB total inflated
+MAX_ZIP_ENTRIES = 10_000
+MAX_ZIP_RATIO = 100                              # inflated/compressed ceiling
+ZIP_RATIO_FLOOR_BYTES = 32 * 1024 * 1024         # only ratio-check above this
+
+
+def _zip_guard(path: Path) -> None:
+    """docx/pptx/xlsx/epub are all ZIP containers; a small upload can still
+    decompress to gigabytes of XML (a zip bomb) and exhaust server memory.
+    zf.infolist() only reads the central directory -- no decompression -- so
+    this check is cheap and runs before the real parser touches the archive."""
+    import zipfile
+
+    with zipfile.ZipFile(path) as zf:
+        infos = zf.infolist()
+        if len(infos) > MAX_ZIP_ENTRIES:
+            raise ValueError("archive has too many entries")
+        total_unc = sum(zi.file_size for zi in infos)
+        total_comp = sum(zi.compress_size for zi in infos) or 1
+        if total_unc > MAX_ZIP_UNCOMPRESSED_BYTES:
+            raise ValueError("archive decompresses to too much data")
+        if total_unc > ZIP_RATIO_FLOOR_BYTES and total_unc / total_comp > MAX_ZIP_RATIO:
+            raise ValueError("suspicious archive compression ratio")
+
+
 def parse_docx(path: Path) -> str:
     """Extract paragraph text plus any table content (tables are not part of
     doc.paragraphs in python-docx and would otherwise be silently dropped)."""
     import docx
 
+    _zip_guard(path)
     doc = docx.Document(str(path))
     parts = [p.text for p in doc.paragraphs if p.text.strip()]
     for table in doc.tables:
@@ -81,6 +107,7 @@ def parse_pptx(path: Path) -> str:
     """Extract text from every shape (and speaker notes) of a .pptx deck."""
     from pptx import Presentation
 
+    _zip_guard(path)
     out: list[str] = []
     for i, slide in enumerate(Presentation(str(path)).slides, start=1):
         parts: list[str] = []
@@ -105,6 +132,7 @@ def parse_xlsx(path: Path) -> str:
     """Flatten every sheet of a workbook to `col | col | col` rows."""
     from openpyxl import load_workbook
 
+    _zip_guard(path)
     wb = load_workbook(str(path), read_only=True, data_only=True)
     try:
         out: list[str] = []
@@ -125,6 +153,7 @@ def parse_epub(path: Path) -> str:
     """Extract reading-order text from an EPUB (ebooklib + a tiny HTML strip)."""
     from ebooklib import ITEM_DOCUMENT, epub
 
+    _zip_guard(path)
     book = epub.read_epub(str(path))
     tag = re.compile(r"<[^>]+>")
     out: list[str] = []
@@ -151,11 +180,21 @@ def parse_csv(text: str) -> str:
         dialect = csv.Sniffer().sniff(sample) if sample.strip() else csv.excel
     except csv.Error:
         dialect = csv.excel
-    return "\n".join(
-        " | ".join(cell.strip() for cell in row)
-        for row in csv.reader(io.StringIO(text), dialect)
-        if any(cell.strip() for cell in row)
-    )
+    prev = csv.field_size_limit()
+    try:
+        # csv's default field_size_limit (131072) rejects a valid CSV with one
+        # large cell (embedded JSON/base64/long free-text). The whole text is
+        # already in memory, so raising the limit adds no memory risk; cap it
+        # Windows-safe (< 2**31, the C long on LLP64) so field_size_limit does
+        # not raise OverflowError.
+        csv.field_size_limit(min(2**31 - 1, len(text) + 1))
+        return "\n".join(
+            " | ".join(cell.strip() for cell in row)
+            for row in csv.reader(io.StringIO(text), dialect)
+            if any(cell.strip() for cell in row)
+        )
+    finally:
+        csv.field_size_limit(prev)
 
 
 def parse_html(text: str) -> str:
@@ -232,6 +271,7 @@ def fetch_youtube(url: str, video_id: str) -> tuple[str, str]:
 
 _ALLOWED_SCHEMES = {"http", "https"}
 _MAX_REDIRECTS = 5
+_MAX_FETCH_BYTES = 25 * 1024 * 1024   # 25 MB cap on a fetched page body
 
 
 def _is_public_host(host: str) -> bool:
@@ -272,6 +312,29 @@ def _guard_url(url: str) -> None:
         raise ValueError(f"refusing to fetch a non-public address ({host!r})")
 
 
+def _reject_non_public_peer(resp: httpx.Response) -> None:
+    """Re-validate the address httpx actually connected to. _guard_url resolves
+    the host in a getaddrinfo separate from httpx's connect-time resolution, so
+    a low-TTL attacker domain can pass the guard and then rebind to an internal
+    address (DNS-rebinding TOCTOU). Checking the real peer address closes that
+    gap; we abort before reading the body, so nothing internal reaches the user.
+    Falls closed only when an address is present -- if the transport exposes no
+    peer (e.g. a test double), there is nothing to re-validate."""
+    stream = resp.extensions.get("network_stream")
+    if stream is None:
+        return
+    addr = stream.get_extra_info("server_addr")
+    if not addr:
+        return
+    try:
+        ip = ipaddress.ip_address(addr[0].split("%", 1)[0])
+    except ValueError:
+        raise ValueError("connection resolved to an unparseable address")
+    if (ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+        raise ValueError(f"connection rebound to a non-public address ({ip})")
+
+
 def fetch_url(url: str) -> tuple[str, str]:
     """Return (title, main-text) for a web page, or a transcript for YouTube.
 
@@ -290,12 +353,22 @@ def fetch_url(url: str) -> tuple[str, str]:
                       headers={"User-Agent": "docloom-studio/0.1"}) as client:
         for _ in range(_MAX_REDIRECTS + 1):
             _guard_url(url)
-            resp = client.get(url)
-            if resp.has_redirect_location:
-                url = urljoin(url, resp.headers["location"])
-                continue
-            resp.raise_for_status()  # 404/403/500 must fail ingestion, not feed error HTML
-            html = resp.text
+            with client.stream("GET", url) as resp:
+                _reject_non_public_peer(resp)
+                if resp.has_redirect_location:
+                    url = urljoin(url, resp.headers["location"])
+                    continue
+                resp.raise_for_status()  # 404/403/500 must fail ingestion, not feed error HTML
+                encoding = resp.encoding or "utf-8"
+                total = 0
+                blocks: list[bytes] = []
+                for block in resp.iter_bytes():
+                    total += len(block)
+                    if total > _MAX_FETCH_BYTES:
+                        raise ValueError(
+                            f"page exceeds {_MAX_FETCH_BYTES // (1024 * 1024)} MB limit")
+                    blocks.append(block)
+            html = b"".join(blocks).decode(encoding, errors="replace")
             break
         else:
             raise ValueError("too many redirects")
@@ -422,7 +495,16 @@ async def ingest_source(source_id: str, ctx=None) -> None:
                 execute("UPDATE sources SET title = ? WHERE id = ?",
                         (title[:200], source_id))
         elif kind in ("text", "research"):
-            chunks += chunk_text(sanitize(meta.get("text", "")), source_id)
+            txt = meta.get("text", "")
+            if txt:
+                chunks += chunk_text(sanitize(txt), source_id)
+            else:
+                # text was dropped after the first ingest (meta.pop below);
+                # chunks.jsonl is the durable copy -- reload the already-parsed
+                # chunks and re-embed them. Do NOT re-run chunk_text on these
+                # (they are already chunked; re-chunking would double the
+                # overlap window).
+                chunks = load_chunks(source_id)
 
         if not chunks:
             raise ValueError("no extractable text")
