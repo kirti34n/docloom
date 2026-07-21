@@ -50,6 +50,7 @@ from .diagram_svg import (
     measure,
     paint_svg,
     solve,
+    solve_ir,
 )
 
 EMU_IN = 914400
@@ -373,7 +374,7 @@ def _raster_fallback(slide, d: Diagram, theme, td: dict, x_in: float, y_in: floa
     if s is None:
         ta = target_aspect if target_aspect else (w_in / draw_h if draw_h > 0 else 2.0)
         try:
-            s = solve(d, td, target_aspect=ta, detail="label", legend=legend)
+            s = solve_ir(d, td, target_aspect=ta, detail="label", legend=legend)
         except Exception:
             return None
     try:
@@ -445,8 +446,8 @@ def add_diagram(slide, d: Diagram, solved: SolvedDiagram, theme,
     while lab_pt < MIN_LABEL_PT and detail_idx < len(DETAIL_LADDER) - 1:
         detail_idx += 1
         try:
-            s = solve(d, td, target_aspect=target_aspect,
-                     detail=DETAIL_LADDER[detail_idx], legend=legend)
+            s = solve_ir(d, td, target_aspect=target_aspect,
+                        detail=DETAIL_LADDER[detail_idx], legend=legend)
         except Exception:
             s = None
             break

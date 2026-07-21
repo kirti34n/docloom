@@ -1133,7 +1133,7 @@ def _block(slide, b: Block, theme, numbers, x, y, w, max_h,
         if not b.nodes:
             return 0.0
         try:
-            solved = diagram_svg.solve(
+            solved = diagram_svg.solve_ir(
                 b, diagram_pptx.theme_dict(theme),
                 target_aspect=(w / max_h if max_h > 0 else 2.0),
             )
@@ -1220,7 +1220,7 @@ def _natural_h(b: Block, w: float, scale: float = 1.0,
         # than stranding it at the top of a phantom 4.6in reserve.
         if theme is not None and max_h and max_h > 0 and b.nodes:
             try:
-                s = diagram_svg.solve(
+                s = diagram_svg.solve_ir(
                     b, diagram_pptx.theme_dict(theme),
                     target_aspect=(w / max_h),
                 )

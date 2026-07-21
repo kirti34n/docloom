@@ -33,7 +33,7 @@ __all__ = [
 
 def render_diagram(
     d: Diagram, theme: Theme | None = None, fmt: str = "svg", *,
-    layout: str = "native",
+    layout: str | None = None,
 ) -> str | bytes | None:
     """One-shot Diagram export (docs/diagram-plan.md section 4c): solves the
     diagram's layout once, then serializes it to the requested format.
@@ -70,6 +70,11 @@ def render_diagram(
     """
     if fmt not in ("svg", "png", "drawio"):
         raise ValueError(f'fmt must be "svg", "png", or "drawio", got {fmt!r}')
+    # Default to the diagram's own declared layout (Diagram.layout) when the
+    # caller didn't force one, so a document that sets layout="dot" renders that
+    # way through every path without every call site having to thread it.
+    if layout is None:
+        layout = getattr(d, "layout", "native")
     if layout not in ("native", "dot", "auto"):
         raise ValueError(
             f'layout must be "native", "dot", or "auto", got {layout!r}'

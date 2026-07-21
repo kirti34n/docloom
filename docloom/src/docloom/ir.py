@@ -249,6 +249,12 @@ class Diagram(BaseModel):
     nodes: list[DiagramNode] = Field(default_factory=list)
     edges: list[DiagramEdge] = Field(default_factory=list)
     groups: list[DiagramGroup] = Field(default_factory=list)
+    # Which layout engine solves this diagram: "native" (the built-in Sugiyama
+    # solver, default) or "dot" (the optional Graphviz backend, better on dense
+    # branching graphs -- needs the [dotlayout] extra; falls back to native if
+    # unavailable). Still coordinate-free: this only picks the SOLVER, never
+    # hand-places anything.
+    layout: Literal["native", "dot", "auto"] = "native"
     caption: SafeStr | None = None
     alt: SafeStr = ""
 

@@ -301,7 +301,7 @@ def test_font_floor_degradation_ladder_climbs_through_every_detail_level(
         seen_details.append(kwargs.get("detail", "full"))
         return real_solve(*args, **kwargs)
 
-    monkeypatch.setattr(diagram_pptx, "solve", tracking_solve)
+    monkeypatch.setattr(diagram_svg, "solve",tracking_solve)
     prs, slide = _new_slide()
     # a narrow box (3in) keeps the fitted label size below the 8pt floor at
     # every detail level for this fixture, so the ladder climbs all the way.
@@ -399,7 +399,7 @@ def test_add_diagram_never_raises_when_resolve_ladder_itself_raises(monkeypatch)
             raise RuntimeError("boom")
         return real_solve(*args, **kwargs)
 
-    monkeypatch.setattr(diagram_pptx, "solve", flaky_solve)
+    monkeypatch.setattr(diagram_svg, "solve",flaky_solve)
     prs, slide = _new_slide()
     # a tiny box forces the floor check to fail and the ladder to engage
     h = diagram_pptx.add_diagram(slide, d, solved, theme, 0.6, 1.0, 0.5, 0.5)
@@ -755,7 +755,7 @@ def test_ladder_and_raster_reslve_preserve_the_callers_legend_choice(monkeypatch
         seen_legend.append(kwargs.get("legend", True))
         return real_solve(*args, **kwargs)
 
-    monkeypatch.setattr(diagram_pptx, "solve", tracking_solve)
+    monkeypatch.setattr(diagram_svg, "solve",tracking_solve)
     prs, slide = _new_slide()
     h = diagram_pptx.add_diagram(slide, d, solved, theme, 0.6, 1.0, 3.0, 5.6)
     assert h > 0.0

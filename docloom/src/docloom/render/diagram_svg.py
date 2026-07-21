@@ -2200,6 +2200,25 @@ def _stamp_hash(svg: str, content_hash: str) -> str:
     return f'{svg[:at]}data-docloom-hash="{content_hash}" {svg[at:]}'
 
 
+def solve_ir(d: Diagram, theme=None, **kw) -> SolvedDiagram:
+    """Solve `d` with the layout backend its `layout` field selects: the
+    built-in Sugiyama solver (`native`, default) or the optional Graphviz `dot`
+    backend (`dot`/`auto`, better on dense branching graphs). `dot`/`auto` fall
+    back to native when the [dotlayout] extra isn't installed -- mirroring
+    render_diagram's contract, so an embedded dot diagram never fails a render
+    just because pygraphviz is absent. This is the single seam every emitter
+    goes through to honor Diagram.layout; it stays coordinate-free (it only
+    picks the solver, it never hand-places anything)."""
+    if getattr(d, "layout", "native") in ("dot", "auto"):
+        try:
+            from .diagram_dot import DotUnavailable, solve_dot
+            return solve_dot(d, theme, detail=kw.get("detail", "full"),
+                             legend=kw.get("legend", True))
+        except DotUnavailable:
+            pass  # optional backend absent -> native, same as render_diagram
+    return solve(d, theme, **kw)
+
+
 def render_svg(d: Diagram, theme=None) -> str:
     """One-shot convenience: solve() then paint_svg(), with the SVG root
     stamped data-docloom-hash="{diagram_hash(d)}" (docs/diagram-plan.md
@@ -2221,7 +2240,7 @@ def render_svg(d: Diagram, theme=None) -> str:
     name, a .drawio XML comment) is free to call diagram_hash(d) itself from
     the same Diagram it already holds.
     """
-    return _stamp_hash(paint_svg(solve(d, theme), theme), diagram_hash(d))
+    return _stamp_hash(paint_svg(solve_ir(d, theme), theme), diagram_hash(d))
 
 
 # ---------------------------------------------------------------------------
