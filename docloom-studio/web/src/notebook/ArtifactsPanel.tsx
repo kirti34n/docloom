@@ -7,7 +7,7 @@ import { api } from '../api/client'
 import { toast } from '../ui/toast'
 
 // NotebookLM-style one-click guides: each is a grounded generation with a
-// preset prompt (docs) or a mind map (D2 diagram).
+// preset prompt (docs) or an architecture/mind-map diagram.
 const GUIDES = [
   { key: 'study', label: 'Study guide', icon: GraduationCap, kind: 'doc',
     prompt: 'Create a study guide from the sources: a short overview, the key concepts (each with a one-line explanation), review questions with answers, and a glossary of terms. Ground every point in the sources and cite them.' },
@@ -18,8 +18,41 @@ const GUIDES = [
   { key: 'timeline', label: 'Timeline', icon: Clock, kind: 'doc',
     prompt: 'Build a chronological timeline from the sources: events in order, each with a date and a one-line description, then a short "what it means" summary. Cite the sources.' },
   { key: 'mindmap', label: 'Mind map', icon: Network, kind: 'diagram',
-    prompt: 'Create a mind map of the sources as a D2 diagram: a central topic connected to the main themes, and each theme connected to its key points. Keep labels short.' },
+    prompt: 'Create a mind map of the sources: a central topic connected to the main themes, and each theme connected to its key points. Keep the labels short.' },
 ] as const
+
+// Per-kind starter prompts. Clicking one fills the prompt box (it does not
+// generate immediately) so the user has a strong, well-structured base to
+// edit into their own -- the fastest path to a good prompt. Square-bracketed
+// slots ([system], [product]) are the parts a user swaps in. Deck/doc
+// starters deliberately mention "as a diagram" so the newly-enabled inline
+// architecture diagrams actually get used.
+const STARTERS: Record<string, string[]> = {
+  deck: [
+    'A technical overview of [system]: what problem it solves, the architecture as a diagram, the main components, and the key design trade-offs. Cite the sources.',
+    'A 10-slide investor pitch for [product]: the problem, the solution, how it works, market size as a chart, traction, business model, and the ask. Cite the sources.',
+  ],
+  doc: [
+    'A design document for [system]: goals, the proposed architecture with a diagram, the data flow, alternatives considered, and risks. Cite the sources.',
+    'A market analysis report: an executive summary, market size and growth as a chart, the competitive landscape as a table, and clear recommendations. Cite the sources.',
+  ],
+  sheet: [
+    'A 12-month budget: monthly revenue and expense line items, category subtotals, and a running balance, using formulas.',
+    'A project tracker: tasks with owner, start and end dates, status, and percent complete.',
+  ],
+  diagram: [
+    'The architecture of a web application: client, CDN, API gateway, services, database, cache, and a message queue, with the request flow labeled.',
+    'A CI/CD pipeline from commit to production: build, test, staging, approval, and deploy, showing what triggers each stage.',
+  ],
+  infographic: [
+    'The 4 pillars of [topic] as a grid, each with a short label and a one-line description.',
+    'A 5-step [process] as steps, each step with a punchy title and one supporting line.',
+  ],
+  podcast: [
+    'A 2-host, 5-minute audio overview of the sources: the main takeaway, two supporting points, and a closing thought.',
+    'A solo deep-dive explaining [topic] from the sources for a smart non-expert, in a warm, clear voice.',
+  ],
+}
 
 interface ArtifactSummary {
   id: string
@@ -124,6 +157,27 @@ export function ArtifactsPanel({
             Generate {active.label.toLowerCase()}
           </button>
           <p className="mt-2 text-[11px] text-ws-muted">Grounds in your enabled sources and cites them.</p>
+
+          {(STARTERS[kind] ?? []).length > 0 && (
+            <div className="mt-2.5 border-t border-ws-line pt-2.5">
+              <p className="text-[10.5px] font-semibold uppercase tracking-wide text-ws-muted">
+                Starter prompts
+              </p>
+              <div className="mt-1.5 flex flex-col gap-1">
+                {(STARTERS[kind] ?? []).map((s, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setPrompt(s)}
+                    title="Use this as a starting point, then edit it"
+                    className="ds-card ds-card-hover w-full truncate px-2.5 py-1.5 text-left text-[11.5px] text-ws-muted"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-[10.5px] text-ws-muted">Click to fill the box, then tweak it.</p>
+            </div>
+          )}
         </div>
 
         <div className="mt-4">
