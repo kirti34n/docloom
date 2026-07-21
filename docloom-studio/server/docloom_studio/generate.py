@@ -14,8 +14,8 @@ from docloom import (
     ensure_ids, lint, llm_schema, render_diagram,
 )
 from docloom.ir import (
-    Block, BulletList, Chart, Code, Heading, Image, NumberedList, StatRow,
-    Table, plain,
+    Artifact, Block, BulletList, Chart, Code, Diagram, Heading, Image,
+    NumberedList, StatRow, Table, plain,
 )
 from docloom.render.diagram_svg import solve
 # Fit-by-budget constants (see _budget_errors below) are docloom's own, not a
@@ -118,6 +118,14 @@ BLOCK SELECTION (do not default to bullets; pick what the evidence needs)
 - two_column slides put contrasting material in `blocks` (left) and
   `right`. quote slides carry exactly one quote block, the single
   strongest line.
+
+NEVER EMPTY
+- Every block MUST carry real content. A "bullets" or "numbered" block has
+  3-5 real items -- NEVER an empty items list. A "stats" block has 2-4 stats,
+  a "chart" has labelled series, a "table" has rows, a "quote" has its text.
+  A content slide that comes back with an empty block, or with only a title
+  and no filled body, is a FAILED slide. Always fill the slide with concrete,
+  grounded content drawn from the evidence.
 
 LIMITS
 - At most 6 blocks/elements and about 25 words of on-slide body text.
@@ -255,11 +263,27 @@ def _fallback_topic(prompt: str) -> str:
     return topic or "the requested topic"
 
 
+_VISUAL_BLOCKS = (Table, Chart, StatRow, Image, Diagram, Artifact, Code)
+
+
 def _slide_content_errors(slide: Slide) -> list[str]:
     all_blocks = slide.blocks + slide.right
-    if slide.layout in ("content", "two_column", "quote") and not all_blocks:
+    needs_content = slide.layout in ("content", "two_column", "quote")
+    if needs_content and not all_blocks:
         return ["this slide has no content blocks; add real, grounded "
                 "content, not an empty placeholder"]
+    # A block can be structurally present but carry NO content -- most often a
+    # bullets/numbered list a provider's structured output returned with an
+    # empty items[] (observed frequently from Gemini). Those pass the check
+    # above (a block exists) yet render as a title over blank space. Treat a
+    # content-layout slide with no real body text AND no standalone visual
+    # (table/chart/stats/diagram/image/code) as empty: a hard error, so
+    # generate_validated retries it with "fill this slide" feedback instead of
+    # silently shipping a blank slide.
+    body = "".join(_blocks_text(all_blocks)).strip()
+    if needs_content and not body and not any(isinstance(b, _VISUAL_BLOCKS) for b in all_blocks):
+        return ["this slide's content blocks are empty (e.g. a bullet list with "
+                "no items); fill them with real, grounded content"]
     texts = _blocks_text(all_blocks)
     if slide.title:
         texts.append(slide.title)
