@@ -42,3 +42,6 @@ Thumbs.db
 
 # uv lockfile (repo is pip-based; do not commit auto-generated locks)
 uv.lock
+
+# Self-hosted draw.io webapp (~144MB, fetched by docloom-studio/scripts/fetch-drawio.*, never committed)
+docloom-studio/server/docloom_studio/vendor/drawio/

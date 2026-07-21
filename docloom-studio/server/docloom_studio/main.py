@@ -239,6 +239,15 @@ def _safe_spa_file(dist: Path, path: str) -> Path | None:
     return None
 
 
+# Self-hosted, offline draw.io (diagrams.net) for the in-app diagram editor.
+# Vendored (not committed) under vendor/drawio by scripts/fetch-drawio.*; served
+# same-origin so the editor iframe never touches a CDN. Mounted BEFORE the SPA
+# catch-all below, which would otherwise swallow /drawio/*. Absent (not fetched)
+# -> the route simply doesn't exist and the editor falls back gracefully.
+_DRAWIO = Path(__file__).parent / "vendor" / "drawio"
+if (_DRAWIO / "index.html").is_file():
+    app.mount("/drawio", StaticFiles(directory=_DRAWIO, html=True), name="drawio")
+
 dist = _webdist()
 if dist is not None:
     app.mount("/assets", StaticFiles(directory=dist / "assets"), name="spa-assets")

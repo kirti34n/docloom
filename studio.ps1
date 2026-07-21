@@ -94,6 +94,13 @@ if ($hasDot -ne '1') {
     if ($LASTEXITCODE -ne 0) { Warn 'pygraphviz install failed; diagrams will fall back to the native layout.' }
 }
 
+# --- 2c. vendor the offline draw.io editor bundle (one-time ~52MB download) ----
+if (-not (Test-Path (Join-Path $Studio 'server\docloom_studio\vendor\drawio\index.html'))) {
+    Step 'Fetching the offline draw.io diagram editor (one-time ~52MB download)...'
+    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Studio 'scripts\fetch-drawio.ps1')
+    if ($LASTEXITCODE -ne 0) { Warn 'draw.io fetch failed; the visual diagram editor will be unavailable until it succeeds.' }
+}
+
 # --- 3. web frontend build (served by the server on one port) --------------
 $IndexHtml = Join-Path $Web 'dist\index.html'
 if ($Rebuild -or -not (Test-Path $IndexHtml)) {

@@ -61,6 +61,12 @@ if [ "$("$VENV_PY" -c 'import importlib.util as u; print(1 if u.find_spec("pygra
   uv pip install --python "$VENV_PY" "pygraphviz>=1.11" || printf '!!  pygraphviz install failed; diagrams fall back to native layout.\n'
 fi
 
+# 2c. vendor the offline draw.io editor bundle (one-time ~52MB download).
+if [ ! -f "$STUDIO/server/docloom_studio/vendor/drawio/index.html" ]; then
+  step "Fetching the offline draw.io diagram editor (one-time ~52MB download)..."
+  bash "$STUDIO/scripts/fetch-drawio.sh" || printf '!!  draw.io fetch failed; the visual diagram editor will be unavailable until it succeeds.\n'
+fi
+
 # 3. web build.
 if [ "$REBUILD" = "1" ] || [ ! -f "$WEB/dist/index.html" ]; then
   [ -d "$WEB/node_modules" ] || { step "Installing web dependencies (npm install)..."; npm --prefix "$WEB" install; }
