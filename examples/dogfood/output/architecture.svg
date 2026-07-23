@@ -36,58 +36,58 @@
 <text x="114.5" y="285.5" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">You</text>
 <rect x="620.5" y="458.0" width="152.0" height="54.0" rx="27.0" fill="#EBEEF3" stroke="#5E6B7A" stroke-width="1.4" stroke-dasharray="6 3"/>
 <text x="699.0" y="483.2" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">LLM Provider</text>
-<text x="699.0" y="496.2" font-size="10.5" text-anchor="middle" fill="#5E6B7A">Gemini/Claude/Ollama</text>
+<text x="699.0" y="496.2" font-size="10.5" text-anchor="middle" fill="#14161A">Gemini/Claude/Ollama</text>
 <rect x="228.0" y="286.0" width="160.6" height="54.0" rx="9" fill="#F8EFF1" stroke="#D49BAB" stroke-width="1.4"/>
 <rect x="232.5" y="290.5" width="151.6" height="45.0" rx="6" fill="none" stroke="#9A425A" stroke-width="0.9" stroke-dasharray="3 2.5" opacity="0.8"/>
 <path d="M228.8,295.0 h4.0 v36.0 h-4.0 z" fill="#9A425A"/>
 <text x="310.8" y="302.8" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Auth &amp;</text>
 <text x="310.8" y="319.8" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Workspaces</text>
-<text x="310.8" y="332.8" font-size="10.5" text-anchor="middle" fill="#5E6B7A">per-tenant</text>
+<text x="310.8" y="332.8" font-size="10.5" text-anchor="middle" fill="#14161A">per-tenant</text>
 <path d="M428.6,342.0 L428.6,392.0 A76.0,9.0 0 0 0 580.5,392.0 L580.5,342.0 A76.0,9.0 0 0 0 428.6,342.0 Z" fill="#EBF3FC" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M428.6,342.0 A76.0,9.0 0 0 0 580.5,342.0 A76.0,9.0 0 0 0 428.6,342.0" fill="none" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M429.4,344.0 h4.0 v46.0 h-4.0 z" fill="#2F62A0"/>
 <text x="507.0" y="369.2" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Sources</text>
-<text x="507.0" y="382.2" font-size="10.5" text-anchor="middle" fill="#5E6B7A">files, URLs</text>
+<text x="507.0" y="382.2" font-size="10.5" text-anchor="middle" fill="#14161A">files, URLs</text>
 <rect x="620.5" y="379.0" width="152.0" height="54.0" rx="9" fill="#EBF3FC" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M621.3,387.0 h4.0 v38.0 h-4.0 z" fill="#1F3D63"/>
 <text x="699.0" y="404.2" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Ingest</text>
-<text x="699.0" y="417.2" font-size="10.5" text-anchor="middle" fill="#5E6B7A">chunk</text>
+<text x="699.0" y="417.2" font-size="10.5" text-anchor="middle" fill="#14161A">chunk</text>
 <path d="M812.5,374.0 L812.5,424.0 A76.0,9.0 0 0 0 964.5,424.0 L964.5,374.0 A76.0,9.0 0 0 0 812.5,374.0 Z" fill="#EBF3FC" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M812.5,374.0 A76.0,9.0 0 0 0 964.5,374.0 A76.0,9.0 0 0 0 812.5,374.0" fill="none" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M813.3,376.0 h4.0 v46.0 h-4.0 z" fill="#2F62A0"/>
 <text x="891.0" y="401.2" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Embeddings</text>
-<text x="891.0" y="414.2" font-size="10.5" text-anchor="middle" fill="#5E6B7A">local .npy</text>
+<text x="891.0" y="414.2" font-size="10.5" text-anchor="middle" fill="#14161A">local .npy</text>
 <rect x="620.5" y="300.0" width="152.0" height="54.0" rx="9" fill="#EBF3FC" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M621.3,308.0 h4.0 v38.0 h-4.0 z" fill="#1F3D63"/>
 <text x="699.0" y="325.2" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Retrieval</text>
-<text x="699.0" y="338.2" font-size="10.5" text-anchor="middle" fill="#5E6B7A">rank</text>
+<text x="699.0" y="338.2" font-size="10.5" text-anchor="middle" fill="#14161A">rank</text>
 <rect x="428.6" y="238.0" width="152.0" height="54.0" rx="9" fill="#EBF3FC" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M429.4,246.0 h4.0 v38.0 h-4.0 z" fill="#1F3D63"/>
 <text x="507.0" y="263.2" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Chat &amp; Research</text>
-<text x="507.0" y="276.2" font-size="10.5" text-anchor="middle" fill="#5E6B7A">grounded</text>
+<text x="507.0" y="276.2" font-size="10.5" text-anchor="middle" fill="#14161A">grounded</text>
 <rect x="626.5" y="215.0" width="152.0" height="54.0" rx="9" fill="#EEF9F0" stroke="#97D8A2" stroke-width="1.1" opacity="0.6"/>
 <rect x="620.5" y="221.0" width="152.0" height="54.0" rx="9" fill="#EEF9F0" stroke="#97D8A2" stroke-width="1.3"/>
 <path d="M621.3,229.0 h4.0 v38.0 h-4.0 z" fill="#3C9F4C"/>
 <text x="699.0" y="246.2" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Jobs &amp; SSE</text>
-<text x="699.0" y="259.2" font-size="10.5" text-anchor="middle" fill="#5E6B7A">async</text>
+<text x="699.0" y="259.2" font-size="10.5" text-anchor="middle" fill="#14161A">async</text>
 <rect x="812.5" y="286.0" width="152.0" height="54.0" rx="9" fill="#EBF3FC" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M813.3,294.0 h4.0 v38.0 h-4.0 z" fill="#1F3D63"/>
 <text x="891.0" y="311.2" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Generation</text>
-<text x="891.0" y="324.2" font-size="10.5" text-anchor="middle" fill="#5E6B7A">cited</text>
+<text x="891.0" y="324.2" font-size="10.5" text-anchor="middle" fill="#14161A">cited</text>
 <path d="M620.5,137.0 L620.5,187.0 A76.0,9.0 0 0 0 772.5,187.0 L772.5,137.0 A76.0,9.0 0 0 0 620.5,137.0 Z" fill="#EBF3FC" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M620.5,137.0 A76.0,9.0 0 0 0 772.5,137.0 A76.0,9.0 0 0 0 620.5,137.0" fill="none" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M621.3,139.0 h4.0 v46.0 h-4.0 z" fill="#2F62A0"/>
 <text x="699.0" y="164.2" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Assets &amp; Brand</text>
-<text x="699.0" y="177.2" font-size="10.5" text-anchor="middle" fill="#5E6B7A">logo, fonts</text>
+<text x="699.0" y="177.2" font-size="10.5" text-anchor="middle" fill="#14161A">logo, fonts</text>
 <path d="M232.3,374.0 L232.3,424.0 A76.0,9.0 0 0 0 384.3,424.0 L384.3,374.0 A76.0,9.0 0 0 0 232.3,374.0 Z" fill="#EBF3FC" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M232.3,374.0 A76.0,9.0 0 0 0 384.3,374.0 A76.0,9.0 0 0 0 232.3,374.0" fill="none" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M233.1,376.0 h4.0 v46.0 h-4.0 z" fill="#2F62A0"/>
 <text x="310.8" y="401.2" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Artifacts</text>
-<text x="310.8" y="414.2" font-size="10.5" text-anchor="middle" fill="#5E6B7A">versioned</text>
+<text x="310.8" y="414.2" font-size="10.5" text-anchor="middle" fill="#14161A">versioned</text>
 <rect x="1004.5" y="354.0" width="152.0" height="54.0" rx="9" fill="#EBF3FC" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M1005.3,362.0 h4.0 v38.0 h-4.0 z" fill="#1F3D63"/>
 <text x="1083.0" y="379.2" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Document IR</text>
-<text x="1083.0" y="392.2" font-size="10.5" text-anchor="middle" fill="#5E6B7A">validated</text>
+<text x="1083.0" y="392.2" font-size="10.5" text-anchor="middle" fill="#14161A">validated</text>
 <rect x="1196.5" y="433.0" width="152.0" height="40.0" rx="9" fill="#F8EFF1" stroke="#D49BAB" stroke-width="1.4"/>
 <rect x="1201.0" y="437.5" width="143.0" height="31.0" rx="6" fill="none" stroke="#9A425A" stroke-width="0.9" stroke-dasharray="3 2.5" opacity="0.8"/>
 <path d="M1197.3,442.0 h4.0 v22.0 h-4.0 z" fill="#9A425A"/>
@@ -95,17 +95,17 @@
 <rect x="1196.5" y="354.0" width="152.0" height="54.0" rx="9" fill="#EBF3FC" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M1197.3,362.0 h4.0 v38.0 h-4.0 z" fill="#1F3D63"/>
 <text x="1275.0" y="379.2" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Diagram Solver</text>
-<text x="1275.0" y="392.2" font-size="10.5" text-anchor="middle" fill="#5E6B7A">coordinate-free</text>
+<text x="1275.0" y="392.2" font-size="10.5" text-anchor="middle" fill="#14161A">coordinate-free</text>
 <rect x="1388.5" y="419.0" width="152.0" height="54.0" rx="9" fill="#EBF3FC" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M1389.3,427.0 h4.0 v38.0 h-4.0 z" fill="#1F3D63"/>
 <text x="1467.0" y="444.2" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">Renderers</text>
-<text x="1467.0" y="457.2" font-size="10.5" text-anchor="middle" fill="#5E6B7A">deterministic</text>
+<text x="1467.0" y="457.2" font-size="10.5" text-anchor="middle" fill="#14161A">deterministic</text>
 <path d="M1580.6,421.0 L1580.6,471.0 A93.2,9.0 0 0 0 1767.0,471.0 L1767.0,421.0 A93.2,9.0 0 0 0 1580.6,421.0 Z" fill="#EBF3FC" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M1580.6,421.0 A93.2,9.0 0 0 0 1767.0,421.0 A93.2,9.0 0 0 0 1580.6,421.0" fill="none" stroke="#97B4D8" stroke-width="1.3"/>
 <path d="M1581.4,423.0 h4.0 v46.0 h-4.0 z" fill="#2F62A0"/>
 <text x="1676.3" y="442.0" font-size="14.5" font-weight="650" text-anchor="middle" fill="#14161A">6 Formats</text>
-<text x="1676.3" y="455.0" font-size="10.5" text-anchor="middle" fill="#5E6B7A">PPTX DOCX XLSX PDF HTML</text>
-<text x="1676.3" y="467.5" font-size="10.5" text-anchor="middle" fill="#5E6B7A">MD</text>
+<text x="1676.3" y="455.0" font-size="10.5" text-anchor="middle" fill="#14161A">PPTX DOCX XLSX PDF HTML</text>
+<text x="1676.3" y="467.5" font-size="10.5" text-anchor="middle" fill="#14161A">MD</text>
 <rect x="189.1" y="286.5" width="31.7" height="14.0" rx="3" fill="#F7F8FA" fill-opacity="0.95" stroke="#5E6B7A" stroke-opacity="0.3" stroke-width="0.8"/>
 <text x="205.0" y="295.5" font-size="10.5" text-anchor="middle" fill="#5E6B7A">login</text>
 <rect x="762.8" y="409.0" width="40.7" height="14.0" rx="3" fill="#F7F8FA" fill-opacity="0.95" stroke="#5E6B7A" stroke-opacity="0.3" stroke-width="0.8"/>

@@ -10,7 +10,7 @@
    "layout": "title",
    "title": "docloom: LLM to Documents, Instantly",
    "subtitle": "Validated IR + Deterministic Renderers = 6 Native Formats",
-   "notes": "Welcome to docloom. This deck is authored using docloom itselfâ€”a dogfood test. We're going to walk through the problem we solve, the architecture, and how you can use it today."
+   "notes": "Welcome to docloom. This deck is authored using docloom itself—a dogfood test. We're going to walk through the problem we solve, the architecture, and how you can use it today."
   },
   {
    "layout": "content",
@@ -32,7 +32,7 @@
        "text": "Quality checks should happen before any file is written"
       },
       {
-       "text": "Users need native, editable formatsâ€”not rasterized images"
+       "text": "Users need native, editable formats—not rasterized images"
       }
      ]
     }
@@ -63,10 +63,26 @@
     {
      "type": "callout",
      "style": "info",
-     "text": "The IR is deliberately non-recursive with plain tagged unionsâ€”shaped to survive real LLM structured-output constraints."
+     "text": "The IR is deliberately non-recursive with plain tagged unions—shaped to survive real LLM structured-output constraints."
     }
    ],
    "notes": "The core insight: put quality gates in the right place. Validate early, let the linter help the model correct itself, then render deterministically."
+  },
+  {
+   "layout": "content",
+   "title": "Deliver the same file on every render",
+   "blocks": [
+    {
+     "type": "stats",
+     "items": [
+      {
+       "label": "Byte-identical renders",
+       "value": "100%"
+      }
+     ]
+    }
+   ],
+   "notes": "Determinism as a headline: the same IR plus the same theme always produces the same file, byte for byte, so you can regenerate anytime with confidence."
   },
   {
    "layout": "content",
@@ -315,7 +331,35 @@
      ]
     }
    ],
-   "notes": "The data flow: sources come in, get ingested and embedded, retrieval feeds grounded generation, the IR is validated, linted, and rendered. No hand-placed coordinatesâ€”the renderer owns the layout."
+   "notes": "The data flow: sources come in, get ingested and embedded, retrieval feeds grounded generation, the IR is validated, linted, and rendered. No hand-placed coordinates—the renderer owns the layout."
+  },
+  {
+   "layout": "content",
+   "title": "Follow sources from ingest to shipped files",
+   "blocks": [
+    {
+     "type": "numbered",
+     "display": "timeline",
+     "items": [
+      {
+       "text": "Ingest sources"
+      },
+      {
+       "text": "Retrieve evidence"
+      },
+      {
+       "text": "Generate IR"
+      },
+      {
+       "text": "Lint findings"
+      },
+      {
+       "text": "Render files"
+      }
+     ]
+    }
+   ],
+   "notes": "The pipeline as a horizontal step band: ingest, retrieve, generate, lint, render. Each stage hands validated data to the next, with no manual formatting in between."
   },
   {
    "layout": "content",
@@ -378,6 +422,34 @@
     }
    ],
    "notes": "Same IR, six completely different renderers. Each owns its own coordinates and styling. Charts in PPTX are native editable objects, not rasterized images."
+  },
+  {
+   "layout": "content",
+   "title": "Build documents from families of typed blocks",
+   "blocks": [
+    {
+     "type": "bullets",
+     "display": "grid",
+     "items": [
+      {
+       "text": "Text & headings"
+      },
+      {
+       "text": "Tables & charts"
+      },
+      {
+       "text": "Stats & callouts"
+      },
+      {
+       "text": "Diagrams & images"
+      },
+      {
+       "text": "Code & quotes"
+      }
+     ]
+    }
+   ],
+   "notes": "Every block type is a typed, validated node. Grouped into families here as mini-cards: text, tables, stats, diagrams, and code all share the same IR contract."
   },
   {
    "layout": "two_column",
@@ -549,7 +621,7 @@
        "text": "Optional extras: [pdf,diagrams] for engine; [podcast,ingest] for studio"
       },
       {
-       "text": "Settings resolve: per-user â†’ global â†’ built-in defaults"
+       "text": "Settings resolve: per-user → global → built-in defaults"
       }
      ]
     }
@@ -586,7 +658,7 @@
   {
    "layout": "section",
    "title": "Open Source, Local-First, Production-Ready",
-   "subtitle": "MIT License â€¢ Python 0.2.0 â€¢ 658+ Tests â€¢ Full-Stack SPA"
+   "subtitle": "MIT License • Python 0.2.0 • 658+ Tests • Full-Stack SPA"
   }
  ]
 }

@@ -130,7 +130,7 @@
   },
   {
    "type": "paragraph",
-   "text": "docloom-studio is a free, complete document-generation application built on top of the engine. It is \"NotebookLM crossed with Gamma\"—a user creates a notebook, adds sources (files, URLs, pasted text, or web research), chats with grounded answers, and generates six kinds of artifacts: presentations, documents, spreadsheets, D2 diagrams, infographics, and podcast audio. Everything runs locally with no API key required; a local account is registered on first visit and workspaces are local-only by default."
+   "text": "docloom-studio is a free, complete document-generation application built on top of the engine. It is \"NotebookLM crossed with Gamma\"—a user creates a notebook, adds sources (files, URLs, pasted text, or web research), chats with grounded answers, and generates six kinds of artifacts: presentations, documents, spreadsheets, diagrams, infographics, and podcast audio. Everything runs locally with no API key required; a local account is registered on first visit and workspaces are local-only by default."
   },
   {
    "type": "paragraph",
@@ -142,11 +142,11 @@
   },
   {
    "type": "paragraph",
-   "text": "**Six artifact kinds.** The studio generates six kinds of artifacts: (1) **decks** (PPTX presentations), (2) **documents** (DOCX/PDF/HTML/MD via the docloom engine), (3) **spreadsheets** (XLSX), (4) **D2 diagrams** (rendered client-side in the browser via WASM, never touching docloom's IR), (5) **infographics** (mapped to one of four AntV templates: list, steps, pyramid, grid), and (6) **podcast audio** (a two-host script with optional Kokoro TTS synthesis). Only the first three export through docloom's renderers. Diagrams and infographics render client-side and embed as Artifact blocks when needed in a deck or document."
+   "text": "**Six artifact kinds.** The studio generates six kinds of artifacts: (1) **decks** (PPTX presentations), (2) **documents** (DOCX/PDF/HTML/MD via the docloom engine), (3) **spreadsheets** (XLSX), (4) **diagrams** (the engine's coordinate-free Diagram IR—nodes/edges/groups—solved by docloom and emitted to SVG, native PPTX shapes, and `.drawio`), (5) **infographics** (mapped to one of four AntV templates: list, steps, pyramid, grid), and (6) **podcast audio** (a two-host script with optional Kokoro TTS synthesis). Decks, documents, spreadsheets, and diagrams all export through docloom's deterministic renderers—decks and reports embed the same Diagram IR inline. Only infographics render client-side (AntV in the browser) and embed as Artifact blocks when needed in a deck or document."
   },
   {
    "type": "paragraph",
-   "text": "**Five preset guides.** The studio includes five one-click generation templates: Study Guide, Briefing, FAQ, and Timeline (all produce documents) and Mind Map (produces a D2 diagram). These templates are hard-coded grounded generations that minimize decisions for new users."
+   "text": "**Five preset guides.** The studio includes five one-click generation templates: Study Guide, Briefing, FAQ, and Timeline (all produce documents) and Mind Map (produces a diagram authored as the coordinate-free Diagram IR). These templates are hard-coded grounded generations that minimize decisions for new users."
   },
   {
    "type": "paragraph",
@@ -171,7 +171,7 @@
   },
   {
    "type": "paragraph",
-   "text": "**The three other pipelines:** (1) **Diagrams** generate D2 source text (not docloom's coordinate-free Diagram IR), lint-validate that it looks like D2 (rejecting Mermaid patterns), and save the source; the browser compiles and renders D2 to SVG/PNG via WASM. (2) **Infographics** emit an `InfographicSpec` (style, title, 3–6 items) mapped to one of four AntV templates, with text deterministically clamped to fixed card limits. (3) **Podcasts** generate a two-host script (host A, guest B) with optional Kokoro TTS synthesis producing a WAV; the transcript ships even if TTS is missing."
+   "text": "**The three other pipelines:** (1) **Diagrams** generate docloom's coordinate-free Diagram IR directly (nodes, edges, groups, and a direction—no coordinates). The lint gate is not a syntax check: it runs the layout solver once (`solve()`), rejecting dangling edges and duplicate node/group ids with an actionable retry message. The server then solves and emits the same SVG/PNG the deck bake uses via `docloom.render_diagram()` (native layout, or the compact Graphviz `dot` backend for dense graphs). (2) **Infographics** emit an `InfographicSpec` (style, title, 3–6 items) mapped to one of four AntV templates, with text deterministically clamped to fixed card limits. (3) **Podcasts** generate a two-host script (host A, guest B) with optional Kokoro TTS synthesis producing a WAV; the transcript ships even if TTS is missing."
   },
   {
    "type": "paragraph",
@@ -338,19 +338,19 @@
   {
    "type": "heading",
    "level": 2,
-   "text": "8. Diagrams: Two Systems and One Open Decision"
+   "text": "8. Diagrams: One Coordinate-Free IR, One Solver, Many Emitters"
   },
   {
    "type": "paragraph",
-   "text": "Diagrams in docloom are actually **two unconnected systems**. This is not a bug—it is an honest, documented architectural state."
+   "text": "Diagrams in docloom are **one unified system**, shared end to end by the engine and the studio. The studio authors and edits the engine's coordinate-free Diagram IR, and the engine solves and renders it; the two now share the same model rather than living as separate systems, and the studio preview and any IR-exported deck cannot drift because they are baked from the same bytes."
   },
   {
    "type": "paragraph",
-   "text": "**Studio: the D2 editor.** In the studio app, users edit diagrams by typing D2 (d2lang) source into a plain `<textarea>` in the left pane. There is no node/edge GUI, no drag-and-drop, no WYSIWYG canvas. The preview compiles D2 to SVG **entirely client-side** via D2's WASM/ELK layout engine (offline, in the browser) and shows it live in the right pane. Every keystroke re-renders with a debounced 700 ms save. The studio applies its brand palette deterministically as a D2 \"theme preamble\" prepended to the model's source (model owns structure, renderer owns look). A diagram that fails to compile is saved anyway (render errors are preview-only concerns); a \"Fix with AI\" button POSTs the source and error to a `/repair` endpoint. The PNG is produced by rasterizing the SVG in the browser via `<canvas>` / `Image`, then both SVG and base64 PNG are POSTed back to the server."
+   "text": "**Studio: the self-hosted draw.io editor.** In the studio app, diagrams are generated as the engine's coordinate-free `Diagram` IR and edited in the **real [draw.io](https://www.drawio.com) editor, vendored into the studio and running fully offline**—no cloud, no CDN, no account (verified: it boots with zero external network requests). Generation solves the layout for you and seeds it straight into draw.io as mxGraph XML (the `.drawio`/mxGraph emitter), giving you draw.io's complete node/edge GUI, drag-and-drop, and WYSIWYG canvas. Every save writes back a `render.svg` through the exact path the deck bake already uses, so the diagram you edit is the one your presentation ships. Once a draw.io save happens, the forked `drawio_xml` becomes canonical and is returned verbatim on reopen. The legacy client-side D2 (d2lang) editor survives only to open diagrams authored before the switch; the old D2 \"Fix with AI\" `/repair` endpoint was dropped."
   },
   {
    "type": "paragraph",
-   "text": "**Engine: the coordinate-free Diagram IR.** The core docloom engine has a **separate** architecture-diagram system. `Diagram` / `DiagramNode` / `DiagramEdge` / `DiagramGroup` carry only structure—no `x`/`y`/`pos`/`size`/`route` fields ever. There are exactly **seven node types** (borrowed from archify): `service`, `client`, `store`, `queue`, `security`, `cloud`, `external`. `DiagramGroup` geometry is derived (bounding box of members plus padding), never authored."
+   "text": "**Engine: the coordinate-free Diagram IR.** The same Diagram IR the studio emits is the engine's native architecture-diagram model. `Diagram` / `DiagramNode` / `DiagramEdge` / `DiagramGroup` carry only structure—no `x`/`y`/`pos`/`size`/`route` fields ever. There are exactly **seven node types** (borrowed from archify): `service`, `client`, `store`, `queue`, `security`, `cloud`, `external`. `DiagramGroup` geometry is derived (bounding box of members plus padding), never authored."
   },
   {
    "type": "paragraph",
@@ -358,7 +358,7 @@
   },
   {
    "type": "paragraph",
-   "text": "**Editability is two-tier.** Tier 1 is the Diagram block in the Document JSON (source of truth). Tier 2 is everything derived (SVG, PNG, native PPTX shapes, `.drawio`), regenerated on every render. Nothing today reconciles Tier-2 edits back into Tier 1."
+   "text": "**Editability and persistence.** The Diagram IR is the authored source of truth, and the studio seeds the draw.io editor from it. Once you save an edit in draw.io, the forked `drawio_xml` becomes canonical: the studio returns it verbatim on reopen rather than re-seeding from the IR, so your hand edits persist and the exported deck bakes the same bytes you saw in the editor. The Diagram IR is retained as non-authoritative provenance for reseeding a fresh fork. Other derived outputs (native PPTX shapes, SVG/PNG for a diagram never opened in draw.io) are regenerated from the IR on each render."
   },
   {
    "type": "paragraph",
@@ -366,8 +366,8 @@
   },
   {
    "type": "callout",
-   "style": "info",
-   "text": "**The unification is the open decision.** The studio D2 system and the core Diagram IR share no code. The studio editor has never been re-pointed at the Diagram IR. This is the one still-open architectural choice; the design documents record it explicitly. As a consequence, the studio preview and any IR-exported deck can drift."
+   "style": "success",
+   "text": "**The unification is done.** The studio and the core Diagram IR now share the same model: the studio emits the engine's Diagram IR and edits it in the self-hosted draw.io editor, and the engine solves and renders that same IR. This is no longer an open architectural choice—the two systems no longer share no code and the studio preview and any IR-exported deck cannot drift, because both are baked from the same solver output and the same `render.svg`. The only residue is legacy: diagrams authored as D2 source before the switch still open in the old client-side D2 editor."
   },
   {
    "type": "heading",
@@ -468,7 +468,7 @@
   },
   {
    "type": "paragraph",
-   "text": "**In-code defaults:** Generation is **Ollama** with model `qwen3.5:9b` and `max_tokens` 16384 (raised from 8192), pointing at `http://localhost:11434`. Embeddings default to Ollama `nomic-embed-text`, same host. Gemini is fully supported; `gemini-2.5-flash` allows 65536 output tokens. Any non-default provider—e.g., running Gemini as the default—is a per-machine stored DB setting, not the shipped code default."
+   "text": "**In-code defaults:** Generation is **Ollama** with model `qwen3.5:9b` and `max_tokens` 32768 (raised 8192 → 16384 → 32768 for generous headroom on dense slides/sections), pointing at `http://localhost:11434`. Embeddings default to Ollama `nomic-embed-text`, same host. Gemini is fully supported; `gemini-2.5-flash` allows 65536 output tokens. Any non-default provider—e.g., running Gemini as the default—is a per-machine stored DB setting, not the shipped code default."
   },
   {
    "type": "paragraph",
@@ -544,7 +544,7 @@
   },
   {
    "type": "paragraph",
-   "text": "**Diagram unification.** The studio D2 editor and the core Diagram IR are separate systems. Unifying them—pointing the studio at the Diagram IR instead of D2—would enable node/edge GUI, drag-and-drop WYSIWYG, and live preview without WASM, but would require rebuilding the editor. This is the one still-open architectural decision."
+   "text": "**Diagram unification (resolved).** The studio and the core Diagram IR are now one system: the studio emits the engine's coordinate-free Diagram IR and edits it in a self-hosted, offline draw.io editor seeded from that IR, which already delivers the node/edge GUI and drag-and-drop WYSIWYG this used to list as future work. The only residue is legacy—diagrams authored as D2 source before the switch still open in the old client-side D2 editor, and a manual-position overlay mode (letting an editor pin node coordinates instead of always re-solving) is reserved but not yet implemented."
   },
   {
    "type": "paragraph",
@@ -552,7 +552,7 @@
   },
   {
    "type": "paragraph",
-   "text": "**Diagram-to-Tier-2 reconciliation.** Edits made in `.drawio` or PPTX shapes do not reconcile back to the Diagram IR. The IR is Tier 1 (source of truth); derived formats (SVG, PPTX, `.drawio`) are Tier 2 (regenerated on every render). This is intentional but means users cannot edit in PowerPoint and re-import changes."
+   "text": "**Diagram edit reconciliation.** Edits made in the studio's draw.io editor persist—the forked `drawio_xml` becomes canonical and is what the deck bake ships—but they are not re-derived back into the underlying Diagram IR (the IR is retained only as provenance for reseeding). And edits made directly in an exported PowerPoint file (its native shapes) do not reconcile back into the studio at all. This is intentional but means a diagram hand-tuned in PowerPoint cannot be re-imported."
   },
   {
    "type": "paragraph",
