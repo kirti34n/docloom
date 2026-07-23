@@ -44,12 +44,26 @@ _UNIT_FAILURES = (GenerationFailed, ProviderError, httpx.HTTPError)
 
 OutlineLayout = Literal["section", "content", "two_column", "quote",
                         "hero", "image_left", "image_right"]
+OutlineVisual = Literal["none", "chart", "stats", "table", "diagram", "image"]
 
 IMAGE_LAYOUT_HINT = """
 You may also use "hero" (full-bleed image + title), "image_left", or
 "image_right" (image beside content), use them where a picture helps.
 """
-NO_IMAGE_HINT = '\nUse only section, content, two_column, and quote.\n'
+# Free stock photo search (Openverse, keyless; Pexels when configured -- see
+# assets.resolve_stock_photo) means an image slot can usually be filled even
+# with an empty asset library and AI generation off, so image layouts are
+# ALWAYS offered (IMAGE_LAYOUT_HINT above is unconditional in run_deck_pipeline
+# now). This is only a soft, honest caveat for the case neither a tagged asset
+# nor a paid generator is configured -- a nudge, not the old ban ("Use only
+# section, content, two_column, and quote").
+NO_IMAGE_HINT = """
+No curated image library or paid image generation is configured for this
+deck, but a free stock photo search still runs against `image.query` for any
+hero/image_left/image_right slide. Use those layouts where a picture
+genuinely helps the story; don't force one onto every slide, and don't count
+on a perfect match every time.
+"""
 IMAGE_SLIDE_HINT = ('\nFor hero/image_left/image_right layouts, set `image.query` '
                     'to 2-4 words naming the ideal picture (e.g. "remote team call").')
 
@@ -57,17 +71,27 @@ IMAGE_SLIDE_HINT = ('\nFor hero/image_left/image_right layouts, set `image.query
 class OutlineItem(BaseModel):
     title: str = Field(description="slide title, at most 60 chars")
     layout: OutlineLayout = "content"
+    visual: OutlineVisual = Field(
+        "none",
+        description='the standalone visual this slide needs: "chart", "stats" '
+        '(one key number -> a big number, a few -> a stat row), "table", '
+        '"diagram" (a system/architecture/flow), "image", or "none" for a '
+        "plain content/bullets slide with no standalone visual",
+    )
     intent: str = Field(description="one sentence: what this slide must convey")
 
 
 class Outline(BaseModel):
     deck_title: str
+    deck_subtitle: str = Field(
+        "", description="optional one-line deck subtitle/tagline; leave empty if none fits")
     slides: list[OutlineItem]
 
 
 OUTLINE_SYSTEM = """\
 You plan slide decks. Given a request and the evidence provided, return an
-outline as JSON: deck_title plus 3-14 slides, each {title, layout, intent}.
+outline as JSON: deck_title, an optional one-line deck_subtitle, plus 3-14
+slides, each {title, layout, visual, intent}.
 Do NOT include the opening title slide, it is added automatically.
 
 STRUCTURE
@@ -88,6 +112,27 @@ LAYOUTS
   SHOW it as a diagram (it will render an architecture/flow diagram, not
   bullets). Include one where it genuinely helps the story; never force it.
 
+VISUAL
+- `visual` names the standalone visual THIS slide's evidence calls for:
+  "chart" (a trend, comparison, ranking, or share of a whole), "stats" (one
+  key number -> a big number, or 2-4 related numbers -> a stat row),
+  "table" (precise or mixed-unit values worth looking up), "diagram" (a
+  system/architecture/flow), "image" (the point is best made with a
+  picture -- only pair this with a hero/image_left/image_right layout), or
+  "none" (a plain content/bullets slide, no standalone visual is needed).
+- Do not mark every slide with a visual; "none" is correct when the slide
+  really is just an idea plus a sentence or two.
+
+SLIDE MIX -- a concrete recipe (scale proportionally for shorter/longer
+decks; a 3-4 slide deck does not need a section break or every element):
+- For a ~10-slide deck: 1-2 "section" chapter breaks, at least 2 slides with
+  visual="stats" or "chart" (numeric evidence deserves a visual, not a
+  sentence), at least 1 "two_column" comparison, at most 4 plain "content"
+  slides with visual="none" in the whole deck.
+- Never plan two consecutive plain "content" slides that both have
+  visual="none" -- alternate with a stats/chart/table/diagram/image,
+  two_column, quote, or section slide instead.
+
 TITLES
 - Every slide title is a complete declarative sentence stating the
   takeaway, 5-15 words, with a real verb. Never a topic label ("Overview",
@@ -97,8 +142,8 @@ TITLES
 INTENT
 - One sentence naming the single idea AND the evidence that proves it (a
   number, a comparison, a quote, a trend). If the point rests on one or
-  two numbers, a trend, or a ranking, say so, that slide should lead with
-  a stats or chart block, not another bullet list.
+  two numbers, a trend, or a ranking, set visual accordingly (that slide
+  should lead with a stats or chart block, not another bullet list).
 """
 
 # Shared "diagram" block guidance, injected into both the slide and the report
@@ -143,14 +188,21 @@ ONE IDEA
   dropped 30 percent after the rollout", never "Support Tickets" or "Results").
 
 BLOCK SELECTION (do not default to bullets; pick what the evidence needs)
-- The point is one or two numbers: a "stats" block (a big, bold value plus
-  label), not a number buried in a sentence.
+- The point is exactly ONE number: a "stats" block with EXACTLY ONE stat
+  item -- this renders as one big, bold numeral (a "big number" slide), not
+  a number buried in a sentence. Two to four related numbers: a "stats"
+  block with 2-4 items (an upgraded stat-card row).
 - The point is a trend, comparison, ranking, or share of a whole: a
   "chart" block (bar, column, line, or area). NEVER a "pie" chart.
 - The reader needs to look up precise or mixed-unit values: a "table".
-- The point is a sequence of steps: a "numbered" list.
-- Items are genuinely parallel, discrete, and few: up to 5 short "bullets"
-  (each under 12 words). Anything else reads better as a short paragraph.
+- The point is a sequence of steps: a "numbered" list; for a short sequence
+  (roughly 2-6 steps) set `display: "timeline"` so it lays out as
+  horizontal numbered nodes instead of the default `display: "list"`.
+- Items are genuinely parallel, discrete, and few (3-6 short items, each
+  under 12 words): a "bullets" block with `display: "grid"` (mini-cards)
+  instead of the default `display: "list"`. Otherwise, up to 5 short
+  "bullets" in the default list display. Anything longer or less parallel
+  reads better as a short paragraph.
 {DIAGRAM_BLOCK_GUIDE}
 - two_column slides put contrasting material in `blocks` (left) and
   `right`. quote slides carry exactly one quote block, the single
@@ -452,22 +504,163 @@ def _slide_errors(deck_title: str, slide: Slide, source_ids: set[str]) -> list[s
     return _slide_hard_errors(deck_title, slide, source_ids) + _budget_errors(slide)
 
 
+# Content router: a deterministic textual nudge for the per-slide draft call,
+# keyed off the outline's own `visual` plan for THIS slide (OutlineItem.visual
+# -- see _outline_errors above for how that plan is enforced). The model still
+# authors the actual block; this only steers block selection toward what the
+# outline already decided the slide needs, on top of the prose guidance in
+# SLIDE_SYSTEM, instead of leaving it to chance.
+_VISUAL_ROUTER_HINT = {
+    "chart": (
+        "Content router: this slide's outlined visual is CHART -- author a "
+        "`chart` block (bar, column, line, or area; never pie)."
+    ),
+    "stats": (
+        "Content router: this slide's outlined visual is STATS -- one key "
+        "number needs a `stats` block with EXACTLY ONE stat item (renders "
+        "as a big number); 2-4 related numbers need a `stats` block with "
+        "2-4 items."
+    ),
+    "table": (
+        "Content router: this slide's outlined visual is TABLE -- author a "
+        "`table` block (at most 4x4) for the precise values."
+    ),
+    "diagram": (
+        "Content router: this slide's outlined visual is DIAGRAM -- author "
+        "a `diagram` block (see the diagram guidance above), not prose or "
+        "bullets."
+    ),
+    "image": (
+        "Content router: this slide's outlined visual is IMAGE -- keep the "
+        "hero/image_left/image_right layout and set `image.query` to 2-4 "
+        "words naming the ideal photo."
+    ),
+    "none": (
+        "Content router: no standalone visual is called for. If this is a "
+        'sequence of steps, use a `numbered` list (a short sequence reads '
+        'best with `display: "timeline"`). If there are 3-6 short, '
+        'genuinely parallel items, use a `bullets` list with '
+        '`display: "grid"`. Otherwise write plain content capped at 5 '
+        "bullets, or a short paragraph."
+    ),
+}
+
+
+def _visual_router_hint(visual: str) -> str:
+    """Pure string lookup -- cheap to unit test, no model/network involved."""
+    return _VISUAL_ROUTER_HINT.get(visual, _VISUAL_ROUTER_HINT["none"])
+
+
+# visual -> the Block subclass(es) that satisfy it, for _visual_mismatch_errors
+# below. "image" has no entry: it is checked separately against slide.image
+# and inline Image blocks, not a body Block subclass match.
+_VISUAL_BLOCK_TYPES: dict[str, tuple[type, ...]] = {
+    "chart": (Chart,),
+    "stats": (StatRow,),
+    "table": (Table,),
+    "diagram": (Diagram, Artifact),
+}
+
+
+def _visual_mismatch_errors(visual: str, slide: Slide) -> list[str]:
+    """The outline planned a standalone visual for this slide (OutlineItem.
+    visual); if the drafted slide doesn't actually carry a block of that
+    kind, the plan silently failed -- e.g. the model wrote a "stats"-worthy
+    number as a sentence instead of a StatRow. Feeds the same per-slide
+    generate_validated retry loop as every other lint finding here, asking
+    for a fix rather than silently shipping a mismatch. visual="none" is
+    never flagged: it means no standalone visual was required."""
+    if visual == "none":
+        return []
+    all_blocks = slide.blocks + slide.right
+    if visual == "image":
+        if slide.image is not None or any(isinstance(b, Image) for b in all_blocks):
+            return []
+        return [
+            "the outline calls for visual='image' on this slide, but no "
+            "image slot or image block was filled; set image.query (and "
+            "keep a hero/image_left/image_right layout) or add an image block"
+        ]
+    types = _VISUAL_BLOCK_TYPES.get(visual)
+    if not types or any(isinstance(b, types) for b in all_blocks):
+        return []
+    return [
+        f"the outline calls for visual='{visual}' on this slide, but the "
+        f"drafted slide has no {visual} block; add one that matches the "
+        "outlined intent"
+    ]
+
+
+_HAS_DIGIT_RE = re.compile(r"\d")
+
+
+def _outline_errors(o: Outline) -> list[str]:
+    """The outline lint_fn generate_validated's retry loop feeds back. Beyond
+    the original slide-count bound, this enforces the structural variety
+    OUTLINE_SYSTEM's SLIDE MIX recipe asks for -- deterministically, against
+    the parsed outline, the same way _budget_errors enforces slide-body caps
+    against a parsed Slide. Without this, "vary layouts" was prose the model
+    could freely ignore; a wall of 10 "content" slides passed the only
+    check that existed (3 <= len(slides) <= 14)."""
+    if not 3 <= len(o.slides) <= 14:
+        return ["outline needs between 3 and 14 slides"]
+    n = len(o.slides)
+    layouts = [s.layout for s in o.slides]
+    errors: list[str] = []
+
+    n_content = sum(1 for l in layouts if l == "content")
+    if n_content / n > 0.6:
+        errors.append(
+            f"{n_content}/{n} slides are plain 'content' layout (over 60%); "
+            "convert some to two_column, quote, a section break, or give "
+            "them a visual (stats/chart/table/diagram/image) for variety")
+
+    if n >= 6 and not any(l == "section" for l in layouts):
+        errors.append(
+            f"a {n}-slide deck has zero 'section' chapter breaks; add at "
+            "least one to break the deck into parts")
+
+    if not any(l in ("two_column", "quote", "section") for l in layouts):
+        errors.append(
+            "outline has zero two_column, quote, or section slides; add at "
+            "least one for structural variety, not just plain content")
+
+    has_numeric_evidence = any(_HAS_DIGIT_RE.search(s.intent) for s in o.slides)
+    if n >= 8 and has_numeric_evidence and not any(s.visual != "none" for s in o.slides):
+        errors.append(
+            f"this {n}-slide deck's evidence includes numbers but no slide "
+            "sets visual to 'stats', 'chart', or 'table'; lead at least one "
+            "slide with a visual instead of burying every number in prose")
+
+    return errors
+
+
 def _default_outline(prompt: str) -> Outline:
     """A minimal generic outline used only when the outline call itself
     fails after every retry (bad JSON, an exhausted lint loop, a dead
     provider): keeps the job moving into the per-slide loop, each of which
     still gets real grounded content, instead of failing before a single
-    slide is even attempted."""
+    slide is even attempted. Varied on purpose (not 4x flat "content"): this
+    is the one outline every failed-generation deck ships with, so it should
+    itself pass _outline_errors and demonstrate the layout/visual mix asked
+    of the model."""
     topic = _fallback_topic(prompt)
-    return Outline(deck_title=topic, slides=[
-        OutlineItem(title=f"An overview of {topic}", layout="content",
-                    intent=f"introduce {topic} and why it matters"),
-        OutlineItem(title=f"The key points behind {topic}", layout="content",
-                    intent=f"the main points to know about {topic}"),
-        OutlineItem(title="What the evidence shows", layout="content",
-                    intent=f"supporting detail and evidence about {topic}"),
+    return Outline(deck_title=topic, deck_subtitle="", slides=[
+        OutlineItem(title=f"{topic} matters more than it first looks", layout="content",
+                    visual="stats",
+                    intent=f"introduce {topic} and the headline number behind why it matters"),
+        OutlineItem(title="A closer look at the supporting evidence", layout="section",
+                    visual="none",
+                    intent=f"chapter break into the evidence behind {topic}"),
+        OutlineItem(title="Two ways to look at this point in different directions",
+                    layout="two_column", visual="none",
+                    intent=f"contrast the two main options or perspectives on {topic}"),
+        OutlineItem(title="The numbers back up the case", layout="content",
+                    visual="chart",
+                    intent=f"a trend or comparison that proves the point about {topic}"),
         OutlineItem(title="What this means going forward", layout="content",
-                    intent=f"the practical takeaway about {topic}"),
+                    visual="none",
+                    intent=f"the practical takeaway and next step for {topic}"),
     ])
 
 
@@ -520,15 +713,47 @@ async def _generate_slide_image(
         ctx.emit("image", "done", detail=subject)
 
 
+async def _resolve_inline_image_block(
+    b: Image, fallback_query: str, user_id: str | None,
+) -> Image:
+    """Resolve ONE inline `image` block sitting in a slide's blocks/right --
+    a model-authored query with no path/asset yet -- exactly like a slide's
+    hero/image_left/image_right slot: the user's tagged assets first, then a
+    free stock photo (see resolve_stock_photo). Best-effort: any miss just
+    returns the block unchanged, so it renders as the deliberate empty
+    image/unresolved case, never a hard failure."""
+    if b.path or b.asset_id:
+        return b
+    q = b.query or fallback_query
+    if not q:
+        return b
+    from .assets import resolve_image, resolve_stock_photo
+
+    aid = resolve_image(q, user_id) or await resolve_stock_photo(q, user_id)
+    if not aid:
+        return b
+    return Image(asset_id=aid, path=f"asset://{aid}", alt=b.alt or q)
+
+
 async def _resolve_deck_images(
     doc: Document, user_id: str | None, ctx: JobCtx | None = None,
 ) -> None:
-    """Fill image-layout slots from the user's tagged assets first, and put
-    the brand logo on the title slide. When nothing matches AND AI image
-    generation (Nano Banana) is enabled for this owner, generate an
-    illustrative image instead of leaving the slot empty. A slot only stays
-    empty when nothing matches and generation is off, disabled, or fails."""
-    from .assets import active_brand, resolve_image
+    """Fill image-layout slots from the user's tagged assets first, then a
+    free stock photo search (Openverse, keyless -- Pexels when a key is
+    configured; see assets.resolve_stock_photo), and put the brand logo on
+    the title slide. When both matches miss AND AI image generation (Nano
+    Banana) is enabled for this owner, generate an illustrative image
+    instead of leaving the slot empty. A slot only stays empty when nothing
+    matches and generation is off, disabled, or fails -- every step here is
+    best-effort, network or provider failures never sink the deck job.
+
+    Inline `image` blocks the model placed directly in a slide's body (e.g.
+    inside a two_column pane) are resolved the same tagged-asset/stock-photo
+    way, so a bare query no longer ships as a permanently empty slot; those
+    never go to paid generation (that stays reserved for the slide-level
+    hero/image_* slot, which the model is explicitly guided to use for a
+    generated illustration)."""
+    from .assets import active_brand, resolve_image, resolve_stock_photo
 
     image_settings = get_setting("provider.image", user_id) or {}
     gen_enabled = bool(image_settings.get("enabled"))
@@ -537,13 +762,18 @@ async def _resolve_deck_images(
     for s in doc.slides:
         if s.layout in ("hero", "image_left", "image_right"):
             q = (s.image.query if s.image and s.image.query else s.title) or ""
-            aid = resolve_image(q, user_id)
+            aid = resolve_image(q, user_id) or await resolve_stock_photo(q, user_id)
             if aid:
                 s.image = Image(asset_id=aid, path=f"asset://{aid}", alt=q or None)
             elif gen_enabled:
                 await _generate_slide_image(s, q, user_id, image_settings, ctx)
         elif s.layout == "title" and logo:
             s.image = Image(asset_id=logo, path=f"asset://{logo}", alt="logo")
+
+        for coll in (s.blocks, s.right):
+            for i, b in enumerate(coll):
+                if isinstance(b, Image):
+                    coll[i] = await _resolve_inline_image_block(b, s.title or "", user_id)
 
 
 async def run_deck_pipeline(
@@ -568,18 +798,26 @@ async def run_deck_pipeline(
             "does not support.\nEvidence:\n" + "\n".join(context_lines)
         )
 
-    # Image layouts are offered whenever a slot can actually be filled:
-    # either the user has tagged assets to match against, or AI image
-    # generation is enabled and will fill an unmatched slot itself. Relaxing
-    # this for the enabled case is what lets a user with an empty asset
-    # library still get hero/image slides (_resolve_deck_images below does
-    # the actual generation).
+    # Image layouts are ALWAYS offered in the outline now: a free stock photo
+    # search (Openverse, keyless -- Pexels when configured; see
+    # assets.resolve_stock_photo) means a hero/image_* slot can usually be
+    # filled even with an empty asset library and paid generation off, so
+    # there is no longer a hard gate on whether to plan them at all. has_images
+    # instead only decides which caveat to append: the plain IMAGE_LAYOUT_HINT
+    # when a strong match is likely (a tagged asset library, AI generation, or
+    # a configured stock-photo key), or IMAGE_LAYOUT_HINT plus NO_IMAGE_HINT's
+    # softened, honest nudge when the deck is relying on keyless Openverse
+    # search alone.
     image_gen_enabled = bool((get_setting("provider.image", owner) or {}).get("enabled"))
-    has_images = image_gen_enabled or query_one(
-        "SELECT 1 FROM assets WHERE type IN ('image','logo') AND user_id = ? LIMIT 1",
-        (owner,)) is not None
-    outline_sys = OUTLINE_SYSTEM + (IMAGE_LAYOUT_HINT if has_images else NO_IMAGE_HINT)
-    slide_sys = SLIDE_SYSTEM + (IMAGE_SLIDE_HINT if has_images else "")
+    has_images = (
+        image_gen_enabled
+        or bool(get_setting("assets.pexels_key", owner))
+        or query_one(
+            "SELECT 1 FROM assets WHERE type IN ('image','logo') AND user_id = ? LIMIT 1",
+            (owner,)) is not None
+    )
+    outline_sys = OUTLINE_SYSTEM + IMAGE_LAYOUT_HINT + ("" if has_images else NO_IMAGE_HINT)
+    slide_sys = SLIDE_SYSTEM + IMAGE_SLIDE_HINT
 
     ctx.emit("outline", "running")
     # a touch of targeted retrieval for the outline call too, not just the
@@ -593,8 +831,7 @@ async def run_deck_pipeline(
              {"role": "user", "content": prompt + outline_evidence}],
             schema=llm_schema(Outline),
             parse=lambda t: parse_llm_output(t, Outline),
-            lint_fn=lambda o: (["outline needs between 3 and 14 slides"]
-                               if not 3 <= len(o.slides) <= 14 else []),
+            lint_fn=_outline_errors,
         )
     except _UNIT_FAILURES as e:
         # the outline is the least critical, most disposable stage: a
@@ -607,14 +844,16 @@ async def run_deck_pipeline(
         outline = _default_outline(prompt)
     ctx.emit("outline", "done", data={
         "deck_title": outline.deck_title,
-        "slides": [{"title": s.title, "layout": s.layout} for s in outline.slides],
+        "slides": [{"title": s.title, "layout": s.layout, "visual": s.visual}
+                   for s in outline.slides],
     })
 
     slides: list[Slide] = [
-        Slide(layout="title", title=outline.deck_title)
+        Slide(layout="title", title=outline.deck_title,
+              subtitle=outline.deck_subtitle or None)
     ]
     plan_lines = "\n".join(
-        f"{i + 1}. [{s.layout}] {s.title}" for i, s in enumerate(outline.slides)
+        f"{i + 1}. [{s.layout}/{s.visual}] {s.title}" for i, s in enumerate(outline.slides)
     )
     known_sources: dict[str, dict] = {s["id"]: s for s in sources}
     broad_ids = set(known_sources)
@@ -629,7 +868,7 @@ async def run_deck_pipeline(
         user = (
             f'Deck: "{outline.deck_title}"\nFull outline:\n{plan_lines}\n\n'
             f'Draft slide {index + 1}: "{item.title}" (layout: {item.layout}).\n'
-            f"Intent: {item.intent}{sec_block}"
+            f"Intent: {item.intent}\n{_visual_router_hint(item.visual)}{sec_block}"
         )
         # last_hard_ok captures the most recent round's parsed slide that had
         # NO hard errors (see _slide_hard_errors) even if it still tripped a
@@ -640,7 +879,8 @@ async def run_deck_pipeline(
         # (HIGH-1: a budget-only failure must never discard authored content).
         last_hard_ok: dict[str, Slide] = {}
 
-        def _lint_fn(s: Slide, ids=slide_ids, intended=item.layout) -> list[str]:
+        def _lint_fn(s: Slide, ids=slide_ids, intended=item.layout,
+                    visual=item.visual) -> list[str]:
             # A model sometimes mislabels a body slide as layout="title", which
             # is legitimately body-less and so escapes the NEVER-EMPTY content
             # guard. run_deck_pipeline rewrites a non-opener 'title' back to its
@@ -652,7 +892,12 @@ async def run_deck_pipeline(
             hard = _slide_hard_errors(outline.deck_title, s, ids)
             if not hard:
                 last_hard_ok["slide"] = s
-            return hard + _budget_errors(s)
+            # A visual mismatch (outline planned "stats" but the slide has no
+            # StatRow) shapes retries like a budget violation -- outside
+            # `hard` on purpose, so it never blocks the HIGH-1 last_hard_ok
+            # fallback: real, grounded content missing its intended visual is
+            # still better than a blank skeleton once retries are exhausted.
+            return hard + _budget_errors(s) + _visual_mismatch_errors(visual, s)
 
         degraded = False
         try:

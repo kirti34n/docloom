@@ -75,13 +75,20 @@ The schema is non-recursive and uses plain tagged unions, so it validates under 
 
 ## What it produces
 
-| Presentation with a native chart | Grounded, cited document |
+| Presentation — premium layouts | Grounded, cited document |
 | :---: | :---: |
 | ![deck](docs/assets/deck.png) | ![document](docs/assets/document.png) |
 
 | Infographic | Diagram |
 | :---: | :---: |
 | ![infographic](docs/assets/infographic.png) | ![diagram](docs/assets/diagram.png) |
+
+Decks compose from a set of intentional layouts — full-bleed section dividers with oversize
+numerals, hero big-numbers, tinted stat cards, icon/card grids, and numbered timelines — and the
+renderer centers sparse content as a cohesive unit, so a generated deck reads as designed rather
+than templated. Two backward-compatible hints drive the richest treatments: a `bullets` block with
+`display: "grid"` renders as mini-cards, and a `numbered` block with `display: "timeline"` renders
+as a horizontal step band (both fall back to a normal list in every other format).
 
 **See the real output — docloom explaining itself.** [`examples/dogfood/`](examples/dogfood/)
 holds a full set of documents (a deck, a 95-block whitepaper in four formats, an infographic, a
@@ -101,6 +108,8 @@ docloom studio is a free, local-first app built on the engine. You add sources t
 - Retrieval-grounded chat that cites its sources
 - One-click guides: study guide, briefing, FAQ, timeline, and mind map
 - A brand kit applied to every export
+- A legible, calibrated editor UI (real type scale, AA-contrast text, sized controls) and premium
+  deck layouts — section slides, big-numbers, stat cards, card grids, and timelines
 - Runs on your machine; a local model works offline
 
 > [!NOTE]

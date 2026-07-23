@@ -312,11 +312,15 @@
 .blk-callout.style-success {
   border-left-color: var(--accent);
 }
+/* status vocabulary, not the deck theme's own palette: a warning/danger
+   callout must read as warning/danger regardless of which theme is active */
 .blk-callout.style-warning {
-  border-left-color: var(--muted);
+  border-left-color: var(--ws-warn);
+  background: color-mix(in srgb, var(--ws-warn) 12%, var(--surface));
 }
 .blk-callout.style-danger {
-  border-left-color: var(--text);
+  border-left-color: var(--madder);
+  background: color-mix(in srgb, var(--madder) 12%, var(--surface));
 }
 .blk-divider {
   border: none;

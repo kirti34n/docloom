@@ -189,7 +189,7 @@ export function InfographicEditor() {
   }
 
   if (loadError)
-    return <div className="flex h-full items-center justify-center bg-stage-bg text-madder text-[13px]">{loadError}</div>
+    return <div className="flex h-full items-center justify-center bg-stage-bg text-madder text-sm">{loadError}</div>
 
   if (!artifact || themes.length === 0)
     return <div className="flex h-full items-center justify-center bg-stage-bg text-stage-muted"><Loader2 className="animate-spin" /></div>
@@ -197,13 +197,13 @@ export function InfographicEditor() {
   return (
     <div className="flex h-full flex-col bg-stage-bg text-white">
       <div className="flex items-center gap-3 border-b border-stage-line px-5 py-2.5">
-        <button onClick={() => navigate(`/n/${notebookId}`)} className="text-[12px] text-stage-muted hover:text-white">← Notebook</button>
-        <span className="font-display text-[14px] font-semibold">{title}</span>
-        <span className="text-[12px] text-stage-muted">
+        <button onClick={() => navigate(`/n/${notebookId}`)} className="text-xs text-stage-muted hover:text-white">← Notebook</button>
+        <span className="font-display text-base font-semibold">{title}</span>
+        <span className="text-xs text-stage-muted">
           {state === 'saving' ? <span className="flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Saving…</span>
             : state === 'dirty' ? 'Unsaved' : <span className="flex items-center gap-1"><Check size={12} /> Saved</span>}
         </span>
-        <button onClick={exportSvg} className="ml-auto flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-2.5 py-1.5 text-[12px] text-stage-muted hover:text-white">
+        <button onClick={exportSvg} className="ml-auto flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-2.5 py-1.5 text-xs text-stage-muted hover:text-white">
           <Download size={12} /> SVG
         </button>
       </div>
@@ -212,31 +212,31 @@ export function InfographicEditor() {
         {/* editor sidebar */}
         <div className="w-72 shrink-0 space-y-4 overflow-auto border-r border-stage-line p-4">
           <div>
-            <h3 className="font-mono text-[11px] uppercase leading-4 tracking-[0.08em] text-stage-muted">Style</h3>
+            <h3 className="font-mono text-2xs uppercase leading-4 tracking-[0.08em] text-stage-muted">Style</h3>
             <div className="mt-2 grid grid-cols-2 gap-1.5">
               {Object.keys(TEMPLATES).map((s) => (
                 <button key={s} onClick={() => { setStyle(s); setTemplate(TEMPLATES[s][0]) }}
-                  className={`rounded-[var(--radius-sm)] border px-2 py-1.5 text-[12px] capitalize ${s === style ? 'border-woad' : 'border-stage-line text-stage-muted'}`}>
+                  className={`rounded-[var(--radius-sm)] border px-2 py-1.5 text-xs capitalize ${s === style ? 'border-woad' : 'border-stage-line text-stage-muted'}`}>
                   {s}
                 </button>
               ))}
             </div>
           </div>
           <div>
-            <h3 className="font-mono text-[11px] uppercase leading-4 tracking-[0.08em] text-stage-muted">Template</h3>
+            <h3 className="font-mono text-2xs uppercase leading-4 tracking-[0.08em] text-stage-muted">Template</h3>
             <select value={template} onChange={(e) => setTemplate(e.target.value)}
-              className="mt-2 w-full rounded-[var(--radius)] border border-stage-line bg-stage-bg px-2 py-1.5 text-[12px]">
+              className="mt-2 w-full rounded-[var(--radius)] border border-stage-line bg-stage-bg px-2 py-1.5 text-xs">
               {(TEMPLATES[style] ?? []).map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
           <div>
-            <h3 className="font-mono text-[11px] uppercase leading-4 tracking-[0.08em] text-stage-muted">Title</h3>
+            <h3 className="font-mono text-2xs uppercase leading-4 tracking-[0.08em] text-stage-muted">Title</h3>
             <input value={title} onChange={(e) => setTitle(e.target.value)}
-              className="mt-2 w-full rounded-[var(--radius)] border border-stage-line bg-stage-bg px-2 py-1.5 text-[13px]" />
+              className="mt-2 w-full rounded-[var(--radius)] border border-stage-line bg-stage-bg px-2 py-1.5 text-sm" />
           </div>
           <div>
             <div className="flex items-center justify-between">
-              <h3 className="font-mono text-[11px] uppercase leading-4 tracking-[0.08em] text-stage-muted">Items</h3>
+              <h3 className="font-mono text-2xs uppercase leading-4 tracking-[0.08em] text-stage-muted">Items</h3>
               <button onClick={addItem} disabled={items.length >= MAX_ITEMS} aria-label="Add item"
                 title={items.length >= MAX_ITEMS ? `Maximum ${MAX_ITEMS} items` : 'Add item'}
                 className="text-stage-muted hover:text-white disabled:pointer-events-none disabled:opacity-40">
@@ -249,12 +249,12 @@ export function InfographicEditor() {
                   <div className="flex items-center gap-1">
                     <input value={it.label} onChange={(e) => setItem(i, { label: e.target.value })}
                       placeholder="Label"
-                      className="flex-1 bg-transparent text-[13px] font-medium outline-none" />
+                      className="flex-1 bg-transparent text-sm font-medium outline-none" />
                     <button onClick={() => delItem(i)} aria-label="Delete item" className="text-stage-muted hover:text-red-400"><Trash2 size={12} /></button>
                   </div>
                   <input value={it.desc} onChange={(e) => setItem(i, { desc: e.target.value })}
                     placeholder="Description"
-                    className="mt-1 w-full bg-transparent text-[12px] text-stage-muted outline-none" />
+                    className="mt-1 w-full bg-transparent text-xs text-stage-muted outline-none" />
                 </div>
               ))}
             </div>
@@ -263,7 +263,7 @@ export function InfographicEditor() {
 
         {/* canvas: literal white, matching the exported SVG/PNG's own background */}
         <div className="relative flex min-w-0 flex-1 items-center justify-center overflow-auto bg-white p-8">
-          {error && <div className="absolute left-8 top-8 rounded-[var(--radius-sm)] bg-madder px-3 py-1.5 text-[12px] text-white">{error.slice(0, 120)}</div>}
+          {error && <div className="absolute left-8 top-8 rounded-[var(--radius-sm)] bg-madder px-3 py-1.5 text-xs text-white">{error.slice(0, 120)}</div>}
           <div ref={container} style={{ width: 1240, maxWidth: '100%' }} className="[&_svg]:h-auto [&_svg]:max-w-full" />
         </div>
       </div>

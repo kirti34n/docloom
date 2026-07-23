@@ -66,10 +66,10 @@ function RailItem({
         <ScaledSlide slide={slide} doc={{ title, sources }} theme={theme} />
       </button>
       <div className="mt-1.5 flex items-baseline gap-2 px-0.5">
-        <span className="shrink-0 font-mono text-[11px] text-stage-muted">
+        <span className="shrink-0 font-mono text-2xs text-stage-muted">
           {String(index).padStart(2, '0')}
         </span>
-        <span className="truncate text-[12.5px] text-stage-muted group-hover:text-white">{label}</span>
+        <span className="truncate text-xs text-stage-muted group-hover:text-white">{label}</span>
       </div>
       <div className="rail-tools">
         <span className="rail-grip" {...attributes} {...listeners}>
@@ -116,7 +116,7 @@ export function SlideRail({ theme }: { theme: StudioTheme }) {
       </div>
       <button
         onClick={() => insertSlide(selected)}
-        className="m-3 flex items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line py-2 text-[12px] text-stage-muted hover:text-white"
+        className="m-3 flex items-center justify-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line py-2 text-xs text-stage-muted hover:text-white"
       >
         <Plus size={13} /> Add slide
       </button>

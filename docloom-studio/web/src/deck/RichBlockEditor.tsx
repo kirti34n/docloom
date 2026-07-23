@@ -10,7 +10,7 @@ function Btn({ onClick, children, title }: {
 }) {
   return (
     <button onClick={onClick} title={title}
-      className="inline-flex items-center gap-1 rounded border border-white/15 px-1.5 py-0.5 text-[11px] text-white/70 hover:bg-white/10">
+      className="inline-flex items-center gap-1 rounded border border-white/15 px-2 py-1 text-2xs text-white/70 hover:bg-white/10">
       {children}
     </button>
   )

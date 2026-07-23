@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router'
 import { Library, LogOut, Menu, NotebookPen, Plus, Settings2, X } from 'lucide-react'
 import { Toaster, toast } from './ui/toast'
+import { IconButton } from './ui'
 import { api } from './api/client'
 import { useAuth, type Workspace } from './auth/AuthContext'
 
@@ -37,7 +38,7 @@ function WorkspaceSwitcher() {
           const w = workspaces.find((x) => x.id === e.target.value)
           if (w) setCurrentWorkspace(w)
         }}
-        className="min-w-0 flex-1 truncate rounded-[var(--radius-sm)] border border-ws-line bg-ws-bg px-2.5 py-1.5 text-[13px] font-medium outline-none focus:border-ws-accent"
+        className="min-w-0 flex-1 truncate rounded-[var(--radius-sm)] border border-ws-line bg-ws-bg px-2.5 py-1.5 text-sm font-medium outline-none focus:border-ws-accent"
       >
         {workspaces.map((w) => (
           <option key={w.id} value={w.id}>
@@ -45,14 +46,13 @@ function WorkspaceSwitcher() {
           </option>
         ))}
       </select>
-      <button
+      <IconButton
         onClick={create}
-        aria-label="New workspace"
-        title="New workspace"
-        className="shrink-0 rounded-[var(--radius-sm)] border border-ws-line p-1.5 text-ws-muted hover:bg-ws-bg hover:text-ws-ink"
+        label="New workspace"
+        className="shrink-0 border border-ws-line"
       >
         <Plus size={15} />
-      </button>
+      </IconButton>
     </div>
   )
 }
@@ -69,11 +69,10 @@ export function Shell() {
     <div className="relative flex h-full">
       {/* mobile top bar with a menu toggle — only below md */}
       <div className="absolute inset-x-0 top-0 z-30 flex h-12 items-center gap-2 border-b border-ws-line bg-ws-panel px-3 md:hidden">
-        <button aria-label="Open menu" onClick={() => setNavOpen(true)}
-          className="rounded-[var(--radius-sm)] p-1.5 text-ws-muted hover:bg-ws-bg hover:text-ws-ink">
+        <IconButton label="Open menu" onClick={() => setNavOpen(true)}>
           <Menu size={18} />
-        </button>
-        <span className="font-display text-[20px] font-semibold tracking-tight text-ws-ink">
+        </IconButton>
+        <span className="font-display text-lg font-semibold tracking-tight text-ws-ink">
           docloom<span className="text-woad"> studio</span>
         </span>
       </div>
@@ -85,13 +84,12 @@ export function Shell() {
         max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:shadow-[var(--shadow-float)] max-md:transition-transform
         ${navOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full'}`}>
         <div className="flex items-center justify-between px-5 pt-5 pb-3">
-          <span className="font-display text-[20px] font-semibold tracking-tight text-ws-ink">
+          <span className="font-display text-lg font-semibold tracking-tight text-ws-ink">
             docloom<span className="text-woad"> studio</span>
           </span>
-          <button aria-label="Close menu" onClick={() => setNavOpen(false)}
-            className="rounded-[var(--radius-sm)] p-1 text-ws-muted hover:text-ws-ink md:hidden">
+          <IconButton label="Close menu" onClick={() => setNavOpen(false)} className="md:hidden">
             <X size={16} />
-          </button>
+          </IconButton>
         </div>
         <div className="pb-3">
           <WorkspaceSwitcher />
@@ -103,7 +101,7 @@ export function Shell() {
               to={to}
               end={end}
               className={({ isActive }) =>
-                `relative flex items-center gap-2.5 rounded-[var(--radius-sm)] px-3 py-2 text-[13px] font-medium transition-colors ${
+                `relative flex items-center gap-2.5 rounded-[var(--radius-sm)] px-3 py-2 text-sm font-medium transition-colors ${
                   isActive
                     ? 'bg-ws-bg text-ws-ink before:absolute before:left-0 before:top-1/2 before:h-4 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-woad'
                     : 'text-ws-muted hover:bg-ws-bg hover:text-ws-ink'
@@ -116,12 +114,12 @@ export function Shell() {
           ))}
         </nav>
         <div className="mt-auto border-t border-ws-line px-3 py-3">
-          <div className="truncate px-1 text-[11px] text-ws-muted" title={user?.email}>
+          <div className="truncate px-1 text-2xs text-ws-muted" title={user?.email}>
             {user?.email}
           </div>
           <button
             onClick={logout}
-            className="mt-1 flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-1 py-1.5 text-[12px] text-ws-muted hover:text-ws-ink"
+            className="mt-1 flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-1 py-1.5 text-xs text-ws-muted hover:text-ws-ink"
           >
             <LogOut size={13} /> Sign out
           </button>

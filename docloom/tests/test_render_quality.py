@@ -657,12 +657,17 @@ def test_pptx_image_right_title_shares_the_bodys_left_edge(tmp_path):
     assert abs(title_box.left - body_box.left) < Inches(0.01)
 
 
-def test_pptx_grow_pass_suppressed_next_to_a_fixed_size_block(tmp_path):
-    # P5 audit defect 4: growing only the prose beside a fixed-size block
-    # (here, code) is what produced 23.8pt paragraphs beside 12pt code.
+def test_pptx_grow_pass_capped_next_to_a_fixed_size_block(tmp_path):
+    # P5 audit defect 4 found growing prose beside a fixed-size block (here,
+    # code) all the way to GROW_CAP produced 23.8pt paragraphs beside 12pt
+    # code. The fix originally suppressed growth entirely there, but that
+    # went too far the other way: prose was stranded at 1.0x beside a
+    # deliberately large fixed block, reading smaller than the slide's own
+    # hierarchy intended. It now grows, but only up to the smaller
+    # FIXED_NEIGHBOR_GROW_CAP (item 2).
     from pptx import Presentation
 
-    from docloom.render.pptx import BODY_PT
+    from docloom.render.pptx import BODY_PT, FIXED_NEIGHBOR_GROW_CAP
 
     doc = Document(title="T", slides=[
         Slide(layout="content", title="T2", blocks=[
@@ -673,7 +678,8 @@ def test_pptx_grow_pass_suppressed_next_to_a_fixed_size_block(tmp_path):
     out = render(doc, "pptx", tmp_path / "g.pptx")
     slide = Presentation(str(out)).slides[0]
     para = next(s for s in slide.shapes if s.has_text_frame and "short prose" in s.text_frame.text)
-    assert para.text_frame.paragraphs[0].runs[0].font.size.pt == BODY_PT
+    size = para.text_frame.paragraphs[0].runs[0].font.size.pt
+    assert BODY_PT <= size <= round(BODY_PT * FIXED_NEIGHBOR_GROW_CAP, 1) + 0.5
 
 
 def test_pptx_heading_seam_tighter_than_other_seams_when_sparse(tmp_path):
@@ -812,7 +818,10 @@ def test_pptx_sources_slide_has_logo_and_larger_font(tmp_path):
 
 def test_pptx_stat_card_label_and_delta_are_larger(tmp_path):
     # P5 audit defect 12: label/delta at 11/10pt read as footnotes on a
-    # 13.3in slide.
+    # 13.3in slide. A single stat sharing no other blocks on its slide is
+    # now the PINNED CONTRACT item 4 "big number" treatment (one oversized
+    # numeral), whose label/delta sizes (18/14pt) are its own -- still well
+    # above the original footnote-scale 11/10pt this test guards against.
     from pptx import Presentation
 
     doc = Document(title="T", slides=[
@@ -829,8 +838,39 @@ def test_pptx_stat_card_label_and_delta_are_larger(tmp_path):
                 return sh.text_frame.paragraphs[0].runs[0].font.size.pt
         raise AssertionError(marker)
 
-    assert _size("LABELMARK") == 13
-    assert _size("+1 pt") == 12
+    assert _size("LABELMARK") > 11
+    assert _size("+1 pt") > 10
+
+
+def test_pptx_stat_card_row_shares_slide_keeps_compact_card(tmp_path):
+    # Audit item 3 (2026-07-23 visual QA pass): a lone stat is now ALWAYS the
+    # big-number hero treatment (18/14pt label/delta), whether or not it
+    # shares its slide with other blocks -- the old "compact card if not
+    # solo/dominant" gate is exactly what let a single stat next to a
+    # caption paragraph render as a small card floating in a mostly-empty
+    # column (the reported defect). The still-compact 13/12pt card is now
+    # reserved for a genuine multi-stat (2+) row sharing its slide with
+    # other content; see test_pptx_stat_card_label_and_delta_are_larger for
+    # the always-oversized single-stat case this test used to contradict.
+    from pptx import Presentation
+
+    doc = Document(title="T", slides=[
+        Slide(layout="content", title="T2", blocks=[
+            StatRow(items=[Stat(label="LABELMARK", value="$1", delta="+1 pt")]),
+            Paragraph(text="shares the slide"),
+        ]),
+    ])
+    out = render(doc, "pptx", tmp_path / "stat_shared.pptx")
+    slide = Presentation(str(out)).slides[0]
+
+    def _size(marker):
+        for sh in slide.shapes:
+            if sh.has_text_frame and marker in sh.text_frame.text:
+                return sh.text_frame.paragraphs[0].runs[0].font.size.pt
+        raise AssertionError(marker)
+
+    assert _size("LABELMARK") == 18
+    assert _size("+1 pt") == 14
 
 
 def test_pptx_pie_point_labels_show_percent_not_raw_value(tmp_path):
@@ -936,15 +976,19 @@ def _small_diagram() -> Diagram:
     )
 
 
-def test_pptx_grow_pass_suppressed_next_to_a_diagram(tmp_path):
+def test_pptx_grow_pass_capped_next_to_a_diagram_like_any_other_fixed_block(tmp_path):
     # Finding 12: _FIXED_SIZE_BLOCKS omitted Diagram, so a paragraph sharing
-    # a slide with a diagram grew past BODY_PT (measured live: 15.57pt),
-    # while the same paragraph next to a table (an already-fixed block type)
-    # correctly stayed at BODY_PT. A diagram's size is fixed by its own
-    # solved layout, exactly like a table's is fixed by its row count.
+    # a slide with a diagram grew all the way to GROW_CAP (measured live:
+    # 15.57pt) while the same paragraph next to a table (an already-fixed
+    # block type) was correctly capped. A diagram's size is fixed by its own
+    # solved layout, exactly like a table's is fixed by its row count, so
+    # both must get the SAME (now modest, item 2) FIXED_NEIGHBOR_GROW_CAP
+    # treatment -- not necessarily the identical pt size (their own fixed
+    # block's natural height differs), but both within that cap, never back
+    # up at GROW_CAP's full range.
     from pptx import Presentation
 
-    from docloom.render.pptx import BODY_PT
+    from docloom.render.pptx import BODY_PT, FIXED_NEIGHBOR_GROW_CAP
 
     diagram_doc = Document(title="T", slides=[
         Slide(layout="content", title="T2", blocks=[
@@ -965,10 +1009,11 @@ def test_pptx_grow_pass_suppressed_next_to_a_diagram(tmp_path):
         para = next(s for s in slide.shapes if s.has_text_frame and "short prose" in s.text_frame.text)
         return para.text_frame.paragraphs[0].runs[0].font.size.pt
 
+    cap_pt = round(BODY_PT * FIXED_NEIGHBOR_GROW_CAP, 1) + 0.5
     diagram_size = _prose_size(diagram_doc, "diag.pptx")
     table_size = _prose_size(table_doc, "tbl2.pptx")
-    assert diagram_size == BODY_PT
-    assert diagram_size == table_size
+    assert BODY_PT <= diagram_size <= cap_pt
+    assert BODY_PT <= table_size <= cap_pt
 
 
 # ---------------------------------------------- finding A: dropped subtitle
@@ -1776,15 +1821,18 @@ def test_pptx_overflowing_quote_gets_baked_shrink(tmp_path):
 
 
 def test_pptx_fitting_frame_xml_untouched(tmp_path):
-    # A frame that already fits (same grow-suppressed short-prose fixture as
-    # test_pptx_grow_pass_suppressed_next_to_a_fixed_size_block above) must
-    # come out of _fit_text_frames byte-identical to today: run size
-    # unchanged, and its normAutofit element left with no fontScale
-    # attribute at all (proving zero churn, not just a no-op scale).
+    # A frame that already fits (same grow-capped short-prose fixture as
+    # test_pptx_grow_pass_capped_next_to_a_fixed_size_block above -- item 2
+    # now allows modest growth there instead of full suppression) must come
+    # out of _fit_text_frames byte-identical to today: run size unchanged,
+    # and its normAutofit element left with no fontScale attribute at all
+    # (proving zero churn, not just a no-op scale) -- _grow_scale's own
+    # bounded-fit loop already guarantees whatever it grows to still fits
+    # its box, so this must stay true regardless of the exact grown size.
     from pptx import Presentation
     from pptx.oxml.ns import qn
 
-    from docloom.render.pptx import BODY_PT
+    from docloom.render.pptx import BODY_PT, FIXED_NEIGHBOR_GROW_CAP
 
     doc = Document(title="T", slides=[
         Slide(layout="content", title="T2", blocks=[
@@ -1795,7 +1843,8 @@ def test_pptx_fitting_frame_xml_untouched(tmp_path):
     out = render(doc, "pptx", tmp_path / "fit_untouched.pptx")
     slide = Presentation(str(out)).slides[0]
     para = next(s for s in slide.shapes if s.has_text_frame and "short prose" in s.text_frame.text)
-    assert para.text_frame.paragraphs[0].runs[0].font.size.pt == BODY_PT
+    size = para.text_frame.paragraphs[0].runs[0].font.size.pt
+    assert BODY_PT <= size <= round(BODY_PT * FIXED_NEIGHBOR_GROW_CAP, 1) + 0.5
     bodyPr = para.text_frame._txBody.bodyPr
     autofit = bodyPr.find(qn("a:normAutofit"))
     assert autofit is not None

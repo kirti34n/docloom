@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 
+import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -214,6 +215,102 @@ def resolve_image(query: str, user_id: str | None) -> str | None:
         if score > best_score:
             best, best_score = a["id"], score
     return best
+
+
+# ------------------------------------------------------------- stock photos
+
+# Free, best-effort stock photo search for an image slot's `query` -- the
+# fallback between a tagged-asset match (resolve_image, above) and paid
+# Gemini generation (_generate_slide_image, generate.py). Openverse needs no
+# key at all (default source); Pexels is used first when the user configured
+# a key (assets.pexels_key -- previously dead code, wired here). Every
+# network call is wrapped so a timeout, a non-200, an empty result set, or a
+# malformed response degrades to None -- a deck job must never fail on an
+# image lookup, matching the same swallow discipline as _generate_slide_image.
+OPENVERSE_SEARCH_URL = "https://api.openverse.org/v1/images/"
+PEXELS_SEARCH_URL = "https://api.pexels.com/v1/search"
+_STOCK_PHOTO_TIMEOUT = 6.0  # seconds; a slow stock search must not stall a deck job
+
+
+async def _fetch_openverse(query: str) -> bytes | None:
+    """Openverse's free, keyless image search: openly-licensed photos only
+    (commercial-use, modification-permitted), first result. Returns raw
+    image bytes, or None on any failure."""
+    try:
+        async with httpx.AsyncClient(timeout=_STOCK_PHOTO_TIMEOUT) as client:
+            r = await client.get(OPENVERSE_SEARCH_URL, params={
+                "q": query, "page_size": 1, "mature": "false",
+                "license_type": "commercial,modification",
+            })
+            r.raise_for_status()
+            results = r.json().get("results") or []
+            if not results:
+                return None
+            url = results[0].get("url") or results[0].get("thumbnail")
+            if not url:
+                return None
+            img = await client.get(url)
+            img.raise_for_status()
+            return img.content
+    except Exception:
+        return None
+
+
+async def _fetch_pexels(query: str, api_key: str) -> bytes | None:
+    """Pexels search, used first when the user configured `assets.pexels_key`
+    (better relevance/quality than Openverse). Returns raw image bytes, or
+    None on any failure (including a bad/expired key -- swallowed, not
+    raised, since a deck job must not die over a stock-photo credential)."""
+    try:
+        async with httpx.AsyncClient(timeout=_STOCK_PHOTO_TIMEOUT) as client:
+            r = await client.get(
+                PEXELS_SEARCH_URL, params={"query": query, "per_page": 1},
+                headers={"Authorization": api_key})
+            r.raise_for_status()
+            photos = r.json().get("photos") or []
+            if not photos:
+                return None
+            src = (photos[0].get("src") or {})
+            url = src.get("large") or src.get("medium") or src.get("original")
+            if not url:
+                return None
+            img = await client.get(url)
+            img.raise_for_status()
+            return img.content
+    except Exception:
+        return None
+
+
+async def _fetch_stock_photo_bytes(query: str, user_id: str | None) -> bytes | None:
+    """Pexels first when a key is configured, else Openverse (free, keyless).
+    Pure network fetch -- no persistence -- so it's easy to stand in for in
+    tests without touching httpx at all."""
+    if not query:
+        return None
+    pexels_key = get_setting("assets.pexels_key", user_id)
+    if pexels_key:
+        data = await _fetch_pexels(query, pexels_key)
+        if data:
+            return data
+    return await _fetch_openverse(query)
+
+
+async def resolve_stock_photo(query: str, user_id: str | None) -> str | None:
+    """Fetch a free stock photo for `query` and persist it as an owned asset
+    (mirrors save_generated_image), returning the new asset id -- or None on
+    any failure (network, no result, oversized image), in which case the
+    slot simply stays unresolved. This is the function generate.py's
+    _resolve_deck_images calls as the fallback between a tagged-asset match
+    and paid Gemini generation."""
+    data = await _fetch_stock_photo_bytes(query, user_id)
+    if not data or user_id is None:
+        return None
+    try:
+        return save_generated_image(user_id, data, prompt=query)
+    except ValueError:
+        # save_generated_image's own oversize guard -- a content-level
+        # rejection, not an infrastructure fault; degrade the same way
+        return None
 
 
 # ----------------------------------------------------------------- brand kit

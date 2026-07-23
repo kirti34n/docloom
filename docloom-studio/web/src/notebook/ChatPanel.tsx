@@ -170,7 +170,7 @@ function Markdown({
           return (
             <pre
               key={i}
-              className="my-1.5 overflow-x-auto rounded-[var(--radius-sm)] bg-ws-bg px-2.5 py-2 font-mono text-[12.5px] leading-normal first:mt-0 last:mb-0"
+              className="my-1.5 overflow-x-auto rounded-[var(--radius-sm)] bg-ws-bg px-2.5 py-2 font-mono text-xs leading-normal first:mt-0 last:mb-0"
             >
               <code>{b.text}</code>
             </pre>
@@ -178,7 +178,7 @@ function Markdown({
         }
         if (b.kind === 'h') {
           return (
-            <p key={i} className={`mb-1 mt-3 font-semibold first:mt-0 ${b.level <= 2 ? 'text-[15px]' : 'text-[13.5px]'}`}>
+            <p key={i} className={`mb-1 mt-3 font-semibold first:mt-0 ${b.level <= 2 ? 'text-md' : 'text-sm'}`}>
               <Inline text={b.text} evidence={evidenceMap} sourceIndex={sourceIndex} onCite={onCite} />
             </p>
           )
@@ -239,13 +239,13 @@ function SuggestedQuestions({ notebookId, onAsk }: { notebookId: string; onAsk: 
   return (
     <div className="mx-auto mt-16 max-w-md">
       <Eyebrow className="text-center">Ask your sources</Eyebrow>
-      <p className="mt-1.5 text-center text-[13px] text-ws-muted">{ASK_INVITE}</p>
+      <p className="mt-1.5 text-center text-sm text-ws-muted">{ASK_INVITE}</p>
       <div className="mt-5 flex flex-col gap-2">
         {questions.map((q) => (
           <button
             key={q}
             onClick={() => onAsk(q)}
-            className="rounded-[var(--radius)] border border-ws-line bg-ws-panel px-3.5 py-2.5 text-left text-[13px] text-ws-ink transition-colors hover:border-woad"
+            className="rounded-[var(--radius)] border border-ws-line bg-ws-panel px-3.5 py-2.5 text-left text-sm text-ws-ink transition-colors hover:border-woad"
           >
             {q}
           </button>
@@ -336,18 +336,18 @@ export function ChatPanel({
           turns.map((turn, i) => (
             <div key={i} className={turn.role === 'user' ? 'flex justify-end' : ''}>
               <div
-                className={`max-w-[80%] rounded-[var(--radius)] px-4 py-2.5 text-[14px] leading-relaxed ${
+                className={`max-w-[80%] rounded-[var(--radius)] px-4 py-2.5 text-base leading-relaxed ${
                   turn.role === 'user' ? 'bg-ws-ink text-ws-bg' : 'bg-ws-panel text-ws-ink'
                 }`}
               >
                 {turn.role === 'user' ? (
                   turn.text
                 ) : turn.error ? (
-                  <div className="text-[13px]">
+                  <div className="text-sm">
                     <span className="text-madder">Couldn't get an answer: {turn.error}</span>
                     <button
                       onClick={() => retry(i, turns[i - 1]?.text ?? '')}
-                      className="ml-2 rounded-[var(--radius-sm)] border border-ws-line px-2 py-0.5 text-[12px] text-ws-ink hover:bg-ws-bg"
+                      className="ml-2 rounded-[var(--radius-sm)] border border-ws-line px-2 py-1 text-xs text-ws-ink hover:bg-ws-bg"
                     >
                       Retry
                     </button>
@@ -375,7 +375,7 @@ export function ChatPanel({
             }}
             rows={1}
             placeholder="Ask your sources…"
-            className="max-h-32 flex-1 resize-none bg-transparent text-[14px] outline-none"
+            className="max-h-32 flex-1 resize-none bg-transparent text-base outline-none"
           />
           <button
             onClick={() => send()}

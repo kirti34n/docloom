@@ -121,7 +121,7 @@ export function PodcastEditor() {
     }
   }
 
-  if (loadError) return <div className="p-8 text-[13px] text-madder">{loadError}</div>
+  if (loadError) return <div className="p-8 text-sm text-madder">{loadError}</div>
   if (!artifact)
     return (
       <div className="flex h-full items-center justify-center">
@@ -134,15 +134,15 @@ export function PodcastEditor() {
       <div className="flex items-center gap-3 border-b border-ws-line px-5 py-2.5">
         <button
           onClick={() => navigate(`/n/${notebookId}`)}
-          className="text-[12px] text-ws-muted hover:text-ws-ink"
+          className="text-xs text-ws-muted hover:text-ws-ink"
         >
           ← Notebook
         </button>
         <Mic size={14} className="text-woad" />
-        <span className="font-display text-[14px] font-semibold">
+        <span className="font-display text-base font-semibold">
           {scriptTitle || 'Podcast'}
         </span>
-        <span className="text-[12px] text-ws-muted">
+        <span className="text-xs text-ws-muted">
           {state === 'saving' ? <span className="flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Saving…</span>
             : state === 'dirty' ? 'Unsaved' : <span className="flex items-center gap-1"><Check size={12} /> Saved</span>}
         </span>
@@ -155,15 +155,15 @@ export function PodcastEditor() {
               Your browser does not support audio playback.
             </audio>
             <div className="mt-2 flex items-center gap-2">
-              {durationS ? <span className="text-[12px] text-ws-muted">{Math.round(durationS)}s</span> : null}
+              {durationS ? <span className="text-xs text-ws-muted">{Math.round(durationS)}s</span> : null}
               <div className="ml-auto flex items-center gap-1.5">
                 <button
                   onClick={downloadAudio}
-                  className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-ws-line px-2.5 py-1.5 text-[12px] text-ws-muted hover:text-ws-ink"
+                  className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-ws-line px-2.5 py-1.5 text-xs text-ws-muted hover:text-ws-ink"
                 >
                   <Download size={12} /> Download
                 </button>
-                <Button variant="quiet" onClick={regenerate} disabled={regenerating} className="text-[12px]">
+                <Button variant="quiet" size="sm" onClick={regenerate} disabled={regenerating} className="text-xs">
                   {regenerating ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Regenerate
                 </Button>
               </div>
@@ -191,7 +191,7 @@ export function PodcastEditor() {
               <button
                 onClick={() => toggleSpeaker(i)}
                 title={t.speaker === 'A' ? 'Host, click to change to guest' : 'Guest, click to change to host'}
-                className={`mt-0.5 h-7 w-7 shrink-0 rounded-full border border-ws-line text-center text-[12px] font-semibold leading-7 ${
+                className={`mt-0.5 h-7 w-7 shrink-0 rounded-full border border-ws-line text-center text-xs font-semibold leading-7 ${
                   t.speaker === 'A' ? 'border-woad bg-woad text-white' : 'bg-ws-panel text-ws-ink'
                 }`}
               >
@@ -201,7 +201,7 @@ export function PodcastEditor() {
                 value={t.text}
                 onChange={(e) => editTurn(i, e.target.value)}
                 rows={2}
-                className="min-w-0 flex-1 resize-y rounded-[var(--radius)] border border-transparent bg-transparent px-2 py-1 text-[14px] leading-relaxed outline-none hover:border-ws-line focus:border-woad focus:bg-ws-panel"
+                className="min-w-0 flex-1 resize-y rounded-[var(--radius)] border border-transparent bg-transparent px-2 py-1 text-base leading-relaxed outline-none hover:border-ws-line focus:border-woad focus:bg-ws-panel"
               />
               <button
                 onClick={() => deleteTurn(i)}

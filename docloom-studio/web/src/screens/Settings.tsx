@@ -114,7 +114,7 @@ function ProviderFields({
             const model = isEmbeddings ? preset.embedModel ?? preset.model : preset.model
             onChange({ kind, base_url: preset.base_url, ...(model ? { model } : {}) })
           }}
-          className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 text-[13px] text-ws-ink"
+          className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 text-sm text-ws-ink"
         >
           {Object.entries(PROVIDER_PRESETS).map(([kind, p]) => (
             <option key={kind} value={kind}>
@@ -123,14 +123,14 @@ function ProviderFields({
           ))}
         </select>
       </Field>
-      <p className="-mt-2 text-[12px] text-ws-muted">{PROVIDER_PRESETS[cfg.kind]?.hint}</p>
+      <p className="-mt-2 text-xs text-ws-muted">{PROVIDER_PRESETS[cfg.kind]?.hint}</p>
 
       <div className="grid grid-cols-2 gap-4">
         <Field label="Server URL">
           <input
             value={cfg.base_url}
             onChange={(e) => onChange({ base_url: e.target.value })}
-            className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink"
+            className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-xs text-ws-ink"
           />
         </Field>
         <Field label="Model">
@@ -138,7 +138,7 @@ function ProviderFields({
             <select
               value={cfg.model}
               onChange={(e) => onChange({ model: e.target.value })}
-              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 text-[13px] text-ws-ink"
+              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 text-sm text-ws-ink"
             >
               {!models.includes(cfg.model) && <option value={cfg.model}>{cfg.model}</option>}
               {models.map((m) => (
@@ -151,7 +151,7 @@ function ProviderFields({
             <input
               value={cfg.model}
               onChange={(e) => onChange({ model: e.target.value })}
-              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink"
+              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-xs text-ws-ink"
             />
           )}
         </Field>
@@ -163,7 +163,7 @@ function ProviderFields({
             type="password"
             value={cfg.api_key}
             onChange={(e) => onChange({ api_key: e.target.value })}
-            className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink"
+            className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-xs text-ws-ink"
           />
         </Field>
       )}
@@ -276,7 +276,7 @@ export function Settings() {
         <div>
           <Eyebrow>Configuration</Eyebrow>
           <h1 className="mt-1 font-display text-2xl font-semibold text-ws-ink">Settings</h1>
-          <p className="mt-1 text-[13px] text-ws-muted">
+          <p className="mt-1 text-sm text-ws-muted">
             Everything runs on your machine by default. API keys are optional and stored locally.
           </p>
         </div>
@@ -289,7 +289,7 @@ export function Settings() {
       <Panel className="mt-8 p-6">
         <Eyebrow>Language model</Eyebrow>
         <h2 className="mt-1 font-display text-xl font-semibold text-ws-ink">Generation</h2>
-        <p className="mt-1 text-[12.5px] text-ws-muted">Drafts documents, decks, and chat answers.</p>
+        <p className="mt-1 text-xs text-ws-muted">Drafts documents, decks, and chat answers.</p>
 
         <div className="mt-4 grid gap-4">
           <ProviderFields cfg={settings['provider.generation']} models={genModels} onChange={setGen} />
@@ -307,7 +307,7 @@ export function Settings() {
                   // crash every generation call server-side
                   setGen({ max_tokens: Number.isNaN(v) ? 32768 : Math.max(1, Math.floor(v)) })
                 }}
-                className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink"
+                className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-xs text-ws-ink"
               />
             </Field>
           </div>
@@ -321,7 +321,7 @@ export function Settings() {
           {test === 'fail' && <XCircle size={18} className="text-madder" />}
         </div>
         {testDetail && (
-          <pre className="mt-3 overflow-x-auto rounded-[var(--radius-sm)] bg-ws-bg p-3 font-mono text-[11px] text-ws-muted">
+          <pre className="mt-3 overflow-x-auto rounded-[var(--radius-sm)] bg-ws-bg p-3 font-mono text-2xs text-ws-muted">
             {testDetail}
           </pre>
         )}
@@ -330,7 +330,7 @@ export function Settings() {
       <Panel className="mt-6 p-6">
         <Eyebrow>Language model</Eyebrow>
         <h2 className="mt-1 font-display text-xl font-semibold text-ws-ink">Embeddings</h2>
-        <p className="mt-1 text-[12.5px] text-ws-muted">Turns your sources into searchable chunks for citations.</p>
+        <p className="mt-1 text-xs text-ws-muted">Turns your sources into searchable chunks for citations.</p>
 
         <div className="mt-4 grid gap-4">
           <ProviderFields cfg={settings['provider.embeddings']} models={embModels} onChange={setEmb} isEmbeddings />
@@ -340,7 +340,7 @@ export function Settings() {
       <Panel className="mt-6 p-6">
         <Eyebrow>Podcast</Eyebrow>
         <h2 className="mt-1 font-display text-xl font-semibold text-ws-ink">Narration voices</h2>
-        <p className="mt-1 text-[12.5px] text-ws-muted">
+        <p className="mt-1 text-xs text-ws-muted">
           Kokoro, local and offline. Install with <code className="font-mono">pip install kokoro soundfile</code>.
         </p>
 
@@ -349,7 +349,7 @@ export function Settings() {
             <input
               value={settings['provider.tts'].lang}
               onChange={(e) => setTts({ lang: e.target.value })}
-              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink"
+              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-xs text-ws-ink"
             />
           </Field>
           <div className="grid grid-cols-2 gap-4">
@@ -357,14 +357,14 @@ export function Settings() {
               <input
                 value={settings['provider.tts'].voice_a}
                 onChange={(e) => setTts({ voice_a: e.target.value })}
-                className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink"
+                className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-xs text-ws-ink"
               />
             </Field>
             <Field label="Guest voice" hint="e.g. am_michael">
               <input
                 value={settings['provider.tts'].voice_b}
                 onChange={(e) => setTts({ voice_b: e.target.value })}
-                className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink"
+                className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-xs text-ws-ink"
               />
             </Field>
           </div>
@@ -374,13 +374,13 @@ export function Settings() {
       <Panel className="mt-6 p-6">
         <Eyebrow>Images</Eyebrow>
         <h2 className="mt-1 font-display text-xl font-semibold text-ws-ink">AI image generation (Nano Banana)</h2>
-        <p className="mt-1 text-[12.5px] text-ws-muted">
+        <p className="mt-1 text-xs text-ws-muted">
           Optional, cloud, paid. Uses Google Gemini to generate illustrative slide images when no matching
           asset is found in your library. Off by default; sends slide prompts to Google's API. Diagrams stay
           local and deterministic (D2) either way.
         </p>
 
-        <label className="mt-4 flex items-center gap-2 text-[13px] text-ws-ink">
+        <label className="mt-4 flex items-center gap-2 text-sm text-ws-ink">
           <input
             type="checkbox"
             checked={settings['provider.image'].enabled}
@@ -397,7 +397,7 @@ export function Settings() {
                 value={settings['provider.image'].base_url}
                 onChange={(e) => setImage({ base_url: e.target.value })}
                 disabled={!settings['provider.image'].enabled}
-                className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink disabled:opacity-50"
+                className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-xs text-ws-ink disabled:opacity-50"
               />
             </Field>
             <Field label="Model">
@@ -405,7 +405,7 @@ export function Settings() {
                 value={settings['provider.image'].model}
                 onChange={(e) => setImage({ model: e.target.value })}
                 disabled={!settings['provider.image'].enabled}
-                className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink disabled:opacity-50"
+                className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-xs text-ws-ink disabled:opacity-50"
               />
             </Field>
           </div>
@@ -415,7 +415,7 @@ export function Settings() {
               value={settings['provider.image'].api_key}
               onChange={(e) => setImage({ api_key: e.target.value })}
               disabled={!settings['provider.image'].enabled}
-              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink disabled:opacity-50"
+              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-xs text-ws-ink disabled:opacity-50"
             />
           </Field>
         </div>
@@ -424,7 +424,7 @@ export function Settings() {
       <Panel className="mt-6 p-6">
         <Eyebrow>Research and assets</Eyebrow>
         <h2 className="mt-1 font-display text-xl font-semibold text-ws-ink">API keys</h2>
-        <p className="mt-1 text-[12.5px] text-ws-muted">Optional. Web research and asset search work without them.</p>
+        <p className="mt-1 text-xs text-ws-muted">Optional. Web research and asset search work without them.</p>
 
         <div className="mt-4 grid gap-4">
           <Field label="Tavily API key">
@@ -432,7 +432,7 @@ export function Settings() {
               type="password"
               value={settings['research.tavily_key']}
               onChange={(e) => setStr('research.tavily_key', e.target.value)}
-              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink"
+              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-xs text-ws-ink"
             />
           </Field>
           <Field label="Pexels API key">
@@ -440,7 +440,7 @@ export function Settings() {
               type="password"
               value={settings['assets.pexels_key']}
               onChange={(e) => setStr('assets.pexels_key', e.target.value)}
-              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-[12px] text-ws-ink"
+              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 font-mono text-xs text-ws-ink"
             />
           </Field>
         </div>
@@ -449,14 +449,14 @@ export function Settings() {
       <Panel className="mt-6 p-6">
         <Eyebrow>Decks</Eyebrow>
         <h2 className="mt-1 font-display text-xl font-semibold text-ws-ink">Theme</h2>
-        <p className="mt-1 text-[12.5px] text-ws-muted">The default theme for new decks.</p>
+        <p className="mt-1 text-xs text-ws-muted">The default theme for new decks.</p>
 
         <div className="mt-4">
           <Field label="Deck theme">
             <select
               value={settings['deck.theme']}
               onChange={(e) => setStr('deck.theme', e.target.value)}
-              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 text-[13px] text-ws-ink"
+              className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-3 py-2 text-sm text-ws-ink"
             >
               {!themes.some((t) => t.name === settings['deck.theme']) && (
                 <option value={settings['deck.theme']}>{settings['deck.theme']}</option>

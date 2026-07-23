@@ -83,12 +83,24 @@ class BulletList(BaseModel):
     type: Literal["bullets"] = "bullets"
     id: SafeStr | None = None
     items: list[ListItem]
+    display: Literal["list", "grid"] = Field(
+        "list",
+        description="'grid' hints a PPTX renderer to lay 3-6 short items out as "
+        "mini-cards; other renderers and 'list' render a normal list. Purely a "
+        "rendering hint -- never changes item semantics.",
+    )
 
 
 class NumberedList(BaseModel):
     type: Literal["numbered"] = "numbered"
     id: SafeStr | None = None
     items: list[ListItem]
+    display: Literal["list", "timeline"] = Field(
+        "list",
+        description="'timeline' hints a PPTX renderer to lay items out as "
+        "horizontal numbered nodes; other renderers and 'list' render a normal "
+        "numbered list. Purely a rendering hint -- never changes item semantics.",
+    )
 
 
 class Quote(BaseModel):

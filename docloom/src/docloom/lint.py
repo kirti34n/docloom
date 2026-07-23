@@ -98,6 +98,13 @@ DIAGRAM_H_IN = 4.6       # render/pptx.py DIAGRAM_H_IN / _natural_h's diagram es
 # is unaffected (stays the deliberate 0.0 no-op): only Artifact renders a
 # placeholder.
 ARTIFACT_PLACEHOLDER_H_IN = 1.6  # render/pptx.py _natural_h's unresolved-Artifact estimate
+# The compact-card floor; a stats row that is its slide's dominant block
+# (PINNED CONTRACT item 4: 1 stat -> a big number, 2-4 -> an upgraded card
+# row) renders TALLER than this when it has the room. That is a deliberate
+# one-directional gap in this estimate, not a drift to fix: it only makes
+# deck/overflow UNDER-estimate a dominant stats row's real footprint, never
+# over-estimate it, so it can never cause this lint to wrongly reject a
+# deck using the new treatment (item 9) -- the opposite direction would.
 STATS_H_IN = 1.4         # render/pptx.py LAYOUT["stat_card_h_in"]
 STATS_MAX_CARDS = 5      # render/pptx.py LAYOUT["stat_max_cards"]
 TABLE_ROW_H_IN = 0.36    # render/pptx.py _table_block's row height cap
@@ -128,19 +135,30 @@ SUBTITLE_PAD_IN = 0.12    # fixed pad below a subtitle's estimated lines
 SLIDE_H_IN = 7.5     # render/pptx.py SLIDE_H (LAYOUT["slide_h_in"])
 SLIDE_W_IN = 13.333  # render/pptx.py SLIDE_W (LAYOUT["slide_w_in"])
 MARGIN_IN = 0.6      # render/pptx.py MARGIN (LAYOUT["margin_in"])
-SECTION_BODY_START_IN = 4.25    # _section_slide's fixed y before its body
-SECTION_SUBTITLE_ADV_IN = 0.75  # _section_slide's y advance when s.subtitle is set
+# _section_slide now vertically centers its title group instead of pinning
+# it at a fixed y (item 3); SECTION_GROUP_PAD_IN mirrors the rule-gap +
+# title/subtitle geometry used to compute that group's height, and
+# SECTION_BODY_GAP_IN the fixed gap _section_slide adds before its body.
+SECTION_TITLE_PT = 36           # render/pptx.py _section_slide's title font size
+SECTION_SUB_PT = 18             # render/pptx.py _section_slide's subtitle font size
+SECTION_RULE_GAP_IN = 0.05 + 0.28  # _section_slide's accent-rule-to-title gap
+SECTION_BODY_GAP_IN = 0.3       # _section_slide's fixed gap before its body
 HERO_PAD_IN = 0.3      # _hero_slide's pad inside the bottom band
 HERO_TITLE_PT = 36     # render/pptx.py LAYOUT["hero_title_pt"]
 HERO_SUB_PT = 20       # _hero_slide's subtitle font size
 HERO_CAP_PT = 11       # _hero_slide's image-caption font size
 HERO_BLOCK_BAND_IN = 1.7      # _hero_slide's flat guess for a photo-backed band's blocks
 HERO_BAND_MAX_H_IN = SLIDE_H_IN * 0.6  # _hero_slide's band_h cap
-TITLE_BODY_TOP_IN = 2.5    # _title_slide's fixed title y
-TITLE_TITLE_PT = 40        # _title_slide's title font size
+# _title_slide now renders title/subtitle/byline as ONE vertically-centered
+# group at a display-scale 54-64pt title (item 3), not a fixed y=2.5/40pt
+# title with the byline floor-pinned to y>=6.3; these mirror that group's
+# own geometry instead.
 TITLE_TEXT_W_IN = SLIDE_W_IN - 1.1 - MARGIN_IN  # _title_slide's tx=1.1
 TITLE_TITLE_MIN_H_IN = 1.4  # _title_slide's title_h floor
-TITLE_BYLINE_MIN_Y = 6.3    # _title_slide's by_y floor
+TITLE_TITLE_MAX_PT = 64     # _title_slide's title_pt ceiling
+TITLE_TITLE_MIN_PT = 54     # _title_slide's title_pt floor
+TITLE_SUB_PT = 20           # _title_slide's subtitle font size
+TITLE_BYLINE_H_IN = 0.85    # _title_slide's byline block (0.5in gap + 0.35in line)
 QUOTE_COL_W_IN = SLIDE_W_IN - 4.6      # _quote_slide's qx/qw
 QUOTE_TOP_RESERVE_IN = 1.4             # _quote_slide's avail/y floor
 QUOTE_ATTR_RESERVE_IN = 0.6            # _quote_slide's attr_h
@@ -204,24 +222,43 @@ def _hero_body_budget(slide: Slide) -> float:
 
 
 def _section_body_budget(slide: Slide) -> float:
-    """Mirrors render/pptx.py's _section_slide."""
-    y = SECTION_BODY_START_IN + (SECTION_SUBTITLE_ADV_IN if slide.subtitle else 0.0)
+    """Mirrors render/pptx.py's _section_slide: the title group is now
+    vertically centered (item 3) instead of pinned at a fixed y, so the
+    body's start depends on the group's own height (rule gap + title +
+    optional subtitle)."""
+    tw = FULL_BODY_W_IN
+    title_h = max(
+        0.9, _est_lines(slide.title or "", SECTION_TITLE_PT, tw) * _line_h(SECTION_TITLE_PT)
+    )
+    sub_h = (
+        _est_lines(slide.subtitle, SECTION_SUB_PT, tw) * _line_h(SECTION_SUB_PT) + 0.15
+        if slide.subtitle else 0.0
+    )
+    group_h = SECTION_RULE_GAP_IN + title_h + sub_h
+    y = max(0.6, (SLIDE_H_IN - group_h) / 2) + group_h + SECTION_BODY_GAP_IN
     return (SLIDE_H_IN - MARGIN_IN) - y
 
 
 def _title_body_budget(slide: Slide, doc: Document) -> float:
-    """Mirrors render/pptx.py's _title_slide."""
+    """Mirrors render/pptx.py's _title_slide: title/subtitle/byline now
+    render as ONE vertically-centered group at a 54-64pt display-scale
+    title (item 3), not a fixed y=2.5/40pt title with the byline
+    floor-pinned to y>=6.3."""
     title = slide.title or doc.title or ""
-    title_h = max(
-        TITLE_TITLE_MIN_H_IN,
-        _est_lines(title, TITLE_TITLE_PT, TITLE_TEXT_W_IN) * _line_h(TITLE_TITLE_PT),
+    tw = TITLE_TEXT_W_IN
+    title_pt = TITLE_TITLE_MAX_PT
+    while title_pt > TITLE_TITLE_MIN_PT and _est_lines(title, title_pt, tw) > 2:
+        title_pt -= 2
+    title_h = max(TITLE_TITLE_MIN_H_IN, _est_lines(title, title_pt, tw) * _line_h(title_pt))
+    subtitle = slide.subtitle or doc.subtitle
+    sub_h = (
+        _est_lines(subtitle, TITLE_SUB_PT, tw) * _line_h(TITLE_SUB_PT) + 0.18
+        if subtitle else 0.0
     )
-    y = TITLE_BODY_TOP_IN + title_h + 0.1
-    if slide.subtitle or doc.subtitle:
-        y += 0.6
-    if doc.authors or doc.date:
-        y = max(TITLE_BYLINE_MIN_Y, y + 0.3) + 0.35
-    body_y = y + 0.25
+    by_h = TITLE_BYLINE_H_IN if (doc.authors or doc.date) else 0.0
+    group_h = title_h + sub_h + by_h
+    ty = max(0.7, (SLIDE_H_IN - group_h) / 2 - 0.3)
+    body_y = ty + group_h + 0.25
     return max(0.0, (SLIDE_H_IN - MARGIN_IN) - body_y)
 
 

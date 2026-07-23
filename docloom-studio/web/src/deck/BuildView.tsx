@@ -123,12 +123,12 @@ export function BuildView({
           <div className="ml-auto flex items-center gap-3">
             {error ? (
               <>
-                <span role="status" className="flex items-center gap-1.5 text-[13px] text-madder">
+                <span role="status" className="flex items-center gap-1.5 text-sm text-madder">
                   <X size={14} /> {error}
                 </span>
                 <button
                   onClick={() => navigate(`/n/${notebookId}`)}
-                  className="rounded-[var(--radius-sm)] border border-stage-line px-3 py-1.5 text-[12px] text-stage-muted hover:text-white"
+                  className="rounded-[var(--radius-sm)] border border-stage-line px-3 py-1.5 text-xs text-stage-muted hover:text-white"
                 >
                   Back to notebook
                 </button>
@@ -137,7 +137,7 @@ export function BuildView({
               <button
                 onClick={cancel}
                 disabled={cancelling}
-                className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-3 py-1.5 text-[12px] text-stage-muted hover:text-white disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-3 py-1.5 text-xs text-stage-muted hover:text-white disabled:opacity-50"
               >
                 {cancelling && <Loader2 size={12} className="animate-spin" />}
                 Cancel
@@ -174,7 +174,7 @@ export function BuildView({
                         animate={{ opacity: [0.4, 0.8, 0.4] }}
                         transition={{ repeat: Infinity, duration: 1.4 }}
                       >
-                        <div className="text-[13px] text-stage-muted">
+                        <div className="text-sm text-stage-muted">
                           {index}. {unit.label}
                         </div>
                         <div className="h-2 w-2/3 rounded bg-stage-line" />

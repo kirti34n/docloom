@@ -38,11 +38,11 @@ function PlainProgress({ units }: { units: WeaveUnit[] }) {
     <div>
       <Eyebrow />
       {units.length === 0 ? (
-        <p className="mt-2 text-[13px] text-stage-muted">Weaving…</p>
+        <p className="mt-2 text-sm text-stage-muted">Weaving…</p>
       ) : (
         <ul className="mt-2 flex flex-col gap-1.5">
           {units.map((u) => (
-            <li key={u.key} className="flex items-center justify-between gap-3 text-[13px]">
+            <li key={u.key} className="flex items-center justify-between gap-3 text-sm">
               <span
                 className={
                   u.status === 'done' ? 'text-white' : u.status === 'skipped' ? 'text-madder' : 'text-stage-muted'
@@ -50,7 +50,7 @@ function PlainProgress({ units }: { units: WeaveUnit[] }) {
               >
                 {u.label || `Item ${u.key}`}
               </span>
-              <span className="shrink-0 text-[11px] text-stage-muted">{STATUS_WORD[u.status]}</span>
+              <span className="shrink-0 text-2xs text-stage-muted">{STATUS_WORD[u.status]}</span>
             </li>
           ))}
         </ul>
@@ -60,7 +60,7 @@ function PlainProgress({ units }: { units: WeaveUnit[] }) {
 }
 
 function Eyebrow() {
-  return <p className="font-mono text-[11px] uppercase tracking-[0.08em] text-stage-muted">The weave</p>
+  return <p className="font-mono text-2xs uppercase tracking-[0.08em] text-stage-muted">The weave</p>
 }
 
 /** stroke-dashoffset draw-in that autoplays on mount; the reduced-motion

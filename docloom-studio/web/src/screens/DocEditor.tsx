@@ -110,7 +110,7 @@ export function DocEditor() {
   }, [artifactId, load])
 
   if (loadError)
-    return <div className="flex h-full items-center justify-center text-madder text-[13px]">{loadError}</div>
+    return <div className="flex h-full items-center justify-center text-madder text-sm">{loadError}</div>
 
   if (!loaded || themes.length === 0)
     return <div className="flex h-full items-center justify-center text-ws-muted"><Loader2 className="animate-spin" /></div>
@@ -145,24 +145,24 @@ export function DocEditor() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-3 border-b border-ws-line px-5 py-2.5">
-        <button onClick={() => navigate(`/n/${notebookId}`)} className="text-[12px] text-ws-muted hover:text-ws-ink">← Notebook</button>
+        <button onClick={() => navigate(`/n/${notebookId}`)} className="text-xs text-ws-muted hover:text-ws-ink">← Notebook</button>
         <div className="flex items-center gap-1">
           <button onClick={docHistory.undo} className="rounded-[var(--radius-sm)] p-1.5 text-ws-muted hover:text-ws-ink" title="Undo"><Undo2 size={15} /></button>
           <button onClick={docHistory.redo} className="rounded-[var(--radius-sm)] p-1.5 text-ws-muted hover:text-ws-ink" title="Redo"><Redo2 size={15} /></button>
         </div>
-        <span className="text-[12px] text-ws-muted">
+        <span className="text-xs text-ws-muted">
           {saving ? <span className="flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Saving…</span>
             : dirty ? 'Unsaved' : <span className="flex items-center gap-1"><Check size={12} /> Saved</span>}
         </span>
         {errorCount > 0 && (
-          <span className="rounded-[var(--radius-sm)] bg-madder/10 px-2 py-0.5 text-[11px] font-medium text-madder">
+          <span className="rounded-[var(--radius-sm)] bg-madder/10 px-2 py-0.5 text-2xs font-medium text-madder">
             {errorCount} issue{errorCount > 1 ? 's' : ''}
           </span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
           {EXPORTS.map((fmt) => (
             <button key={fmt} onClick={() => exportAs(fmt)} disabled={exporting !== null}
-              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-ws-line px-2.5 py-1.5 text-[12px] text-ws-muted hover:text-ws-ink disabled:opacity-40">
+              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-ws-line px-2.5 py-1.5 text-xs text-ws-muted hover:text-ws-ink disabled:opacity-40">
               {exporting === fmt ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
               {fmt.toUpperCase()}
             </button>
@@ -173,7 +173,7 @@ export function DocEditor() {
       {findings.length > 0 && (
         <ul className="flex flex-col gap-1 border-b border-ws-line bg-ws-panel px-5 py-2">
           {findings.map((f, i) => (
-            <li key={i} className={`text-[12px] ${SEVERITY_CLASS[f.severity] ?? 'text-ws-muted'}`}>
+            <li key={i} className={`text-xs ${SEVERITY_CLASS[f.severity] ?? 'text-ws-muted'}`}>
               {f.message}
             </li>
           ))}

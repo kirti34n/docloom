@@ -18,14 +18,14 @@ export function Field({
 }) {
   return (
     <div className={className}>
-      <label htmlFor={htmlFor} className="block text-[12px] font-medium text-ws-muted">
+      <label htmlFor={htmlFor} className="block text-sm font-medium text-ws-ink">
         {label}
       </label>
       <div className="mt-1">{children}</div>
       {error ? (
-        <p className="mt-1 text-[12px] text-madder">{error}</p>
+        <p className="mt-1 text-xs text-madder">{error}</p>
       ) : hint ? (
-        <p className="mt-1 text-[12px] text-ws-muted">{hint}</p>
+        <p className="mt-1 text-xs text-ws-muted">{hint}</p>
       ) : null}
     </div>
   )

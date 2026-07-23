@@ -185,16 +185,16 @@ export function DrawioCanvas() {
   }
 
   if (loadError)
-    return <div className="flex h-full items-center justify-center bg-stage-bg text-madder text-[13px]">{loadError}</div>
+    return <div className="flex h-full items-center justify-center bg-stage-bg text-madder text-sm">{loadError}</div>
   if (!artifact)
     return <div className="flex h-full items-center justify-center bg-stage-bg text-stage-muted"><Loader2 className="animate-spin" /></div>
 
   return (
     <div className="flex h-full flex-col bg-stage-bg text-white">
       <div className="flex items-center gap-3 border-b border-stage-line px-5 py-2.5">
-        <button onClick={() => navigate(`/n/${notebookId}`)} className="text-[12px] text-stage-muted hover:text-white">← Notebook</button>
-        <span className="font-display text-[14px] font-semibold">{artifact.title}</span>
-        <span className="text-[12px] text-stage-muted">
+        <button onClick={() => navigate(`/n/${notebookId}`)} className="text-xs text-stage-muted hover:text-white">← Notebook</button>
+        <span className="font-display text-base font-semibold">{artifact.title}</span>
+        <span className="text-xs text-stage-muted">
           {state === 'saving' ? <span className="flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Saving…</span>
             : state === 'dirty' ? 'Unsaved' : <span className="flex items-center gap-1"><Check size={12} /> Saved</span>}
         </span>
@@ -202,7 +202,7 @@ export function DrawioCanvas() {
           {RENDER_EXTS.map((ext) => (
             <button key={ext} onClick={() => downloadRender(ext)} disabled={!renders[ext]}
               title={renders[ext] ? undefined : `No ${ext.toUpperCase()} render yet`}
-              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-2.5 py-1.5 text-[12px] text-stage-muted hover:text-white disabled:opacity-40">
+              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-2.5 py-1.5 text-xs text-stage-muted hover:text-white disabled:opacity-40">
               <Download size={12} /> {ext.toUpperCase()}
             </button>
           ))}

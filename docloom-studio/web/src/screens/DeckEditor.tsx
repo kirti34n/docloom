@@ -15,15 +15,25 @@ import '../deck/editor.css'
 
 const EXPORTS = ['pptx', 'pdf', 'docx', 'html'] as const
 
+// the editable stage's own footprint: 1280x720, capped by whichever of
+// max-w-6xl or the available height is tighter, so a short window never
+// forces the slide box taller than what's on screen.
+const STAGE_MAX_W = 1152 // max-w-6xl
+const STAGE_PAD = 64 // p-8 on each axis
+
 function EditableCanvas({ theme }: { theme: StudioTheme }) {
   const selected = useDeck((s) => s.selected)
-  const wrap = useRef<HTMLDivElement>(null)
+  const outer = useRef<HTMLDivElement>(null)
   const [scale, setScale] = useState(0.6)
 
   useLayoutEffect(() => {
-    const el = wrap.current
+    const el = outer.current
     if (!el) return
-    const resize = () => setScale(Math.min(1, el.clientWidth / 1280))
+    const resize = () => {
+      const w = Math.min(el.clientWidth - STAGE_PAD, STAGE_MAX_W)
+      const h = el.clientHeight - STAGE_PAD
+      setScale(Math.max(0.1, Math.min(1, w / 1280, h / 720)))
+    }
     resize()
     const ro = new ResizeObserver(resize)
     ro.observe(el)
@@ -33,15 +43,13 @@ function EditableCanvas({ theme }: { theme: StudioTheme }) {
   if (!selected) return null
   const vars = themeVars(theme) as React.CSSProperties
   return (
-    <div className="flex min-w-0 flex-1 items-start justify-center overflow-auto p-8">
-      <div ref={wrap} className="w-full max-w-4xl">
-        <div
-          className="deck-scale-wrap border border-stage-line"
-          style={{ aspectRatio: '1280 / 720', width: '100%' }}
-        >
-          <div style={{ width: 1280, height: 720, transform: `scale(${scale})`, transformOrigin: 'top left', ...vars }}>
-            <EditableSlide key={selected} slideId={selected} />
-          </div>
+    <div ref={outer} className="flex min-w-0 flex-1 items-center justify-center overflow-auto p-8">
+      <div
+        className="deck-scale-wrap border border-stage-line"
+        style={{ width: 1280 * scale, height: 720 * scale }}
+      >
+        <div style={{ width: 1280, height: 720, transform: `scale(${scale})`, transformOrigin: 'top left', ...vars }}>
+          <EditableSlide key={selected} slideId={selected} />
         </div>
       </div>
     </div>
@@ -86,7 +94,7 @@ export function DeckEditor() {
 
   if (loadError)
     return (
-      <div className="flex h-full items-center justify-center bg-stage-bg text-madder text-[13px]">{loadError}</div>
+      <div className="flex h-full items-center justify-center bg-stage-bg text-madder text-sm">{loadError}</div>
     )
 
   if (!loaded || themes.length === 0) {
@@ -123,11 +131,11 @@ export function DeckEditor() {
       <div className="flex items-center gap-3 border-b border-stage-line px-5 py-2.5">
         <button
           onClick={() => navigate(`/n/${notebookId}`)}
-          className="text-[12px] text-stage-muted hover:text-white"
+          className="text-xs text-stage-muted hover:text-white"
         >
           ← Notebook
         </button>
-        <span className="font-display text-[14px] font-semibold text-white">{title}</span>
+        <span className="font-display text-base font-semibold text-white">{title}</span>
 
         <div className="ml-2 flex items-center gap-1">
           <button
@@ -146,7 +154,7 @@ export function DeckEditor() {
           </button>
         </div>
 
-        <span className="text-[12px] text-stage-muted">
+        <span className="text-xs text-stage-muted">
           {saving ? (
             <span className="flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Saving…</span>
           ) : dirty ? (
@@ -157,7 +165,7 @@ export function DeckEditor() {
         </span>
 
         {errorCount > 0 && (
-          <span className="rounded-[var(--radius-sm)] border border-madder px-2 py-0.5 text-[11px] text-madder">
+          <span className="rounded-[var(--radius-sm)] border border-madder px-2 py-0.5 text-2xs text-madder">
             {errorCount} issue{errorCount > 1 ? 's' : ''}
           </span>
         )}
@@ -168,7 +176,7 @@ export function DeckEditor() {
               key={fmt}
               onClick={() => exportAs(fmt)}
               disabled={exporting !== null}
-              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-2.5 py-1.5 text-[12px] text-stage-muted hover:text-white disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-2.5 py-1.5 text-xs text-stage-muted hover:text-white disabled:opacity-40"
             >
               {exporting === fmt ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
               {fmt.toUpperCase()}
@@ -176,7 +184,7 @@ export function DeckEditor() {
           ))}
           <button
             onClick={() => navigate(`/n/${notebookId}/deck/${artifactId}/present`)}
-            className="ml-1 flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-brass bg-brass px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90"
+            className="ml-1 flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-brass bg-brass px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
           >
             <Play size={12} /> Present
           </button>

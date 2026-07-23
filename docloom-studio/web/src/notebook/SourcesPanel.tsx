@@ -5,13 +5,14 @@ import {
   FileText,
   Globe,
   Loader2,
+  PanelLeftClose,
   Plus,
   Search,
   Trash2,
   Type,
 } from 'lucide-react'
 import { api, jobEvents } from '../api/client'
-import { Button, Empty, Eyebrow } from '../ui'
+import { Button, Empty, Eyebrow, IconButton } from '../ui'
 import { toast } from '../ui/toast'
 
 export interface Source {
@@ -49,11 +50,13 @@ export function SourcesPanel({
   activeSourceId,
   onOpenSource,
   onSourcesChange,
+  onCollapse,
 }: {
   notebookId: string
   activeSourceId?: string
   onOpenSource: (sourceId: string) => void
   onSourcesChange?: (sources: Source[]) => void
+  onCollapse?: () => void
 }) {
   const [sources, setSources] = useState<Source[]>([])
   const [adding, setAdding] = useState<null | 'url' | 'text'>(null)
@@ -167,12 +170,16 @@ export function SourcesPanel({
   return (
     <div className="flex h-full w-72 shrink-0 flex-col border-r border-ws-line bg-ws-panel">
       <div className="flex items-center justify-between px-4 py-3">
-        <h2 className="text-[13px] font-semibold">Sources</h2>
-        <div className="flex gap-1">
-          <button title="Upload file" onClick={() => fileInput.current?.click()}
-            className="rounded-[var(--radius-sm)] p-1 text-ws-muted hover:text-ws-ink">
+        <h2 className="text-sm font-semibold">Sources</h2>
+        <div className="flex items-center gap-0.5">
+          <IconButton label="Upload file" onClick={() => fileInput.current?.click()}>
             <Plus size={15} />
-          </button>
+          </IconButton>
+          {onCollapse && (
+            <IconButton label="Collapse sources" onClick={onCollapse}>
+              <PanelLeftClose size={15} />
+            </IconButton>
+          )}
         </div>
         <input ref={fileInput} type="file" hidden
           accept=".pdf,.docx,.pptx,.xlsx,.xlsm,.csv,.html,.htm,.epub,.txt,.md,.markdown,.rst,.json"
@@ -182,7 +189,7 @@ export function SourcesPanel({
       {/* research the web */}
       <div className="px-3 pb-2">
         {researchStage ? (
-          <div className="flex items-center gap-2 rounded-[var(--radius)] border border-woad/40 bg-woad/5 px-3 py-2 text-[12px] text-ws-ink">
+          <div className="flex items-center gap-2 rounded-[var(--radius)] border border-woad/40 bg-woad/5 px-3 py-2 text-xs text-ws-ink">
             <Loader2 size={13} className="animate-spin text-woad" />
             {RESEARCH_LABELS[researchStage] ?? 'Researching…'}
           </div>
@@ -192,7 +199,7 @@ export function SourcesPanel({
             <input value={researchVal} onChange={(e) => setResearchVal(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && runResearch()}
               placeholder="Research a topic on the web…"
-              className="flex-1 bg-transparent text-[12px] outline-none" />
+              className="flex-1 bg-transparent text-xs outline-none" />
           </div>
         )}
       </div>
@@ -200,15 +207,15 @@ export function SourcesPanel({
       <Eyebrow className="px-3 pb-1">Add a source</Eyebrow>
       <div className="flex gap-1 px-3 pb-2">
         <button onClick={() => fileInput.current?.click()}
-          className="flex-1 rounded-[var(--radius-sm)] border border-ws-line py-1.5 text-[11px] text-ws-muted hover:text-ws-ink">
+          className="flex-1 rounded-[var(--radius-sm)] border border-ws-line py-1.5 text-2xs text-ws-muted hover:text-ws-ink">
           File
         </button>
         <button onClick={() => setAdding(adding === 'url' ? null : 'url')}
-          className="flex-1 rounded-[var(--radius-sm)] border border-ws-line py-1.5 text-[11px] text-ws-muted hover:text-ws-ink">
+          className="flex-1 rounded-[var(--radius-sm)] border border-ws-line py-1.5 text-2xs text-ws-muted hover:text-ws-ink">
           URL
         </button>
         <button onClick={() => setAdding(adding === 'text' ? null : 'text')}
-          className="flex-1 rounded-[var(--radius-sm)] border border-ws-line py-1.5 text-[11px] text-ws-muted hover:text-ws-ink">
+          className="flex-1 rounded-[var(--radius-sm)] border border-ws-line py-1.5 text-2xs text-ws-muted hover:text-ws-ink">
           Text
         </button>
       </div>
@@ -218,16 +225,16 @@ export function SourcesPanel({
           <input value={urlVal} onChange={(e) => setUrlVal(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && addUrl()}
             placeholder="Web page or YouTube link…" autoFocus
-            className="w-full rounded-[var(--radius-sm)] border border-ws-line px-2 py-1.5 text-[12px]" />
+            className="w-full rounded-[var(--radius-sm)] border border-ws-line px-2 py-1.5 text-xs" />
         </div>
       )}
       {adding === 'text' && (
         <div className="px-3 pb-2">
           <textarea value={textVal} onChange={(e) => setTextVal(e.target.value)}
             placeholder="Paste text…" rows={3} autoFocus
-            className="w-full resize-none rounded-[var(--radius-sm)] border border-ws-line px-2 py-1.5 text-[12px]" />
+            className="w-full resize-none rounded-[var(--radius-sm)] border border-ws-line px-2 py-1.5 text-xs" />
           <button onClick={addText}
-            className="mt-1 w-full rounded-[var(--radius-sm)] bg-ws-ink py-1.5 text-[11px] text-ws-bg">Add</button>
+            className="mt-1 w-full rounded-[var(--radius-sm)] bg-ws-ink py-1.5 text-2xs text-ws-bg">Add</button>
         </div>
       )}
 
@@ -251,7 +258,7 @@ export function SourcesPanel({
                   <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[2px]"
                     style={{ background: enabled ? 'var(--woad)' : 'var(--rule)' }} />
                   <div className="flex items-start gap-2">
-                    <span className="mt-0.5 shrink-0 font-mono text-[10.5px] leading-4 text-ws-muted">
+                    <span className="mt-0.5 shrink-0 font-mono text-2xs leading-4 text-ws-muted">
                       {String(idx + 1).padStart(2, '0')}
                     </span>
                     {s.status === 'pending' ? (
@@ -264,23 +271,25 @@ export function SourcesPanel({
                       <Icon size={14} className="mt-0.5 shrink-0 text-ws-muted" />
                     )}
                     <button onClick={() => onOpenSource(s.id)} title={s.title}
-                      className="min-w-0 flex-1 truncate text-left text-[12.5px] text-ws-ink hover:text-woad hover:underline underline-offset-2">
+                      className="min-w-0 flex-1 truncate text-left text-xs text-ws-ink hover:text-woad hover:underline underline-offset-2">
                       {s.title}
                     </button>
-                    <button onClick={() => remove(s.id)}
-                      aria-label="Remove source"
-                      className="hidden shrink-0 text-ws-muted hover:text-madder group-hover:block">
+                    <IconButton
+                      label="Remove source"
+                      onClick={() => remove(s.id)}
+                      className="shrink-0 opacity-40 group-hover:opacity-100 focus-visible:opacity-100 hover:!text-madder"
+                    >
                       <Trash2 size={13} />
-                    </button>
+                    </IconButton>
                   </div>
-                  {s.error && <p className="mt-1 text-[11px] text-madder">{s.error}</p>}
+                  {s.error && <p className="mt-1 text-2xs text-madder">{s.error}</p>}
                   {s.status === 'stale' && (
                     <div className="mt-1 flex items-center justify-between gap-2">
-                      <span className="text-[11px] text-ws-warn">
+                      <span className="text-2xs text-ws-warn">
                         Index out of date. Re-embed to make it searchable.
                       </span>
                       <button onClick={() => reingest(s.id)}
-                        className="shrink-0 rounded-[var(--radius-sm)] border border-ws-line px-1.5 py-0.5 text-[10.5px] hover:bg-ws-bg">
+                        className="shrink-0 rounded-[var(--radius-sm)] border border-ws-line px-2 py-1 text-2xs hover:bg-ws-bg">
                         Re-ingest
                       </button>
                     </div>
@@ -289,7 +298,7 @@ export function SourcesPanel({
                     <div className="mt-2 flex gap-1">
                       {MODES.map(([m, label]) => (
                         <button key={m} onClick={() => setMode(s.id, m)}
-                          className={`flex-1 rounded-[var(--radius-sm)] py-0.5 text-[10.5px] ${
+                          className={`flex-1 rounded-[var(--radius-sm)] py-1 text-2xs ${
                             s.context_mode === m
                               ? 'bg-ws-ink text-ws-bg'
                               : 'bg-ws-bg text-ws-muted hover:text-ws-ink'

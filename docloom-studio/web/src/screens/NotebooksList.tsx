@@ -4,7 +4,7 @@ import { MoreVertical, Plus } from 'lucide-react'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { toast } from '../ui/toast'
-import { Button, Empty, Eyebrow } from '../ui'
+import { Button, Empty, Eyebrow, IconButton } from '../ui'
 
 interface Notebook {
   id: string
@@ -82,28 +82,28 @@ function NotebookCard({
               setRenaming(false)
             }
           }}
-          className="block w-full truncate rounded-[var(--radius-sm)] border border-woad bg-ws-bg px-2 py-1 pr-6 text-[14px] font-semibold text-ws-ink outline-none"
+          className="block w-full truncate rounded-[var(--radius-sm)] border border-woad bg-ws-bg px-2 py-1 pr-6 text-base font-semibold text-ws-ink outline-none"
         />
       ) : (
         <button onClick={onNavigate} className="block w-full text-left">
-          <span className="block truncate pr-6 text-[14px] font-semibold text-ws-ink">{nb.name}</span>
-          <span className="mt-1 block text-[12px] text-ws-muted">
+          <span className="block truncate pr-6 text-base font-semibold text-ws-ink">{nb.name}</span>
+          <span className="mt-1 block text-xs text-ws-muted">
             {new Date(nb.updated * 1000).toLocaleString()}
           </span>
         </button>
       )}
 
       <div ref={menuRef} className="absolute right-3 top-3">
-        <button
-          aria-label="Notebook options"
+        <IconButton
+          label="Notebook options"
           onClick={() => {
             setMenuOpen((v) => !v)
             setConfirmingDelete(false)
           }}
-          className={`rounded-[var(--radius-sm)] p-1 text-ws-muted hover:bg-ws-bg hover:text-ws-ink group-hover:opacity-100 focus-visible:opacity-100 ${menuOpen ? 'opacity-100' : 'opacity-0'}`}
+          className={`transition-opacity duration-[var(--dur-fast)] group-hover:opacity-100 focus-visible:opacity-100 ${menuOpen ? 'opacity-100' : 'opacity-40'}`}
         >
           <MoreVertical size={15} />
-        </button>
+        </IconButton>
         {menuOpen && (
           <div className="absolute right-0 top-full z-10 mt-1 w-40 rounded-[var(--radius)] border border-ws-line bg-ws-panel py-1 shadow-[var(--shadow-float)]">
             {!confirmingDelete ? (
@@ -113,20 +113,20 @@ function NotebookCard({
                     setMenuOpen(false)
                     setRenaming(true)
                   }}
-                  className="block w-full px-3 py-1.5 text-left text-[13px] text-ws-ink hover:bg-ws-bg"
+                  className="block w-full px-3 py-1.5 text-left text-sm text-ws-ink hover:bg-ws-bg"
                 >
                   Rename
                 </button>
                 <button
                   onClick={() => setConfirmingDelete(true)}
-                  className="block w-full px-3 py-1.5 text-left text-[13px] text-madder hover:bg-ws-bg"
+                  className="block w-full px-3 py-1.5 text-left text-sm text-madder hover:bg-ws-bg"
                 >
                   Delete
                 </button>
               </>
             ) : (
               <div className="px-3 py-1.5">
-                <p className="text-[12px] text-ws-muted">Delete this notebook?</p>
+                <p className="text-xs text-ws-muted">Delete this notebook?</p>
                 <div className="mt-1.5 flex gap-1.5">
                   <button
                     onClick={() => {
@@ -134,13 +134,13 @@ function NotebookCard({
                       setConfirmingDelete(false)
                       del()
                     }}
-                    className="rounded-[var(--radius-sm)] bg-madder px-2 py-1 text-[12px] font-medium text-ws-bg"
+                    className="rounded-[var(--radius-sm)] bg-madder px-2 py-1 text-xs font-medium text-ws-bg"
                   >
                     Delete
                   </button>
                   <button
                     onClick={() => setConfirmingDelete(false)}
-                    className="rounded-[var(--radius-sm)] border border-ws-line px-2 py-1 text-[12px] text-ws-ink"
+                    className="rounded-[var(--radius-sm)] border border-ws-line px-2 py-1 text-xs text-ws-ink"
                   >
                     Cancel
                   </button>
@@ -222,7 +222,7 @@ export function NotebooksList() {
             title="Start your first notebook"
             body="Add your documents or let the agent research a topic, then generate decks, reports, diagrams, and infographics you can edit."
             action={
-              <Button variant="accent" onClick={create}>
+              <Button variant="quiet" onClick={create}>
                 <Plus size={14} /> New notebook
               </Button>
             }

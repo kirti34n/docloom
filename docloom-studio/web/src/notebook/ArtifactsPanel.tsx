@@ -1,9 +1,10 @@
 import {
   AlertCircle, BarChart3, Clock, FileSpreadsheet, FileText, GraduationCap, HelpCircle,
-  Loader2, Mic, Network, Newspaper, Presentation, Share2, Sparkles,
+  Loader2, Mic, Network, Newspaper, PanelRightClose, Presentation, Share2, Sparkles,
 } from 'lucide-react'
 import { useState } from 'react'
 import { api } from '../api/client'
+import { Button, Eyebrow, IconButton } from '../ui'
 import { toast } from '../ui/toast'
 
 // NotebookLM-style one-click guides: each is a grounded generation with a
@@ -85,11 +86,13 @@ export function ArtifactsPanel({
   onGenerate,
   onOpen,
   onDeleted,
+  onCollapse,
 }: {
   artifacts: ArtifactSummary[]
   onGenerate: (kind: string, prompt: string) => void
   onOpen: (a: ArtifactSummary) => void
   onDeleted: (id: string) => void
+  onCollapse?: () => void
 }) {
   const [kind, setKind] = useState<string>('deck')
   const [prompt, setPrompt] = useState('')
@@ -110,9 +113,14 @@ export function ArtifactsPanel({
   }
 
   return (
-    <div className="flex h-full w-80 shrink-0 flex-col border-l border-ws-line bg-ws-panel">
-      <div className="px-4 py-3">
-        <h2 className="text-[13px] font-semibold">Create</h2>
+    <div className="flex h-full w-96 shrink-0 flex-col border-l border-ws-line bg-ws-panel">
+      <div className="flex items-center justify-between px-4 py-3">
+        <h2 className="text-sm font-semibold">Create</h2>
+        {onCollapse && (
+          <IconButton label="Collapse create panel" onClick={onCollapse}>
+            <PanelRightClose size={15} />
+          </IconButton>
+        )}
       </div>
 
       <div className="px-4">
@@ -125,7 +133,7 @@ export function ArtifactsPanel({
                 key={k.kind}
                 onClick={() => setKind(k.kind)}
                 aria-pressed={selected}
-                className={`ds-card flex flex-col items-center gap-1.5 py-2.5 text-[11px] font-medium ${
+                className={`ds-card flex flex-col items-center gap-1.5 py-2.5 text-2xs font-medium ${
                   selected
                     ? 'border-ws-accent text-ws-ink ring-1 ring-ws-accent'
                     : 'ds-card-hover text-ws-muted'
@@ -139,7 +147,7 @@ export function ArtifactsPanel({
         </div>
 
         <div className="ds-card ds-focusable mt-3 p-3">
-          <label className="flex items-center gap-1.5 text-[12px] font-medium">
+          <label className="flex items-center gap-1.5 text-xs font-medium">
             <Sparkles size={13} className="text-ws-accent" /> {active.label}
           </label>
           <textarea
@@ -147,41 +155,40 @@ export function ArtifactsPanel({
             onChange={(e) => setPrompt(e.target.value)}
             rows={3}
             placeholder={active.hint}
-            className="mt-2 w-full resize-none rounded-lg border border-ws-line bg-ws-bg px-2.5 py-2 text-[13px] outline-none focus:border-ws-accent"
+            className="mt-2 w-full resize-none rounded-lg border border-ws-line bg-ws-bg px-2.5 py-2 text-sm outline-none focus:border-ws-accent"
           />
-          <button
+          <Button
+            variant="accent"
             onClick={() => prompt.trim() && onGenerate(kind, prompt)}
             disabled={!prompt.trim()}
-            className="ds-btn ds-btn-primary mt-2 w-full py-2 text-[12.5px] disabled:opacity-40"
+            className="mt-2 w-full"
           >
             Generate {active.label.toLowerCase()}
-          </button>
-          <p className="mt-2 text-[11px] text-ws-muted">Grounds in your enabled sources and cites them.</p>
+          </Button>
+          <p className="mt-2 text-2xs text-ws-muted">Grounds in your enabled sources and cites them.</p>
 
           {(STARTERS[kind] ?? []).length > 0 && (
             <div className="mt-2.5 border-t border-ws-line pt-2.5">
-              <p className="text-[10.5px] font-semibold uppercase tracking-wide text-ws-muted">
-                Starter prompts
-              </p>
+              <Eyebrow>Starter prompts</Eyebrow>
               <div className="mt-1.5 flex flex-col gap-1">
                 {(STARTERS[kind] ?? []).map((s, i) => (
                   <button
                     key={i}
                     onClick={() => setPrompt(s)}
                     title="Use this as a starting point, then edit it"
-                    className="ds-card ds-card-hover w-full truncate px-2.5 py-1.5 text-left text-[11.5px] text-ws-muted"
+                    className="ds-card ds-card-hover line-clamp-2 w-full px-2.5 py-1.5 text-left text-xs text-ws-ink"
                   >
                     {s}
                   </button>
                 ))}
               </div>
-              <p className="mt-1 text-[10.5px] text-ws-muted">Click to fill the box, then tweak it.</p>
+              <p className="mt-1 text-2xs text-ws-muted">Click to fill the box, then tweak it.</p>
             </div>
           )}
         </div>
 
         <div className="mt-4">
-          <h3 className="text-[11px] font-semibold uppercase tracking-wide text-ws-muted">Guides</h3>
+          <Eyebrow>Guides</Eyebrow>
           <div className="mt-2 grid grid-cols-2 gap-1.5">
             {GUIDES.map((g) => {
               const Icon = g.icon
@@ -189,21 +196,21 @@ export function ArtifactsPanel({
                 <button
                   key={g.key}
                   onClick={() => onGenerate(g.kind, g.prompt)}
-                  className="ds-card ds-card-hover flex items-center gap-1.5 px-2.5 py-2 text-[11.5px] font-medium text-ws-muted"
+                  className="ds-card ds-card-hover flex items-center gap-1.5 px-2.5 py-2 text-xs font-medium text-ws-muted"
                 >
                   <Icon size={14} className="text-ws-accent" /> {g.label}
                 </button>
               )
             })}
           </div>
-          <p className="mt-1.5 text-[11px] text-ws-muted">One-click, grounded in your sources.</p>
+          <p className="mt-1.5 text-2xs text-ws-muted">One-click, grounded in your sources.</p>
         </div>
       </div>
 
       <div className="mt-5 flex-1 overflow-auto px-4 pb-4">
         {artifacts.length > 0 && (
           <>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-ws-muted">Artifacts</h3>
+            <Eyebrow>Artifacts</Eyebrow>
             <ul className="stagger mt-2 space-y-2">
               {artifacts.map((a, i) => {
                 const Icon = KIND_ICON[a.kind] ?? FileText
@@ -215,8 +222,8 @@ export function ArtifactsPanel({
                         className="ds-card ds-card-hover flex w-full items-center gap-2.5 px-3 py-2.5 text-left"
                       >
                         <Icon size={15} className="shrink-0 text-woad" />
-                        <span className="min-w-0 flex-1 truncate text-[13px]">{a.title || 'Untitled'}</span>
-                        <span className="shrink-0 text-[11px] text-ws-muted">v{a.version}</span>
+                        <span className="min-w-0 flex-1 truncate text-sm">{a.title || 'Untitled'}</span>
+                        <span className="shrink-0 text-2xs text-ws-muted">v{a.version}</span>
                       </button>
                     ) : (
                       <div
@@ -229,14 +236,14 @@ export function ArtifactsPanel({
                         ) : (
                           <AlertCircle size={15} className="shrink-0 text-madder" />
                         )}
-                        <span className="min-w-0 flex-1 truncate text-[13px] text-ws-muted">
+                        <span className="min-w-0 flex-1 truncate text-sm text-ws-muted">
                           {a.status === 'building' ? 'Generating…' : a.title || 'Generation failed'}
                         </span>
                         {a.status === 'failed' && (
                           <button
                             onClick={() => deleteArtifact(a)}
                             disabled={deletingId === a.id}
-                            className="shrink-0 rounded-[var(--radius-sm)] border border-ws-line px-1.5 py-0.5 text-[10.5px] text-madder hover:bg-ws-bg disabled:opacity-50"
+                            className="shrink-0 rounded-[var(--radius-sm)] border border-ws-line px-2 py-1 text-2xs text-madder hover:bg-ws-bg disabled:opacity-50"
                           >
                             {deletingId === a.id ? 'Deleting…' : 'Delete'}
                           </button>

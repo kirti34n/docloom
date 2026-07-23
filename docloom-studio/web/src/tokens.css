@@ -7,11 +7,15 @@
   /* -- the loom palette --------------------------------------------------- */
   --paper: #FBFAF7;   /* app ground: a cool bond white, not cream */
   --vellum: #F2F1EC;  /* panels, rails, inset surfaces */
-  --rule: #E3E1DA;    /* every hairline, 1px, never 2 */
+  --rule: #D6D3C9;    /* every hairline, 1px, never 2 */
+  --rule-strong: #C9C6BB; /* card/panel edges: one notch darker than --rule */
+  --border-control: #94918A; /* inputs/selects/checkboxes edge, ~3:1 (WCAG 1.4.11) */
   --ink: #14161A;     /* body text, headings, primary buttons */
-  --ink-soft: #6A6E76;/* secondary text, labels */
+  --ink-mid: #3E434C; /* tier-2: de-emphasized but still a primary read */
+  --ink-soft: #54585F;/* tier-3: secondary text, labels (~6.3:1 on vellum) */
   --woad: #1F3D63;    /* structure: active nav, links, focus rings, warp threads */
-  --brass: #A9722C;   /* the signature: citations, the weft, one primary action per screen */
+  --brass: #A9722C;   /* the signature: fills/borders/chips. One primary action per screen */
+  --brass-ink: #8A5A1E; /* brass TEXT under 18px: citations, links, counts */
   --madder: #9E3A26;  /* lint errors, destructive actions, failures */
 
   /* dark editor canvas */
@@ -19,9 +23,13 @@
   --stage-rule: #262B34;
   --stage-muted: #8e93a1;
 
-  /* status colors outside the loom's own vocabulary; unchanged by the pass */
+  /* status colors outside the loom's own vocabulary; unchanged by the pass.
+     the plain -ok/-warn pair is for fills/chips/icons; the -ink pair is for
+     small status TEXT that needs to clear body-text contrast on its own. */
   --ws-ok: #0e9f6e;
+  --ws-ok-ink: #047857;
   --ws-warn: #b45309;
+  --ws-warn-ink: #78350F;
 
   --font-display: 'Fraunces', Georgia, serif;
   --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
@@ -30,6 +38,8 @@
   --radius: 6px;    /* cards, inputs */
   --radius-sm: 4px; /* controls */
 
+  /* the one resting elevation: .ds-card / <Panel>. Never stack with --shadow-float. */
+  --shadow-card: 0 1px 2px rgb(20 22 26 / 0.05), 0 2px 8px rgb(20 22 26 / 0.04);
   /* one shadow, for genuinely floating things: menus, toasts, the command palette */
   --shadow-float: 0 4px 16px rgb(20 22 26 / 0.12), 0 1px 3px rgb(20 22 26 / 0.08);
 
@@ -38,15 +48,11 @@
   --ws-danger: var(--madder);
   --shadow-panel: var(--shadow-float);
 
-  /* editorial type scale, in rem, matching DESIGN.md's display/h2/body/small/mono-label */
-  --text-2xs: 0.6875rem; /* 11px, mono-label */
-  --text-xs: 0.75rem;    /* 12px */
-  --text-sm: 0.8125rem;  /* 13px */
-  --text-base: 0.875rem; /* 14px, body */
-  --text-md: 1rem;       /* 16px */
-  --text-lg: 1.25rem;    /* 20px, h2 */
-  --text-xl: 1.5rem;     /* 24px */
-  --text-2xl: 1.75rem;   /* 28px, display */
+  /* NOTE: the editorial type scale (--text-2xs ... --text-2xl) lives in
+     index.css's @theme block, not here. Tailwind v4 only emits text-*
+     utilities for names declared inside @theme -- defining them in :root
+     compiles fine but silently emits nothing, which is exactly the dead-code
+     trap this file used to set. Don't move them back. */
 
   /* motion */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);

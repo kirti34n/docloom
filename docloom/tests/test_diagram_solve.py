@@ -937,8 +937,12 @@ _GOLDEN_MINIMAL_SVG = (
     '<path d="M36.8,109.5 h4.0 v38.0 h-4.0 z" fill="#1D4ED8"/>\n'
     '<text x="114.5" y="126.8" font-size="14.5" font-weight="650" '
     'text-anchor="middle" fill="#111827">API</text>\n'
+    # item 7: sublabel foreground now resolves against the node's OWN fill
+    # (near-white) via _readable_fg, like the native PPTX emitter already
+    # does, instead of a hardcoded t["muted"] -- #111827 (t["text"]) wins
+    # the contrast check against this node's near-white fill.
     '<text x="114.5" y="139.8" font-size="10.5" text-anchor="middle" '
-    'fill="#6B7280">REST</text>\n'
+    'fill="#111827">REST</text>\n'
     '<path d="M316.0,103.0 L316.0,154.0 A76.0,9.0 0 0 0 468.0,154.0 '
     'L468.0,103.0 A76.0,9.0 0 0 0 316.0,103.0 Z" fill="#EBFCF6" '
     'stroke="#97D8C2" stroke-width="1.3"/>\n'

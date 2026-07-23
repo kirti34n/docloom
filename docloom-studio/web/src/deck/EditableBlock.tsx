@@ -29,7 +29,7 @@ export function EditableBlock({
         onClick={onDelete}
         title="Delete block"
         aria-label="Delete block"
-        className="editable-del absolute -left-8 top-1 hidden rounded p-1 text-white/50 hover:text-white group-hover:block"
+        className="editable-del absolute -left-8 top-1 flex items-center justify-center rounded p-1.5 text-white/50 opacity-40 transition-opacity duration-[var(--dur-fast)] hover:text-white hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-100"
       >
         <Trash2 size={14} />
       </button>

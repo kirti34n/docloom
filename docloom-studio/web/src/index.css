@@ -12,18 +12,39 @@
   --color-ws-accent: var(--woad);
   --color-ws-danger: var(--madder);
   --color-ws-warn: var(--ws-warn);
+  --color-ws-warn-ink: var(--ws-warn-ink);
   --color-ws-ok: var(--ws-ok);
+  --color-ws-ok-ink: var(--ws-ok-ink);
   --color-stage-bg: var(--stage);
   --color-stage-line: var(--stage-rule);
   --color-stage-muted: var(--stage-muted);
   /* new loom vocabulary */
   --color-brass: var(--brass);
+  --color-brass-ink: var(--brass-ink);
   --color-woad: var(--woad);
   --color-madder: var(--madder);
   --color-vellum: var(--vellum);
+  --color-ink-mid: var(--ink-mid);
+  --color-rule-strong: var(--rule-strong);
+  --color-border-control: var(--border-control);
   --font-display: var(--font-display);
   --font-ui: var(--font-ui);
   --font-mono: var(--font-mono);
+
+  /* -- PINNED TYPE-SCALE CONTRACT --------------------------------------- --
+     Utility -> size, after the calibrated bump. This is the ONLY place
+     these names may be declared: Tailwind v4 emits text-* utilities from
+     @theme, never from :root. Never emit an arbitrary text-[Npx] below
+     12px (text-2xs) -- step up to the nearest named size instead. See
+     scripts/check-type-scale.mjs for the enforcement gate. */
+  --text-2xs: 0.75rem;    /* 12px -- tracked-caps/mono labels only */
+  --text-xs: 0.8125rem;   /* 13px */
+  --text-sm: 0.875rem;    /* 14px */
+  --text-base: 0.9375rem; /* 15px -- body */
+  --text-md: 1rem;        /* 16px -- reading panes */
+  --text-lg: 1.25rem;     /* 20px */
+  --text-xl: 1.5rem;      /* 24px */
+  --text-2xl: 1.75rem;    /* 28px -- display */
 }
 
 html,
@@ -37,7 +58,7 @@ body {
   background: var(--paper);
   color: var(--ink);
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: 0.9375rem; /* 15px, matches --text-base; rem so it honors browser prefs */
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
@@ -102,9 +123,10 @@ body {
 /* separation by hairline, not shadow: cards get a 1px rule and nothing else */
 .ds-card {
   background: var(--vellum);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--rule-strong);
   border-radius: var(--radius);
-  transition: border-color var(--dur) var(--ease-out);
+  box-shadow: var(--shadow-card);
+  transition: border-color var(--dur) var(--ease-out), box-shadow var(--dur) var(--ease-out);
 }
 .ds-card-hover:hover {
   border-color: var(--woad);
@@ -209,7 +231,7 @@ body {
   font-size: 0.62em;
   font-weight: 600;
   font-family: var(--font-mono);
-  color: var(--brass);
+  color: var(--brass-ink); /* brass text under 18px reads as --brass-ink, not --brass */
   border-bottom: 1px solid color-mix(in srgb, var(--brass) 50%, transparent);
   cursor: pointer;
   padding: 0 1px;
@@ -230,7 +252,7 @@ body {
   transition: background-color var(--dur-fast) var(--ease-out);
 }
 [data-warp-id].is-lit {
-  background-color: color-mix(in srgb, var(--woad) 18%, transparent);
+  background-color: color-mix(in srgb, var(--woad) 24%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

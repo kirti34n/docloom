@@ -107,7 +107,7 @@ export function DiagramEditor() {
   }
 
   if (loadError)
-    return <div className="flex h-full items-center justify-center bg-stage-bg text-madder text-[13px]">{loadError}</div>
+    return <div className="flex h-full items-center justify-center bg-stage-bg text-madder text-sm">{loadError}</div>
 
   if (!artifact)
     return <div className="flex h-full items-center justify-center bg-stage-bg text-stage-muted"><Loader2 className="animate-spin" /></div>
@@ -115,9 +115,9 @@ export function DiagramEditor() {
   return (
     <div className="flex h-full flex-col bg-stage-bg text-white">
       <div className="flex items-center gap-3 border-b border-stage-line px-5 py-2.5">
-        <button onClick={() => navigate(`/n/${notebookId}`)} className="text-[12px] text-stage-muted hover:text-white">← Notebook</button>
-        <span className="font-display text-[14px] font-semibold">{artifact.title}</span>
-        <span className="text-[12px] text-stage-muted">
+        <button onClick={() => navigate(`/n/${notebookId}`)} className="text-xs text-stage-muted hover:text-white">← Notebook</button>
+        <span className="font-display text-base font-semibold">{artifact.title}</span>
+        <span className="text-xs text-stage-muted">
           {state === 'saving' ? <span className="flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Saving…</span>
             : state === 'dirty' ? 'Unsaved' : <span className="flex items-center gap-1"><Check size={12} /> Saved</span>}
         </span>
@@ -125,7 +125,7 @@ export function DiagramEditor() {
           {RENDER_EXTS.map((ext) => (
             <button key={ext} onClick={() => downloadRender(ext)} disabled={!renders[ext]}
               title={renders[ext] ? undefined : `No ${ext.toUpperCase()} render yet`}
-              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-2.5 py-1.5 text-[12px] text-stage-muted hover:text-white disabled:opacity-40">
+              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-2.5 py-1.5 text-xs text-stage-muted hover:text-white disabled:opacity-40">
               <Download size={12} /> {ext.toUpperCase()}
             </button>
           ))}
@@ -134,16 +134,16 @@ export function DiagramEditor() {
 
       <div className="flex min-h-0 flex-1">
         <div className="flex w-96 shrink-0 flex-col border-r border-stage-line">
-          <div className="px-4 py-2 font-mono text-[11px] uppercase leading-4 tracking-[0.08em] text-stage-muted">D2 source</div>
+          <div className="px-4 py-2 font-mono text-2xs uppercase leading-4 tracking-[0.08em] text-stage-muted">D2 source</div>
           <textarea
             value={src}
             onChange={(e) => setSrc(e.target.value)}
             spellCheck={false}
-            className="flex-1 resize-none bg-stage-bg px-4 py-2 font-mono text-[12.5px] text-white outline-none"
+            className="flex-1 resize-none bg-stage-bg px-4 py-2 font-mono text-xs text-white outline-none"
           />
           {error && (
             <div className="border-t border-stage-line p-3">
-              <div className="flex items-start gap-2 text-[12px] text-red-300">
+              <div className="flex items-start gap-2 text-xs text-red-300">
                 <AlertCircle size={14} className="mt-0.5 shrink-0" />
                 <span className="font-mono">{error.slice(0, 200)}</span>
               </div>

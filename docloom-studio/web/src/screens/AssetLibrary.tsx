@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Trash2, Upload } from 'lucide-react'
 import { api } from '../api/client'
 import { toast } from '../ui/toast'
-import { Button, Empty, Eyebrow, Panel } from '../ui'
+import { Button, Empty, Eyebrow, IconButton, Panel } from '../ui'
 import { invalidateBrandLogoCache } from '../deck/DeckStage'
 
 interface Asset {
@@ -93,14 +93,14 @@ export function AssetLibrary() {
         <div>
           <Eyebrow>Library</Eyebrow>
           <h1 className="mt-1 font-display text-2xl font-semibold text-ws-ink">Assets</h1>
-          <p className="mt-1 text-[13px] text-ws-muted">
+          <p className="mt-1 text-sm text-ws-muted">
             Logos, images, and fonts. Generation pulls from these — tag images so
             the right one lands in each slide.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <select value={uploadType} onChange={(e) => setUploadType(e.target.value)}
-            className="rounded-[var(--radius)] border border-ws-line bg-ws-panel px-2.5 py-2 text-[13px]">
+            className="rounded-[var(--radius)] border border-ws-line bg-ws-panel px-2.5 py-2 text-sm">
             <option value="image">Image</option>
             <option value="logo">Logo</option>
             <option value="font">Font</option>
@@ -115,7 +115,7 @@ export function AssetLibrary() {
       </div>
 
       {note && (
-        <div className="mt-4 rounded-[var(--radius)] border border-ws-line bg-ws-panel px-3 py-2 text-[12px] text-ws-muted">
+        <div className="mt-4 rounded-[var(--radius)] border border-ws-line bg-ws-panel px-3 py-2 text-xs text-ws-muted">
           {note} <button onClick={() => setNote(null)} className="ml-2 underline">dismiss</button>
         </div>
       )}
@@ -124,23 +124,23 @@ export function AssetLibrary() {
       <Panel className="mt-6 p-4">
         <Eyebrow>Identity</Eyebrow>
         <h2 className="mt-1 font-display text-xl font-semibold text-ws-ink">Brand kit</h2>
-        <p className="mt-0.5 text-[12px] text-ws-muted">Applied to every generation and export.</p>
+        <p className="mt-0.5 text-xs text-ws-muted">Applied to every generation and export.</p>
         <div className="mt-3 flex flex-wrap items-center gap-6">
-          <label className="flex items-center gap-2 text-[13px]">
+          <label className="flex items-center gap-2 text-sm">
             Accent
             <input type="color" value={brand.accent ?? '#3b5bdb'}
               onChange={(e) => saveBrand({ ...brand, accent: e.target.value })}
               className="h-8 w-12 rounded-[var(--radius-sm)] border border-ws-line bg-transparent" />
             {brand.accent && (
               <button onClick={() => saveBrand({ ...brand, accent: null })}
-                className="text-[12px] text-ws-muted underline">clear</button>
+                className="text-xs text-ws-muted underline">clear</button>
             )}
           </label>
-          <label className="flex items-center gap-2 text-[13px]">
+          <label className="flex items-center gap-2 text-sm">
             Logo
             <select value={brand.logo_asset_id ?? ''}
               onChange={(e) => saveBrand({ ...brand, logo_asset_id: e.target.value || null })}
-              className="rounded-[var(--radius)] border border-ws-line bg-ws-bg px-2 py-1.5 text-[13px]">
+              className="rounded-[var(--radius)] border border-ws-line bg-ws-bg px-2 py-1.5 text-sm">
               <option value="">None</option>
               {images.map((a) => <option key={a.id} value={a.id}>{a.filename}</option>)}
             </select>
@@ -157,7 +157,7 @@ export function AssetLibrary() {
             onFamily={(v) => saveBrand({ ...brand, body_family: v })}
             onAsset={(v) => saveBrand({ ...brand, body_asset_id: v })} />
         </div>
-        <p className="mt-2 text-[11px] text-ws-muted">
+        <p className="mt-2 text-2xs text-ws-muted">
           Fonts embed in PDF & HTML exports. PowerPoint stores the font name only —
           install the font locally to see it in PPTX.
         </p>
@@ -170,7 +170,7 @@ export function AssetLibrary() {
             title="No assets yet"
             body="Upload logos and images, then tag them: a deck about “remote teams” will pull an image tagged “team”."
             action={
-              <Button variant="accent" onClick={() => fileInput.current?.click()}>
+              <Button variant="quiet" onClick={() => fileInput.current?.click()}>
                 <Upload size={14} /> Upload
               </Button>
             }
@@ -182,7 +182,7 @@ export function AssetLibrary() {
             <div key={a.id} className="group overflow-hidden rounded-[var(--radius)] border border-ws-line bg-ws-panel">
               <div className="flex aspect-video items-center justify-center overflow-hidden bg-ws-bg">
                 {a.type === 'font' ? (
-                  <span className="px-2 text-center text-[12px] text-ws-muted">{a.filename}</span>
+                  <span className="px-2 text-center text-xs text-ws-muted">{a.filename}</span>
                 ) : (
                   <img src={`/api/assets/${a.id}/file`} alt={a.filename}
                     className="h-full w-full object-contain" />
@@ -190,14 +190,14 @@ export function AssetLibrary() {
               </div>
               <div className="p-2.5">
                 <div className="flex items-center justify-between gap-1">
-                  <span className="truncate text-[12px] font-medium" title={a.filename}>{a.filename}</span>
-                  <button onClick={() => remove(a.id)} className="shrink-0 text-ws-muted hover:text-madder">
+                  <span className="truncate text-xs font-medium" title={a.filename}>{a.filename}</span>
+                  <IconButton label="Remove asset" onClick={() => remove(a.id)} className="shrink-0 opacity-60 hover:!text-madder group-hover:opacity-100">
                     <Trash2 size={13} />
-                  </button>
+                  </IconButton>
                 </div>
                 <input value={a.tags} onChange={(e) => setTags(a.id, e.target.value)}
                   placeholder="tags, comma separated"
-                  className="mt-1.5 w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-2 py-1 text-[11px] outline-none" />
+                  className="mt-1.5 w-full rounded-[var(--radius)] border border-ws-line bg-ws-bg px-2 py-1 text-2xs outline-none" />
               </div>
             </div>
           ))}
@@ -219,17 +219,17 @@ function FontRow({
 }) {
   return (
     <div className="rounded-[var(--radius)] border border-ws-line bg-ws-bg p-3">
-      <div className="text-[12px] font-medium">{label}</div>
+      <div className="text-xs font-medium">{label}</div>
       <div className="mt-2 flex flex-col gap-2">
         <input
           value={family ?? ''}
           onChange={(e) => onFamily(e.target.value || null)}
           placeholder="Font family name (e.g. Inter)"
-          className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-panel px-2 py-1.5 text-[12px] outline-none focus:border-woad"
+          className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-panel px-2 py-1.5 text-xs outline-none focus:border-woad"
         />
         <select value={assetId ?? ''}
           onChange={(e) => onAsset(e.target.value || null)}
-          className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-panel px-2 py-1.5 text-[12px]">
+          className="w-full rounded-[var(--radius)] border border-ws-line bg-ws-panel px-2 py-1.5 text-xs">
           <option value="">Embed file: none (name only)</option>
           {fonts.map((a) => <option key={a.id} value={a.id}>{a.filename}</option>)}
         </select>

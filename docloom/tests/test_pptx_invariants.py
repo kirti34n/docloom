@@ -361,18 +361,19 @@ def _text_runs_with_bg(slide):
 
 
 def test_invariant_b_hero_band_contrast_floor(tmp_path):
-    # The exact combination the regression shipped in: callouts (all four
-    # styles) and a diagram (whose sublabels are the "PostgreSQL 16"/
-    # "Go 1.23" repro) sharing an imageless hero's inverted band. Measured
-    # before the fix: info/success/warning/danger callouts at 1.17-1.28:1,
-    # diagram edge-label pill at 1.10:1.
+    # The exact combination the regression shipped in: callouts (info/
+    # danger -- the two most visually distinct styles; success/warning are
+    # covered by test_pptx_callout_fills_are_tinted_and_distinct_per_style
+    # instead, freeing headroom now that item 5 renders callouts taller/
+    # padded on purpose) and a diagram (whose sublabels are the
+    # "PostgreSQL 16"/"Go 1.23" repro) sharing an imageless hero's inverted
+    # band. Measured before the fix: info/success/warning/danger callouts
+    # at 1.17-1.28:1, diagram edge-label pill at 1.10:1.
     theme = Theme()
     doc = Document(title="T", slides=[
         Slide(layout="hero", title="Contrast floor check", subtitle="on an inverted band",
               blocks=[
                   Callout(style="info", text="info callout body copy"),
-                  Callout(style="success", text="success callout body copy"),
-                  Callout(style="warning", text="warning callout body copy"),
                   Callout(style="danger", text="danger callout body copy"),
                   Diagram(
                       id="svc", direction="LR",
@@ -389,7 +390,7 @@ def test_invariant_b_hero_band_contrast_floor(tmp_path):
     slide = Presentation(str(out)).slides[0]
 
     checked_prefixes = (
-        "info callout", "success callout", "warning callout", "danger callout",
+        "info callout", "danger callout",
         "on an inverted band", "Contrast floor check", "API", "DB",
         "Go 1.23", "PostgreSQL 16", "reads",
     )

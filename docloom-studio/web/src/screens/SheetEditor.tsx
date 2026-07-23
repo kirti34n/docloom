@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router'
 import { Check, Download, Loader2, Plus, Trash2 } from 'lucide-react'
 import { api } from '../api/client'
 import { toast } from '../ui/toast'
+import { Button, IconButton } from '../ui'
 import type { ArtifactT } from '../deck/types'
 
 type Cell = string | number | boolean | null | { formula: string }
@@ -129,23 +130,23 @@ export function SheetEditor() {
     finally { setExporting(null) }
   }
 
-  if (loadError) return <div className="flex h-full items-center justify-center text-madder text-[13px]">{loadError}</div>
+  if (loadError) return <div className="flex h-full items-center justify-center text-madder text-sm">{loadError}</div>
   if (!artifact) return <div className="flex h-full items-center justify-center text-ws-muted"><Loader2 className="animate-spin" /></div>
   const sheet = sheets[active]
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-3 border-b border-ws-line px-5 py-2.5">
-        <button onClick={() => navigate(`/n/${notebookId}`)} className="text-[12px] text-ws-muted hover:text-ws-ink">← Notebook</button>
-        <span className="font-display text-[14px] font-semibold">{artifact.title}</span>
-        <span className="text-[12px] text-ws-muted">
+        <button onClick={() => navigate(`/n/${notebookId}`)} className="text-xs text-ws-muted hover:text-ws-ink">← Notebook</button>
+        <span className="font-display text-base font-semibold">{artifact.title}</span>
+        <span className="text-xs text-ws-muted">
           {state === 'saving' ? <span className="flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Saving…</span>
             : state === 'dirty' ? 'Unsaved' : <span className="flex items-center gap-1"><Check size={12} /> Saved</span>}
         </span>
         <div className="ml-auto flex gap-1.5">
           {EXPORTS.map((fmt) => (
             <button key={fmt} onClick={() => exportAs(fmt)} disabled={exporting !== null}
-              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-ws-line px-2.5 py-1.5 text-[12px] text-ws-muted hover:text-ws-ink disabled:opacity-40">
+              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-ws-line px-2.5 py-1.5 text-xs text-ws-muted hover:text-ws-ink disabled:opacity-40">
               {exporting === fmt ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}{fmt.toUpperCase()}
             </button>
           ))}
@@ -156,7 +157,7 @@ export function SheetEditor() {
         <div className="flex gap-1 border-b border-ws-line bg-ws-panel px-4 py-1.5">
           {sheets.map((s, i) => (
             <button key={i} onClick={() => setActive(i)}
-              className={`rounded-[var(--radius-sm)] px-3 py-1 text-[12px] ${i === active ? 'bg-ws-bg font-medium' : 'text-ws-muted'}`}>{s.name}</button>
+              className={`rounded-[var(--radius-sm)] px-3 py-1 text-xs ${i === active ? 'bg-ws-bg font-medium' : 'text-ws-muted'}`}>{s.name}</button>
           ))}
         </div>
       )}
@@ -172,14 +173,18 @@ export function SheetEditor() {
                     <div className="flex items-center">
                       <input value={col.header} onChange={(e) => editHeader(c, e.target.value)}
                         style={{ width: colPx(col.width) }} />
-                      <button onClick={() => delCol(c)} aria-label={`Delete column ${col.header}`}
-                        title="Delete column" className="shrink-0 px-1 text-ws-muted hover:text-madder">
-                        <Trash2 size={11} />
-                      </button>
+                      <IconButton label={`Delete column ${col.header}`} onClick={() => delCol(c)}
+                        className="shrink-0 opacity-60 hover:!text-madder">
+                        <Trash2 size={12} />
+                      </IconButton>
                     </div>
                   </th>
                 ))}
-                <th className="sheet-add"><button onClick={addCol} title="Add column"><Plus size={13} /></button></th>
+                <th className="sheet-add">
+                  <IconButton label="Add column" onClick={addCol}>
+                    <Plus size={14} />
+                  </IconButton>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -198,10 +203,10 @@ export function SheetEditor() {
                     </td>
                   ))}
                   <td className="text-center">
-                    <button onClick={() => delRow(r)} aria-label={`Delete row ${r + 1}`} title="Delete row"
-                      className="px-1.5 py-1 text-ws-muted hover:text-madder">
+                    <IconButton label={`Delete row ${r + 1}`} onClick={() => delRow(r)}
+                      className="opacity-60 hover:!text-madder">
                       <Trash2 size={12} />
-                    </button>
+                    </IconButton>
                   </td>
                 </tr>
               ))}
@@ -210,9 +215,9 @@ export function SheetEditor() {
         ) : (
           <p className="text-ws-muted">This artifact has no sheets.</p>
         )}
-        <button onClick={addRow} className="mt-3 flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-ws-line px-3 py-1.5 text-[12px] text-ws-muted hover:text-ws-ink">
-          <Plus size={13} /> Add row
-        </button>
+        <Button variant="quiet" onClick={addRow} className="mt-3">
+          <Plus size={14} /> Add row
+        </Button>
       </div>
     </div>
   )

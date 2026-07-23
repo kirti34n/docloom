@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, X } from 'lucide-react'
+import { Loader2, Maximize2, Minimize2, PanelRightClose, X } from 'lucide-react'
 import { api } from '../api/client'
-import { Eyebrow } from '../ui'
+import { Eyebrow, IconButton } from '../ui'
 
 interface Chunk {
   chunk_ix: number | null
@@ -20,14 +20,17 @@ export function SourceReader({
   highlight,
   index,
   onClose,
+  onCollapse,
 }: {
   sourceId: string
   highlight?: string
   index?: number
   onClose: () => void
+  onCollapse?: () => void
 }) {
   const [content, setContent] = useState<Content | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState(false)
   const hlRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -50,23 +53,29 @@ export function SourceReader({
   }, [hlIndex, content])
 
   return (
-    <div className="flex w-96 shrink-0 flex-col border-l border-ws-line bg-ws-panel">
+    <div className={`flex shrink-0 flex-col border-l border-ws-line bg-ws-panel transition-[width] duration-[var(--dur)] ${expanded ? 'w-[36rem] max-w-[45vw]' : 'w-96'}`}>
       <div className="flex items-center justify-between gap-3 border-b border-ws-line px-4 py-2.5">
         <div className="min-w-0">
           {typeof index === 'number' && <Eyebrow>Source {String(index).padStart(2, '0')}</Eyebrow>}
-          <span className="block truncate text-[13px] font-medium" title={content?.title}>
+          <span className="block truncate text-sm font-medium" title={content?.title}>
             {content?.title ?? 'Source'}
           </span>
         </div>
-        <button
-          onClick={onClose}
-          aria-label="Close reader"
-          className="shrink-0 text-ws-muted hover:text-ws-ink"
-        >
-          <X size={15} />
-        </button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <IconButton label={expanded ? 'Collapse reading pane' : 'Expand reading pane'} onClick={() => setExpanded((v) => !v)}>
+            {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          </IconButton>
+          {onCollapse && (
+            <IconButton label="Hide reader" onClick={onCollapse}>
+              <PanelRightClose size={15} />
+            </IconButton>
+          )}
+          <IconButton label="Close reader" onClick={onClose}>
+            <X size={15} />
+          </IconButton>
+        </div>
       </div>
-      <div className="flex-1 space-y-3 overflow-auto px-4 py-4 text-[13px] leading-relaxed">
+      <div className="flex-1 space-y-3 overflow-auto px-4 py-4 text-base leading-[1.6]">
         {error ? (
           <p className="text-madder">{error}</p>
         ) : !content ? (
@@ -85,11 +94,11 @@ export function SourceReader({
               }`}
             >
               {(c.page || c.section) && (
-                <div className="mb-1 text-[11px] uppercase tracking-wide text-ws-muted">
+                <Eyebrow className="mb-1">
                   {c.section}
                   {c.section && c.page ? ' · ' : ''}
                   {c.page ? `p.${c.page}` : ''}
-                </div>
+                </Eyebrow>
               )}
               <p className="whitespace-pre-wrap text-ws-ink">{c.text}</p>
             </div>

@@ -523,7 +523,11 @@ def _render_chart(
         if _render_image(docx_doc, Image(path=block.path, caption=block.caption), theme):
             return
         # image present but unembeddable by python-docx: an SVG can still be
-        # rasterized, anything else (corrupt file) falls through
+        # rasterized, anything else (corrupt file) falls through. NOTE: a
+        # caller-supplied path SVG is rasterized as-is, so if it embeds its own
+        # title it will show twice (title_par above + the baked title); the
+        # double-title strip below only covers docloom's own chart_svg path,
+        # which is the only chart SVG docloom itself produces.
         if raster.is_svg(block.path):
             png = raster.svg_file_to_png(
                 block.path,
@@ -531,7 +535,14 @@ def _render_chart(
                 font_files=raster.theme_font_files(theme),
             )
     if png is None:
-        png = _rasterize_chart_svg(chart_svg.render_svg(block, theme), theme)
+        # block.title was already drawn as its own bold paragraph above;
+        # chart_svg.render_svg paints that SAME title a second time inside
+        # the chart's own SVG canvas, so every DOCX chart showed its title
+        # twice (item 8). Strip it from the copy handed to the painter --
+        # the title paragraph above is the one, on-brand place it renders.
+        png = _rasterize_chart_svg(
+            chart_svg.render_svg(block.model_copy(update={"title": None}), theme), theme,
+        )
     if png is not None and _embed_png(docx_doc, png, block.caption, theme):
         return
     # no rasterizer available (docloom[diagrams] not installed): a titled,

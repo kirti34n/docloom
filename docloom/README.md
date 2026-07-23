@@ -115,6 +115,8 @@ One `Document` carries any mix of three bodies; each renderer takes what it need
 
 Plus `sources`, evidence records that spans cite by id. Text everywhere is either a plain string or spans (`bold`, `italic`, `code`, `link`, `cite`), so simple content stays cheap to generate.
 
+On slides, the PPTX renderer treats these blocks as premium layouts: a `stats` block with a single item renders as a hero big-number, a `bullets` block with `display: "grid"` renders as a row of mini-cards, and a `numbered` block with `display: "timeline"` renders as a horizontal step band. The two `display` hints are backward-compatible (default `"list"`) and are ignored by every non-PPTX renderer, so the same document still renders everywhere.
+
 A deck-only document still renders to PDF/DOCX/HTML (slides flatten to sections); a report with tables still renders to XLSX (tables become worksheets).
 
 ## Architecture diagrams

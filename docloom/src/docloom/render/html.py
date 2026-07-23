@@ -54,6 +54,8 @@ h1,h2,h3,h4,h5{line-height:1.25;margin:2rem 0 .75rem}
 h1{font-size:2rem;margin-top:0}
 h2{font-size:1.4rem;border-bottom:1px solid var(--surface);padding-bottom:.35rem}
 h3{font-size:1.15rem}
+h4{font-size:1.05rem}
+h5{font-size:1rem}
 header{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;border-bottom:2px solid var(--primary);padding-bottom:1rem;margin-bottom:2rem}
 header .header-text{flex:1 1 auto;min-width:0}
 header p{margin:.25rem 0}

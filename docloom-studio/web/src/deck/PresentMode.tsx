@@ -74,10 +74,10 @@ export function PresentMode() {
     return (
       <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black text-white">
         <p className="font-display text-xl">Could not load this deck.</p>
-        <p className="max-w-md text-center text-[13px] text-white/60">{error}</p>
+        <p className="max-w-md text-center text-sm text-white/60">{error}</p>
         <button
           onClick={exit}
-          className="rounded-[var(--radius-sm)] border border-white/25 px-4 py-2 text-[13px] hover:bg-white/10"
+          className="rounded-[var(--radius-sm)] border border-white/25 px-4 py-2 text-sm hover:bg-white/10"
         >
           Exit
         </button>
@@ -102,7 +102,7 @@ export function PresentMode() {
         <p className="font-display text-xl">This deck has no slides yet.</p>
         <button
           onClick={exit}
-          className="rounded-[var(--radius-sm)] border border-white/25 px-4 py-2 text-[13px] hover:bg-white/10"
+          className="rounded-[var(--radius-sm)] border border-white/25 px-4 py-2 text-sm hover:bg-white/10"
         >
           Exit
         </button>
@@ -120,23 +120,23 @@ export function PresentMode() {
 
       {showNotes && (
         <div className="border-t border-white/15 bg-black px-8 py-4">
-          <p className="font-mono text-[11px] uppercase tracking-[0.08em] text-white/50">Speaker notes</p>
-          <p className="mt-1.5 max-w-3xl text-[13px] leading-relaxed text-white/85">
+          <p className="font-mono text-2xs uppercase tracking-[0.08em] text-white/50">Speaker notes</p>
+          <p className="mt-1.5 max-w-3xl text-sm leading-relaxed text-white/85">
             {slide.notes || 'No notes on this slide.'}
           </p>
         </div>
       )}
 
       <div className="flex items-center gap-4 border-t border-white/15 px-5 py-3 text-white/70">
-        <button onClick={exit} className="flex items-center gap-1.5 text-[12px] hover:text-white" title="Exit (Esc)">
+        <button onClick={exit} className="flex items-center gap-1.5 text-xs hover:text-white" title="Exit (Esc)">
           <X size={14} /> Exit
         </button>
-        <span className="font-mono text-[12px] text-white/50">
+        <span className="font-mono text-xs text-white/50">
           {index + 1} / {total}
         </span>
         <button
           onClick={() => setShowNotes((v) => !v)}
-          className={`flex items-center gap-1.5 text-[12px] hover:text-white ${showNotes ? 'text-brass' : ''}`}
+          className={`flex items-center gap-1.5 text-xs hover:text-white ${showNotes ? 'text-brass' : ''}`}
           title="Toggle speaker notes (N)"
         >
           <NotebookPen size={14} /> Notes

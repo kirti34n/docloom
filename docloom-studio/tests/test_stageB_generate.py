@@ -75,6 +75,13 @@ class FakeCtx:
         self.events.append((stage, status, detail, data))
 
 
+async def _no_stock_photo(query, user_id):
+    """Deterministic stand-in for assets.resolve_stock_photo: always misses,
+    like every stock search does when nothing matches -- and touches no
+    network at all, so tests stay fast and offline."""
+    return None
+
+
 # ================================================== 1. infographic hard caps
 
 
@@ -136,11 +143,14 @@ def test_resolve_deck_images_is_a_coroutine_function():
     assert inspect.iscoroutinefunction(gen._resolve_deck_images)
 
 
-def test_resolve_deck_images_disabled_leaves_unmatched_slot_untouched():
+def test_resolve_deck_images_disabled_leaves_unmatched_slot_untouched(monkeypatch):
     """AI image generation is OFF by default (no assets, no provider.image
-    override): an unmatched hero slot must survive exactly as authored, no
-    crash, still just the model's own query, and _resolve_deck_images must
-    still be a plain awaitable coroutine."""
+    override), and the free stock-photo search also misses (mocked here so
+    the test never touches the network): an unmatched hero slot must survive
+    exactly as authored, no crash, still just the model's own query, and
+    _resolve_deck_images must still be a plain awaitable coroutine."""
+    monkeypatch.setattr(assets_mod, "resolve_stock_photo",
+                        _no_stock_photo, raising=False)
     u = _user()
     doc = Document(title="Deck", slides=[
         Slide(layout="hero", title="A team meeting",
@@ -155,14 +165,17 @@ def test_resolve_deck_images_disabled_leaves_unmatched_slot_untouched():
     assert hero.image.query == "remote team standup"
     assert hero.image.path is None  # still unresolved, rendered empty
     assert hero.image.asset_id is None
-    # no image event at all: generation was never attempted while disabled
+    # no image event at all: paid generation was never attempted while
+    # disabled (the stock-photo fallback is silent, like a tagged-asset miss)
     assert not any(e[0] == "image" for e in ctx.events)
 
 
-def test_resolve_deck_images_disabled_also_works_with_no_ctx():
+def test_resolve_deck_images_disabled_also_works_with_no_ctx(monkeypatch):
     """_resolve_deck_images must not require a ctx (run_deck_pipeline always
     passes one, but the function itself stays awaitable without it, e.g. for
     direct unit testing)."""
+    monkeypatch.setattr(assets_mod, "resolve_stock_photo",
+                        _no_stock_photo, raising=False)
     u = _user()
     doc = Document(title="Deck", slides=[
         Slide(layout="image_right", title="Untouched",
@@ -191,10 +204,68 @@ def test_resolve_deck_images_still_fills_from_a_matching_asset_when_disabled():
     assert doc.slides[0].image.path == f"asset://{aid}"
 
 
+def test_resolve_deck_images_falls_back_to_a_stock_photo_before_paid_gen(monkeypatch):
+    """CONTRACT (item 3): the free stock-photo search sits between a
+    tagged-asset match and paid Gemini generation. No asset matches here, so
+    a stock hit must fill the slot and paid generation must never be
+    attempted at all."""
+    u = _user()
+    _enable_image_gen(u)  # even with generation enabled, stock wins first
+
+    async def fake_stock_photo(query, user_id):
+        assert query == "remote team standup"
+        assert user_id == u
+        return "stock-asset-1"
+
+    def fail_if_called(cfg, prompt, *, aspect_ratio="16:9"):
+        raise AssertionError("paid generation must not run when stock photo hit")
+
+    monkeypatch.setattr(assets_mod, "resolve_stock_photo", fake_stock_photo, raising=False)
+    monkeypatch.setattr(providers_mod, "generate_image", fail_if_called, raising=False)
+    monkeypatch.setattr(providers_mod, "ImageProviderConfig", dict, raising=False)
+
+    doc = Document(title="Deck", slides=[
+        Slide(layout="hero", title="A team meeting",
+              image={"query": "remote team standup"}),
+    ])
+    ctx = FakeCtx()
+    asyncio.run(gen._resolve_deck_images(doc, u, ctx))
+
+    hero = doc.slides[0]
+    assert hero.image.asset_id == "stock-asset-1"
+    assert hero.image.path == "asset://stock-asset-1"
+    # no paid-generation "image" event: the stock photo filled it first
+    assert not any(e[0] == "image" for e in ctx.events)
+
+
+def test_resolve_deck_images_resolves_inline_image_blocks(monkeypatch):
+    """An inline `image` block inside a slide's body (e.g. a two_column pane)
+    with a query but no path/asset must be resolved the same way a slide's
+    hero slot is -- not left to ship as a permanently empty slot."""
+    from docloom import Paragraph
+
+    async def fake_stock_photo(query, user_id):
+        return "inline-asset-1" if query == "a lighthouse" else None
+
+    monkeypatch.setattr(assets_mod, "resolve_stock_photo", fake_stock_photo, raising=False)
+
+    u = _user()
+    doc = Document(title="Deck", slides=[
+        Slide(layout="two_column", title="Compare",
+              blocks=[Paragraph(text="left")],
+              right=[{"type": "image", "query": "a lighthouse"}]),
+    ])
+    asyncio.run(gen._resolve_deck_images(doc, u))
+    resolved = doc.slides[0].right[0]
+    assert resolved.asset_id == "inline-asset-1"
+    assert resolved.path == "asset://inline-asset-1"
+
+
 def test_resolve_deck_images_enabled_generates_and_fills_the_slot(monkeypatch):
-    """With generation enabled and no asset match, the enriched prompt goes
-    to generate_image, the returned bytes go to save_generated_image, and the
-    slot fills exactly like an asset match would (asset_id + asset:// path)."""
+    """With generation enabled and no asset or stock-photo match, the
+    enriched prompt goes to generate_image, the returned bytes go to
+    save_generated_image, and the slot fills exactly like an asset match
+    would (asset_id + asset:// path)."""
     u = _user()
     _enable_image_gen(u)
 
@@ -213,7 +284,9 @@ def test_resolve_deck_images_enabled_generates_and_fills_the_slot(monkeypatch):
     # save_generated_image (assets.py) are CONTRACT C7 items owned by other
     # files; stand in for them here (raising=False: they may not exist yet
     # in a fresh Stage B checkout) so this test exercises generate.py's own
-    # wiring in isolation.
+    # wiring in isolation. resolve_stock_photo is mocked to miss so the flow
+    # actually reaches paid generation instead of a real network call.
+    monkeypatch.setattr(assets_mod, "resolve_stock_photo", _no_stock_photo, raising=False)
     monkeypatch.setattr(providers_mod, "generate_image", fake_generate_image, raising=False)
     monkeypatch.setattr(providers_mod, "ImageProviderConfig", dict, raising=False)
     monkeypatch.setattr(assets_mod, "save_generated_image",
@@ -249,6 +322,7 @@ def test_resolve_deck_images_enabled_swallows_an_oversized_image_value_error(mon
     def oversized_save_generated_image(user_id, data, *, prompt, ext=".png"):
         raise ValueError("generated image exceeds 50 MB limit")
 
+    monkeypatch.setattr(assets_mod, "resolve_stock_photo", _no_stock_photo, raising=False)
     monkeypatch.setattr(providers_mod, "generate_image", fake_generate_image, raising=False)
     monkeypatch.setattr(providers_mod, "ImageProviderConfig", dict, raising=False)
     monkeypatch.setattr(assets_mod, "save_generated_image",
@@ -284,6 +358,7 @@ def test_resolve_deck_images_enabled_swallows_a_provider_failure(monkeypatch):
     async def failing_generate_image(cfg, prompt, *, aspect_ratio="16:9"):
         raise providers_mod.ProviderError("gemini blocked the prompt: SAFETY")
 
+    monkeypatch.setattr(assets_mod, "resolve_stock_photo", _no_stock_photo, raising=False)
     monkeypatch.setattr(providers_mod, "generate_image", failing_generate_image, raising=False)
     monkeypatch.setattr(providers_mod, "ImageProviderConfig", dict, raising=False)
 
@@ -329,9 +404,13 @@ def test_deck_pipeline_relaxes_image_gate_when_generation_enabled(monkeypatch):
     assert "image.query" in seen["slide_system"]  # IMAGE_SLIDE_HINT made it in too
 
 
-def test_deck_pipeline_keeps_no_image_gate_when_generation_disabled(monkeypatch):
-    """Regression guard: with generation OFF and no assets, the deck must
-    still get the restrictive NO_IMAGE_HINT (unchanged Stage A behavior)."""
+def test_deck_pipeline_softens_image_hint_when_nothing_is_configured(monkeypatch):
+    """CONTRACT (item 2/3): with generation OFF and no assets, hero/image_*
+    layouts are still ALWAYS offered (a free, keyless Openverse stock-photo
+    search can still fill them) -- the old hard ban ("Use only section,
+    content, two_column, and quote") is gone. The model instead gets a
+    softened, honest caveat that no curated library or paid generation is
+    configured, not a restriction on which layouts it may use."""
     u = _user()
     nb = _notebook(u)
 
@@ -349,4 +428,6 @@ def test_deck_pipeline_keeps_no_image_gate_when_generation_disabled(monkeypatch)
     aid = gen.create_artifact(nb, "deck")
     asyncio.run(gen.run_deck_pipeline(FakeCtx(), nb, aid, "no assets, no AI images"))
 
-    assert "Use only section, content, two_column" in seen["outline_system"]
+    assert "hero" in seen["outline_system"]  # still offered, unconditionally
+    assert "Use only section, content, two_column" not in seen["outline_system"]
+    assert "No curated image library or paid image generation" in seen["outline_system"]

@@ -57,7 +57,10 @@ LAYOUT = {
     "slide_h_in": 7.5,
     "margin_in": 0.6,
     "gap_in": 0.16,
-    "title_pt": 26,
+    # 26->30: a content-title band at 26pt read no bigger than a grown body
+    # paragraph beside it (see MAX_GROWN_PT), a "generic PowerPoint" tell --
+    # PINNED CONTRACT / audit item 3.
+    "title_pt": 30,
     "body_pt": 14,
     "hero_title_pt": 36,
     "image_pane_ratio": 0.45,
@@ -94,15 +97,48 @@ LIST_ITEM_GAP_PT = 6  # space_after below each bullet/numbered item
 # space" behavior while MAX_GROWN_PT below puts a hard, size-relative floor
 # under how large that can ever get.
 GROW_CAP = 1.25
-MAX_GROWN_PT = round(LAYOUT["title_pt"] * 0.7)  # grown body text must never rival the title
+# Modest cap used INSTEAD of GROW_CAP when the grow pass's blocks also
+# include a fixed-size block: some growth keeps a sparse slide from reading
+# empty, but a full GROW_CAP-style grow next to a table/chart/diagram is
+# exactly what produced the mismatched hierarchy in the P5 audit (defect 4).
+# See _grow_scale.
+FIXED_NEIGHBOR_GROW_CAP = 1.15
+MAX_GROWN_PT = round(LAYOUT["title_pt"] * 0.78)  # grown body text must never rival the title
 # Block types whose font size the underfull-slide grow pass in _body scales;
 # everything else (quotes, tables, charts, ...) keeps its natural size.
 _GROWABLE_BLOCKS = (Heading, Paragraph, BulletList, NumberedList, Callout)
-# Presence of any of these on a slide/column suppresses the grow pass
-# entirely (see _grow_scale): growing only the prose next to a block whose
-# size is fixed by its content (a table's row count, a chart's own cap, a
-# code block's monospace size, stat cards) is exactly what produced the
-# mismatched hierarchy in the P5 audit (defect 4).
+# BulletList.display=="grid" and NumberedList.display=="timeline" are BOTH
+# nominally BulletList/NumberedList (so _GROWABLE_BLOCKS' isinstance check
+# would treat them as ordinary growable prose), but their Gamma-signature
+# treatments (_bullet_grid_block/_numbered_timeline_block, item 4) are
+# content-sized mini-cards and a fixed-band timeline, not text that should
+# expand to fill a sparse slide's slack: growing them the way a plain bullet
+# list grows was the second route (besides the raw height-fill this file's
+# item 1/4 fixes) to the "cards stretched too tall" defect. _is_growable/
+# _is_fixed_size below are what the grow-scale machinery actually consults.
+
+
+def _is_growable(b: Block) -> bool:
+    if isinstance(b, BulletList) and b.display == "grid" and 3 <= len(b.items) <= 6:
+        return False
+    if isinstance(b, NumberedList) and b.display == "timeline" and 2 <= len(b.items) <= 6:
+        return False
+    return isinstance(b, _GROWABLE_BLOCKS)
+
+
+def _is_fixed_size(b: Block) -> bool:
+    if isinstance(b, BulletList) and b.display == "grid" and 3 <= len(b.items) <= 6:
+        return True
+    if isinstance(b, NumberedList) and b.display == "timeline" and 2 <= len(b.items) <= 6:
+        return True
+    return isinstance(b, _FIXED_SIZE_BLOCKS)
+# Presence of any of these on a slide/column no longer suppresses the grow
+# pass entirely (that produced the P5 audit's defect-4 mismatch the OTHER
+# way -- prose stuck at its unscaled size next to a fixed block, reading
+# smaller than the hierarchy intends); _grow_scale instead caps growth at
+# FIXED_NEIGHBOR_GROW_CAP when any of these share the blocks list, so the
+# fixed block still dictates the slide's own scale of "big" but the prose
+# is not stranded at 1.0x on an otherwise generously-grown slide.
 _FIXED_SIZE_BLOCKS = (Table, Code, Chart, StatRow, Image, Artifact, Diagram)
 TABLE_PT = 12  # preferred row font size, shrunk toward TABLE_MIN_PT to fit
 TABLE_MIN_PT = 9
@@ -481,6 +517,25 @@ def _rect(slide, x: float, y: float, w: float, h: float, fill: str):
     return shape
 
 
+def _set_fill_alpha(shape, alpha_pct: float) -> None:
+    """Make a shape's solid fill semi-transparent via a raw <a:alpha> child
+    of its <a:srgbClr> -- python-pptx exposes no high-level fill-
+    transparency setter (the same gap _hide_chart_border/
+    _fix_dlbl_show_percent reach into the oxml for elsewhere in this file),
+    so this writes it by hand; transparency IS writable this way, the same
+    technique already used for a chart's own spPr. `alpha_pct` is 0-100
+    (100 = fully opaque). Best-effort: a styling hiccup here must never fail
+    the render."""
+    try:
+        srgbClr = shape.fill.fore_color._xFill.find(qn("a:srgbClr"))
+        if srgbClr is None:
+            return
+        alpha = parse_xml('<a:alpha %s val="%d"/>' % (nsdecls("a"), round(alpha_pct * 1000)))
+        srgbClr.append(alpha)
+    except Exception:
+        pass
+
+
 def _runs(
     p,
     rt: RichText,
@@ -573,6 +628,132 @@ def _list_block(slide, b, theme, numbers, x, y, w, max_h, ordered: bool,
     return h
 
 
+def _grid_card_geometry(items, w: float, scale: float):
+    """Shared geometry for the bullet-grid mini-cards: `_bullet_grid_block`
+    draws from it, `_natural_h` estimates from it, so the two never disagree
+    about how tall the grid actually is (item 4b/item 1). Card height is
+    driven by its own longest item's wrapped text, NOT stretched to fill
+    whatever `max_h` the slide happens to have -- a 2x2 of short items reads
+    as a compact card cluster, not four half-empty tiles."""
+    n = len(items)
+    cols = 2 if n <= 4 else 3
+    rows = -(-n // cols)  # ceil
+    gap = GAP
+    card_w = (w - gap * (cols - 1)) / cols
+    pad = 0.16
+    chip_d = 0.18
+    chip_gap = 0.14  # space between the chip's bottom edge and the text start
+    bp = BODY_PT * scale * 0.95
+    text_top = pad + chip_d + chip_gap
+    text_h = max(
+        (_est_lines(plain(it.text), bp, card_w - 2 * pad) * _line_h(bp) for it in items),
+        default=0.0,
+    )
+    card_h = text_top + text_h + pad
+    return cols, rows, card_w, card_h, gap, pad, chip_d, text_top, bp
+
+
+def _bullet_grid_block(slide, b, theme, numbers, x, y, w, max_h,
+                       scale: float = 1.0) -> float:
+    """PINNED CONTRACT item 4: BulletList.display=='grid' with 3-6 short
+    items lays out as 2x2/3x2 mini-cards instead of a plain vertical list --
+    a Gamma-signature treatment reached through the existing bullets block,
+    no new Slide.layout."""
+    items = b.items[:6]
+    n = len(items)
+    if n == 0:
+        return 0.0
+    cols, rows, card_w, card_h, gap, pad, chip_d, text_top, bp = _grid_card_geometry(
+        items, w, scale
+    )
+    # Shrink (never stretch) only if the content-sized grid genuinely does
+    # not fit the room it was given -- a rare, very cramped slide.
+    if rows and max_h > 0:
+        content_h = card_h * rows + gap * (rows - 1)
+        if content_h > max_h:
+            card_h = max(0.4, (max_h - gap * (rows - 1)) / rows)
+    h = card_h * rows + gap * (rows - 1) if rows else 0.0
+    # A near-white card (item 4a: ~6% tint, not the old 12% saturated fill)
+    # with a 1px accent-tinted border reads as a clean mini-card, not a
+    # heavy color block competing with the slide's actual content.
+    fill = _mix(theme.background, theme.primary, 0.06)
+    border = _tint(theme.primary, 0.35)
+    for i, it in enumerate(items):
+        r, c = divmod(i, cols)
+        cx = x + c * (card_w + gap)
+        cy = y + r * (card_h + gap)
+        card = slide.shapes.add_shape(
+            MSO_SHAPE.ROUNDED_RECTANGLE, Inches(cx), Inches(cy), Inches(card_w), Inches(card_h)
+        )
+        card.fill.solid()
+        card.fill.fore_color.rgb = _rgb(fill)
+        card.line.color.rgb = _rgb(border)
+        card.line.width = Pt(0.75)
+        card.shadow.inherit = False
+        try:
+            card.adjustments[0] = 0.1  # ~12px-scale rounded corner, not the stock default
+        except (IndexError, ValueError):
+            pass
+        # The chip is the deck's actual accent color (theme.primary, the
+        # brand hue driving the card's own border tint) -- not theme.accent,
+        # a secondary hue (often green) that clashed against a pink/blue
+        # brand theme (item 4c).
+        _rect(slide, cx + pad, cy + pad, chip_d, chip_d, theme.primary)
+        tf = _box(
+            slide, cx + pad, cy + text_top, card_w - 2 * pad,
+            max(0.2, card_h - text_top - pad),
+        )
+        _runs(tf.paragraphs[0], it.text, theme, numbers, bp, theme.text, theme.font_body, bold=True)
+    return h
+
+
+def _numbered_timeline_block(slide, b, theme, numbers, x, y, w, max_h,
+                             scale: float = 1.0) -> float:
+    """PINNED CONTRACT item 4: NumberedList.display=='timeline' lays items
+    out as horizontal numbered nodes (accent '01/02/03', a connector line,
+    dots) instead of a plain vertical numbered list -- a Gamma-signature
+    treatment reached through the existing numbered block, no new
+    Slide.layout."""
+    items = b.items[:6]
+    n = len(items)
+    if n == 0:
+        return 0.0
+    band_h = min(max_h, 2.0)
+    dot_d = 0.26
+    dot_y = y + band_h * 0.3
+    seg_w = w / n
+    line_y = dot_y + dot_d / 2 - 0.01
+    if n > 1:
+        # Connector drawn BEFORE the dots so the dots layer on top of it.
+        _rect(slide, x + seg_w / 2, line_y, w - seg_w, 0.02, _tint(theme.primary, 0.35))
+    for i, it in enumerate(items):
+        cx = x + i * seg_w + seg_w / 2 - dot_d / 2
+        dot = slide.shapes.add_shape(
+            MSO_SHAPE.OVAL, Inches(cx), Inches(dot_y), Inches(dot_d), Inches(dot_d)
+        )
+        dot.fill.solid()
+        dot.fill.fore_color.rgb = _rgb(theme.accent)
+        dot.line.fill.background()
+        dot.shadow.inherit = False
+        num_tf = _box(slide, x + i * seg_w, dot_y - 0.34, seg_w, 0.3)
+        num_tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        _runs(
+            num_tf.paragraphs[0], f"{i + 1:02d}", theme, {},
+            14 * scale, theme.accent, theme.font_heading, bold=True,
+        )
+        label_top = dot_y + dot_d + 0.12
+        label_tf = _box(
+            slide, x + i * seg_w + 0.06, label_top, max(0.2, seg_w - 0.12),
+            max(0.2, y + band_h - label_top),
+        )
+        label_tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        _runs(
+            label_tf.paragraphs[0], it.text, theme, numbers,
+            BODY_PT * scale * 0.9, theme.text, theme.font_body,
+        )
+    return band_h
+
+
 def _quote_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
     # Reserve the attribution's own strip BEFORE laying out the quote text
     # (mirroring _place_picture's already-correct caption-reserved-upfront
@@ -611,19 +792,28 @@ def _code_block(slide, b, theme, x, y, w, max_h) -> float:
     return h
 
 
-def _table_row_h(size: float) -> float:
+def _table_row_h(size: float, vpad: float = TABLE_VPAD) -> float:
     """The real minimum row height PowerPoint will honor for a run at `size`
     with the cell top/bottom margins set below: text height plus padding."""
-    return _line_h(size) + TABLE_VPAD
+    return _line_h(size) + vpad
 
 
-def _table_col_widths(header, rows, cols: int, tw: float) -> list[float]:
+def _table_col_widths(header, rows, cols: int, tw: float, solo: bool = False) -> list[float]:
     """Column widths weighted by each column's longest plain-text content,
     instead of an equal tw/cols split. An equal split gives "Vendor" and
     "Time to value" the same track as "$18", so the long label crowds its
     cell while the short value floats in a mostly-empty one (P5 audit
-    defect 8). Clamp to [0.9in, 40% of tw] so no column collapses unreadably
-    narrow or swallows the whole table, then rescale to land exactly on tw.
+    defect 8). Clamp to [0.9in, a per-column cap] so no column collapses
+    unreadably narrow or swallows the whole table, then rescale to land
+    exactly on tw.
+
+    The cap used to be a PERCENTAGE of tw (0.4 * tw), which shrinks right
+    along with a narrow two_column pane's own tw; raised to an absolute
+    ~4in ceiling instead, so a long-label column can claim more of its fair
+    share before the rescale below normalizes the total back to tw exactly
+    (item 2). A `solo` table (the dominant/only block on its slide) drops
+    the cap altogether -- nothing should artificially cap a column's share
+    of a table that already owns the whole slide width.
 
     `cols` is the caller's own column count (it may exceed len(header) for a
     genuinely empty table, which normalize_table leaves at width 0 -- the
@@ -639,27 +829,58 @@ def _table_col_widths(header, rows, cols: int, tw: float) -> list[float]:
         for c in range(cols)
     ]
     total = sum(lengths)
-    min_w, max_w = 0.9, 0.4 * tw
+    min_w = 0.9
+    max_w = tw if solo else min(4.0, tw)
     raw = [max(min_w, min(max_w, tw * n / total)) for n in lengths]
     scale = tw / sum(raw)
     return [rw * scale for rw in raw]
 
 
-def _table_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
+def _table_block(slide, b, theme, numbers, x, y, w, max_h, solo: bool = False) -> float:
     header, rows = normalize_table(b.header, b.rows)
     cols = max(len(header), 1)
-    tw = min(w, max(3.0, cols * 2.5))
+    # A solo/dominant table is the "fixed block owns a sparse slide" case
+    # (item 2): widen it toward the full column width instead of floating
+    # narrow at the shared-slide cols*2.5in cap.
+    tw = w if solo else min(w, max(3.0, cols * 2.5))
     tx = x + (w - tw) / 2 if tw < w else x  # center a narrower-than-column table
     cap_h = CAPTION_H_IN if b.caption else 0.0
     budget = max(_table_row_h(TABLE_MIN_PT), max_h - cap_h)
+
+    # A solo table also grows its row padding modestly (a taller vpad from
+    # the start, so the shrink loop below already accounts for it rather
+    # than fighting the budget after the fact).
+    vpad = TABLE_VPAD * 1.6 if solo else TABLE_VPAD
 
     # shrink the font (down to a floor) until every row fits at that size,
     # since row height is tied to what the font actually needs, not an
     # independent division PowerPoint won't honor
     size = TABLE_PT
-    while size > TABLE_MIN_PT and _table_row_h(size) * (len(rows) + 1) > budget:
+    while size > TABLE_MIN_PT and _table_row_h(size, vpad) * (len(rows) + 1) > budget:
         size -= 1
-    row_h = _table_row_h(size)
+    row_h = _table_row_h(size, vpad)
+
+    # Item 2, inverted: a solo/dominant table on a sparse slide GROWS its
+    # font (up to a 16pt ceiling) toward ~70-75% fill instead of floating
+    # small at the top with a dead band below -- the shrink loop above only
+    # ever brings size DOWN to fit; this grows it back UP when there is
+    # room to spare.
+    if solo and rows:
+        target_h = budget * 0.72
+        while size < 16 and _table_row_h(size + 1, vpad) * (len(rows) + 1) <= target_h:
+            size += 1
+        row_h = _table_row_h(size, vpad)
+        # A table with few rows can't reach the fill target through font
+        # growth alone (the 16pt ceiling above is reached long before 5-ish
+        # rows add up to 65-75% of a typical body height) -- the same
+        # fundamental limit prose growth hits on a very sparse slide. Grow
+        # the row height itself (padding) the rest of the way instead: a
+        # spacious, airy row reads as a deliberate "this table owns the
+        # slide" card instead of a tight 12-16pt table stranded small at
+        # the top with a dead band below it. Capped so a 1-2 row table
+        # doesn't blow up into absurdly tall rows.
+        n_rows_total = len(rows) + 1
+        row_h = max(row_h, min(target_h / n_rows_total, 1.3))
 
     # still too many rows at the floor size: cap the count and add a visible
     # "+N more rows" notice instead of silently overflowing the slide
@@ -699,7 +920,7 @@ def _table_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
              title="Table")
     tbl.first_row = False
     tbl.horz_banding = False
-    col_w = _table_col_widths(header, rows, cols, tw)
+    col_w = _table_col_widths(header, rows, cols, tw, solo=solo)
     for c in range(cols):
         tbl.columns[c].width = Inches(col_w[c])
     for r in range(n_rows):
@@ -714,7 +935,7 @@ def _table_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
             cell.fill.fore_color.rgb = _rgb(fill)
             cell.vertical_anchor = MSO_ANCHOR.MIDDLE
             cell.margin_left = cell.margin_right = Inches(0.08)
-            cell.margin_top = cell.margin_bottom = Inches(0.03)
+            cell.margin_top = cell.margin_bottom = Inches(vpad / 2)
             if c < len(cells):
                 # font_heading, not font_body: a table is data-dense chrome
                 # (prices, dates, short labels), and Georgia's old-style
@@ -756,13 +977,25 @@ def _table_block(slide, b, theme, numbers, x, y, w, max_h) -> float:
 
 def _callout_block(slide, b, theme, numbers, x, y, w, max_h,
                    scale: float = 1.0) -> float:
-    size, pad, edge_w = 13 * scale, 0.14, 0.08
-    est = _est_lines(plain(b.text), size, w - edge_w - 2 * pad) * _line_h(size) + 2 * pad
+    # Item 5: a callout used to render at 13pt -- SMALLER than the 14pt
+    # BODY_PT text sitting right under it, the opposite of "emphasis". It
+    # now renders at BODY_PT+1 (scaling with the same grow factor as its
+    # neighbors), bold in the heading font as a semibold stand-in (no true
+    # semibold weight is available), with a heavier pad and edge bar, and
+    # capped to ~85% of the column so it reads as a distinct card rather
+    # than a full-width strip weaker than the bullets under it.
+    size = (BODY_PT + 1) * scale
+    pad, edge_w = 0.24, 0.1
+    card_w = min(w, w * 0.85)
+    est = _est_lines(plain(b.text), size, card_w - edge_w - 2 * pad) * _line_h(size) + 2 * pad
     h = min(max_h, est)
-    _rect(slide, x, y, w, h, _callout_fill_color(b.style, theme))
+    _rect(slide, x, y, card_w, h, _callout_fill_color(b.style, theme))
     _rect(slide, x, y, edge_w, h, _callout_edge_color(b.style, theme))
-    tf = _box(slide, x + edge_w + pad, y + pad, w - edge_w - 2 * pad, h - 2 * pad)
-    _runs(tf.paragraphs[0], b.text, theme, numbers, size, theme.text, theme.font_body)
+    tf = _box(slide, x + edge_w + pad, y + pad, card_w - edge_w - 2 * pad, h - 2 * pad)
+    _runs(
+        tf.paragraphs[0], b.text, theme, numbers, size, theme.text, theme.font_heading,
+        bold=True,
+    )
     return h
 
 
@@ -1059,33 +1292,112 @@ def _chart_block(slide, b: Chart, theme, numbers, x, y, w, max_h,
     return h
 
 
-def _stats_block(slide, b: StatRow, theme, x, y, w, max_h) -> float:
-    items = b.items[: LAYOUT["stat_max_cards"]]  # extras dropped: more cards than this don't fit legibly on one row
-    if not items:
-        return 0.0
+def _big_number_pt(value: str, w: float, max_h: float) -> int:
+    """Pick the numeral's point size for the "big number" hero-stat
+    treatment: target the oversized 96-150pt range and shrink only as far as
+    the box actually forces -- a value string wide enough to wrap at w, or a
+    max_h too tight to fit the numeral plus a label/delta strip beneath it.
+    Deriving the size straight off `max_h` (the old `int(max_h * 34)`, capped
+    120-150) meant the numeral's own reported natural height depended on
+    whatever leftover room `_body`'s reserve math happened to hand this
+    block, not on the value itself -- undersizing it whenever that room fell
+    short of the ~4.4in the old formula assumed (defect item 3)."""
+    label_room = 0.45  # rough space a label/delta strip needs beneath the numeral
+    for pt in (150, 132, 116, 96):
+        if _est_lines(value, pt, w) <= 1 and _line_h(pt) <= max(0.3, max_h - label_room):
+            return pt
+    return 96
+
+
+def _big_number_block(slide, st, theme, x, y, w, max_h) -> float:
+    """PINNED CONTRACT item 4: a StatRow with exactly one stat renders as ONE
+    oversized numeral (a Gamma-style "big number" slide) instead of a single
+    small stat card floating alone in a mostly-empty column -- unconditionally
+    (item 3): a lone stat is always the hero treatment, whether or not it
+    shares its slide with other blocks (the old `dominant`/solo gate is what
+    let a StatRow sharing a slide with a caption paragraph fall through to
+    the small compact card instead)."""
+    value_pt = _big_number_pt(st.value, w, max_h)
+    label_pt, delta_pt = 18, 14
+    line_h = _line_h(value_pt)
+    label_h = (label_pt * 1.3 / 72 + 0.08) if st.label else 0.0
+    delta_h = (delta_pt * 1.3 / 72 + 0.06) if st.delta else 0.0
+    total_h = line_h + label_h + delta_h
+    h = min(max_h, total_h)
+    # Top-aligned, not self-centered within `max_h`: the group's OWN natural
+    # height (this same total_h, via _natural_h) is what _body's group-level
+    # offset centers in the slide's available room, whether this block is
+    # solo or shares the slide with others. Self-centering here too (as the
+    # single-stat-solo case used to) double-counts that centering -- and,
+    # worse, silently under-reports the height this block actually draws
+    # into (only `total_h`, not the extra shift), letting a trailing sibling
+    # block start high enough to overlap the shifted-down label/delta text.
+    yy = y
+    tf = _box(slide, x, yy, w, line_h)
+    tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+    _runs(
+        tf.paragraphs[0], st.value, theme, {},
+        value_pt, theme.primary, theme.font_heading, bold=True,
+    )
+    yy += line_h
+    if st.label:
+        tf = _box(slide, x, yy, w, label_h)
+        tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        _runs(tf.paragraphs[0], st.label, theme, {}, label_pt, theme.muted, theme.font_body)
+        yy += label_h
+    if st.delta:
+        tf = _box(slide, x, yy, w, delta_h)
+        tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        delta_color = theme.muted if st.delta.strip().startswith("-") else theme.accent
+        _runs(tf.paragraphs[0], st.delta, theme, {}, delta_pt, delta_color, theme.font_body)
+    return h
+
+
+def _stat_card_row(slide, items, theme, x, y, w, max_h, *, upgraded: bool) -> float:
+    """A row of stat cards. `upgraded` (PINNED CONTRACT item 4: 2-4 stats
+    sharing a slide as its dominant block) renders a larger numeral on a
+    tinted accent card that scales with the room available (item 2's
+    "fixed blocks own sparse slides"); otherwise this is the original
+    compact card used for 5+ stats or a stat row sharing its slide with
+    other content."""
     gap = LAYOUT["stat_gap_in"]
-    h = min(max_h, LAYOUT["stat_card_h_in"])
+    if upgraded:
+        h = max(LAYOUT["stat_card_h_in"], min(2.4, max_h))
+        value_pt = 64 if len(items) == 2 else (56 if len(items) == 3 else 44)
+        pad = 0.26
+        fill = _mix(theme.background, theme.accent, 0.10)
+    else:
+        h = min(max_h, LAYOUT["stat_card_h_in"])
+        value_pt = 24
+        pad = 0.18
+        fill = theme.surface
+    h = min(h, max_h) if max_h > 0 else h
     cw = (w - gap * (len(items) - 1)) / len(items)
-    pad = 0.18
     for i, st in enumerate(items):
         cx = x + i * (cw + gap)
         card = slide.shapes.add_shape(
             MSO_SHAPE.ROUNDED_RECTANGLE, Inches(cx), Inches(y), Inches(cw), Inches(h)
         )
         card.fill.solid()
-        card.fill.fore_color.rgb = _rgb(theme.surface)
+        card.fill.fore_color.rgb = _rgb(fill)
         card.line.fill.background()
         card.shadow.inherit = False
+        if upgraded:
+            try:
+                card.adjustments[0] = 0.08  # a subtler corner than the stock default
+            except (IndexError, ValueError):
+                pass
+        value_h = _line_h(value_pt) + 0.1
         ty = y + pad
-        tf = _box(slide, cx + pad, ty, cw - 2 * pad, 0.42)
+        tf = _box(slide, cx + pad, ty, cw - 2 * pad, value_h)
         _runs(
             tf.paragraphs[0], st.value, theme, {},
-            24, theme.primary, theme.font_heading, bold=True,
+            value_pt, theme.primary, theme.font_heading, bold=True,
         )
-        ty += 0.5
+        ty += value_h
         # label/delta raised from 11/10pt: footnote-scale on a 13.3in slide,
         # unreadable from the back of a room (P5 audit defect 12). The card
-        # has the room: measured content bottoms out well inside stat_card_h_in.
+        # has the room: measured content bottoms out well inside its height.
         if ty + 0.26 <= y + h:
             tf = _box(slide, cx + pad, ty, cw - 2 * pad, 0.26)
             _runs(tf.paragraphs[0], st.label, theme, {}, 13, theme.muted, theme.font_body)
@@ -1097,6 +1409,29 @@ def _stats_block(slide, b: StatRow, theme, x, y, w, max_h) -> float:
     return h
 
 
+def _stats_block(slide, b: StatRow, theme, x, y, w, max_h, solo: bool = False) -> float:
+    items = b.items[: LAYOUT["stat_max_cards"]]  # extras dropped: more cards than this don't fit legibly on one row
+    if not items:
+        return 0.0
+    # PINNED CONTRACT item 4 -- Gamma-signature treatments via existing
+    # blocks, no new Slide.layout: exactly one stat always becomes one
+    # oversized numeral (item 3 -- a single stat reads as a hero statistic
+    # regardless of whether it shares its slide with other blocks); 2-4
+    # stats become an upgraded card row, but only when the stat row is truly
+    # the slide's dominant block (solo -- the ONLY block on its slide/
+    # column): the reserve-based layout in _body always leaves an earlier
+    # block a generous max_h regardless of what shares the slide with it, so
+    # max_h alone is not a reliable "dominant" signal there. A 5-up row, or a
+    # 2-4 row sharing its slide with other blocks, keeps the original compact
+    # card so it does not overpower its neighbors.
+    dominant = solo
+    if len(items) == 1:
+        return _big_number_block(slide, items[0], theme, x, y, w, max_h)
+    if 2 <= len(items) <= 4 and dominant:
+        return _stat_card_row(slide, items, theme, x, y, w, max_h, upgraded=True)
+    return _stat_card_row(slide, items, theme, x, y, w, max_h, upgraded=False)
+
+
 def _block(slide, b: Block, theme, numbers, x, y, w, max_h,
           scale: float = 1.0, solo: bool = False) -> float:
     if isinstance(b, Heading):
@@ -1106,6 +1441,10 @@ def _block(slide, b: Block, theme, numbers, x, y, w, max_h,
         )
     if isinstance(b, Paragraph):
         return _text_block(slide, b.text, theme, numbers, x, y, w, max_h, scale=scale)
+    if isinstance(b, BulletList) and b.display == "grid" and 3 <= len(b.items) <= 6:
+        return _bullet_grid_block(slide, b, theme, numbers, x, y, w, max_h, scale=scale)
+    if isinstance(b, NumberedList) and b.display == "timeline" and 2 <= len(b.items) <= 6:
+        return _numbered_timeline_block(slide, b, theme, numbers, x, y, w, max_h, scale=scale)
     if isinstance(b, (BulletList, NumberedList)):
         return _list_block(
             slide, b, theme, numbers, x, y, w, max_h, isinstance(b, NumberedList),
@@ -1116,7 +1455,7 @@ def _block(slide, b: Block, theme, numbers, x, y, w, max_h,
     if isinstance(b, Code):
         return _code_block(slide, b, theme, x, y, w, max_h)
     if isinstance(b, Table):
-        return _table_block(slide, b, theme, numbers, x, y, w, max_h)
+        return _table_block(slide, b, theme, numbers, x, y, w, max_h, solo=solo)
     if isinstance(b, Callout):
         return _callout_block(slide, b, theme, numbers, x, y, w, max_h, scale=scale)
     if isinstance(b, Image):
@@ -1124,7 +1463,7 @@ def _block(slide, b: Block, theme, numbers, x, y, w, max_h,
     if isinstance(b, Chart):
         return _chart_block(slide, b, theme, numbers, x, y, w, max_h, solo=solo)
     if isinstance(b, StatRow):
-        return _stats_block(slide, b, theme, x, y, w, max_h)
+        return _stats_block(slide, b, theme, x, y, w, max_h, solo=solo)
     if isinstance(b, Diagram):
         # Native, editable PPTX shapes (P2: docs/diagram-plan.md section 4b).
         # All layout/fit/font-floor-degradation/fallback/hash-stamp logic
@@ -1188,6 +1527,20 @@ def _natural_h(b: Block, w: float, scale: float = 1.0,
     if isinstance(b, Paragraph):
         s = BODY_PT * scale
         return _est_lines(plain(b.text), s, w) * _line_h(s)
+    if isinstance(b, BulletList) and b.display == "grid" and 3 <= len(b.items) <= 6:
+        # Mirrors _bullet_grid_block's own geometry (item 4b): the plain
+        # per-item vertical-list formula below badly understates a 2x2/3x2
+        # grid's real footprint (or, before the content-sized-card fix,
+        # badly overstated it), throwing off _body's sparse/centering math.
+        items = b.items[:6]
+        cols, rows, _, card_h, gap, *_ = _grid_card_geometry(items, w, scale)
+        return card_h * rows + gap * (rows - 1) if rows else 0.0
+    if isinstance(b, NumberedList) and b.display == "timeline" and 2 <= len(b.items) <= 6:
+        # Mirrors _numbered_timeline_block's own geometry (item 5): a fixed
+        # horizontal band, not a per-item stack -- reporting the generic
+        # list formula here (taller than the band actually is) is what let
+        # the band "float" with large, uncentered dead space above/below it.
+        return min(max_h, 2.0) if max_h else 2.0
     if isinstance(b, (BulletList, NumberedList)):
         s = BODY_PT * scale
         item_gap = LIST_ITEM_GAP_PT / 72 * scale
@@ -1205,10 +1558,30 @@ def _natural_h(b: Block, w: float, scale: float = 1.0,
         _, rows = normalize_table(b.header, b.rows)
         return (len(rows) + 1) * _table_row_h(TABLE_PT) + (CAPTION_H_IN if b.caption else 0.0)
     if isinstance(b, Callout):
-        s = 13 * scale
-        return _est_lines(plain(b.text), s, w - 0.08 - 0.28) * _line_h(s) + 0.28
+        # Mirrors _callout_block's own geometry (item 5): size BODY_PT+1,
+        # card width 85% of w, edge_w 0.1, pad 0.24 (2 * pad = 0.48).
+        s = (BODY_PT + 1) * scale
+        card_w = w * 0.85
+        return _est_lines(plain(b.text), s, card_w - 0.1 - 0.48) * _line_h(s) + 0.48
     if isinstance(b, StatRow):
-        return LAYOUT["stat_card_h_in"] if b.items else 0.0
+        if not b.items:
+            return 0.0
+        if len(b.items) == 1:
+            # Mirrors _big_number_block's own geometry (item 3): a lone stat
+            # is always the oversized hero-numeral treatment now, so its
+            # natural height must reflect that -- not the flat compact-card
+            # height, which used to make a genuinely ~3in numeral look like a
+            # sparse ~1.4in block to the centering pass above.
+            st = b.items[0]
+            room = max_h if max_h else 3.0
+            value_pt = _big_number_pt(st.value, w, room)
+            total_h = _line_h(value_pt)
+            if st.label:
+                total_h += 18 * 1.3 / 72 + 0.08
+            if st.delta:
+                total_h += 14 * 1.3 / 72 + 0.06
+            return total_h
+        return LAYOUT["stat_card_h_in"]
     if isinstance(b, Chart):
         return LAYOUT["chart_max_h_in"] + (CAPTION_H_IN if b.caption else 0.0)
     if isinstance(b, Diagram):
@@ -1259,29 +1632,41 @@ def _grow_scale(blocks: list[Block], w: float, avail: float) -> float:
     down until every block actually fits: a block that fits at scale 1.0 must
     never be dropped by this feature.
 
-    Suppressed entirely when `blocks` also carries a fixed-size block (a
-    table, code, a chart, stat cards, an image): growing only the prose next
-    to a block whose size the content itself dictates is what produced
+    Capped at the smaller FIXED_NEIGHBOR_GROW_CAP (instead of the full
+    GROW_CAP) when `blocks` also carries a fixed-size block (a table, code,
+    a chart, stat cards, an image): a full GROW_CAP-scale grow of the prose
+    next to a block whose size the content itself dictates is what produced
     23.8pt paragraphs beside 12pt code on the same slide (P5 audit defect
-    4)."""
-    if not blocks or any(isinstance(b, _FIXED_SIZE_BLOCKS) for b in blocks):
+    4) -- but suppressing growth entirely there instead stranded the prose
+    at 1.0x beside a large, deliberately-grown fixed block, reading smaller
+    than the slide's own hierarchy intends. Modest growth (capped ~1.15)
+    keeps the prose readable without rivaling the fixed block or the
+    title."""
+    if not blocks:
         return 1.0
+    has_fixed = any(_is_fixed_size(b) for b in blocks)
     n = len(blocks)
     nat = [max(0.0, _natural_h(b, w)) for b in blocks]
-    text_h = sum(h for b, h in zip(blocks, nat) if isinstance(b, _GROWABLE_BLOCKS))
+    text_h = sum(h for b, h in zip(blocks, nat) if _is_growable(b))
     fixed_h = sum(nat) - text_h
     total = sum(nat) + GAP * (n - 1)
     if not (total < avail * 0.65 and text_h > 0.2):
         return 1.0
-    target = avail * 0.80 - fixed_h - GAP * (n - 1)
+    cap = FIXED_NEIGHBOR_GROW_CAP if has_fixed else GROW_CAP
+    # A prose-only slide targets ~90% fill; beside a fixed block the fixed
+    # block itself already owns most of the "make this slide feel full"
+    # job (see _table_block/_stats_block's own solo-fill growth), so the
+    # prose only needs a lighter top-up.
+    fill_target = 0.82 if has_fixed else 0.90
+    target = avail * fill_target - fixed_h - GAP * (n - 1)
     candidate = (target / text_h) ** 0.5 if target > 0 else 1.0
-    scale = max(1.0, min(GROW_CAP, candidate))
+    scale = max(1.0, min(cap, candidate))
     # Absolute, size-relative safety net independent of GROW_CAP: grown body
     # text must never approach the title's own size (P5 audit defect 4).
     scale = min(scale, MAX_GROWN_PT / BODY_PT)
     for _ in range(20):  # bounded: at most (GROW_CAP - 1) / 0.05 steps
         scaled_text_h = sum(
-            _natural_h(b, w, scale) for b in blocks if isinstance(b, _GROWABLE_BLOCKS)
+            _natural_h(b, w, scale) for b in blocks if _is_growable(b)
         )
         if scale <= 1.0 or scaled_text_h + fixed_h + GAP * (n - 1) <= avail:
             return scale
@@ -1289,15 +1674,60 @@ def _grow_scale(blocks: list[Block], w: float, avail: float) -> float:
     return scale
 
 
+def _body_top_offset(blocks: list[Block], theme, w, avail, scale: float) -> float:
+    """Peek at the top offset `_body` would use to anchor `blocks` in `avail`
+    inches at `scale`, without drawing anything. two_column uses this to
+    compute ONE shared offset from its taller (denser) column -- the column
+    with less slack -- and pass it to both `_body` calls, so paired headings
+    in the two columns land at the same y instead of each column picking its
+    own offset from its own (different) slack (item 1)."""
+    if not blocks:
+        return 0.0
+    n = len(blocks)
+    solo_chart = n == 1 and isinstance(blocks[0], Chart)
+    nat = [max(0.0, _natural_h(b, w, theme=theme, max_h=avail)) for b in blocks]
+    if solo_chart:
+        cap_h = CAPTION_H_IN if blocks[0].caption else 0.0
+        nat[0] = max(nat[0], avail - cap_h)
+    text_h = sum(h for b, h in zip(blocks, nat) if _is_growable(b))
+    fixed_h = sum(nat) - text_h
+    scaled_text_h = text_h if scale <= 1.0 else sum(
+        _natural_h(b, w, scale) for b in blocks if _is_growable(b)
+    )
+    scaled_total = scaled_text_h + fixed_h + GAP * (n - 1)
+    if not (0 < scaled_total < avail):
+        return 0.0
+    slack = avail - scaled_total
+    # Mirrors _body's own sparse/nearly-full split (item 1) so two_column's
+    # shared offset actually CENTERS the two-column unit as a whole in the
+    # available height (item 2) instead of only ever nudging it slightly off
+    # the title -- the old flat `min(0.45, slack*0.2)` top-anchored both
+    # columns regardless of how much of the slide they actually filled,
+    # stranding a dead lower half under a short pair of columns.
+    if scaled_total < avail * 0.9:
+        return slack * 0.45
+    return min(0.45, slack * 0.2)
+
+
 def _body(slide, blocks: list[Block], theme, numbers, x, y, w,
-         scale: float | None = None) -> float:
+         scale: float | None = None, top_offset: float | None = None) -> float:
     """Lay body blocks into [y, slide bottom]. When the content is sparse,
-    distribute the slack (bigger inter-block gaps) and vertically center it at
-    an optical-center bias, so slides don't plant everything in the top third.
+    anchor the block group close to its title (a small, capped offset from
+    `y`) and spend the rest of any slack INSIDE the content -- larger seam
+    gaps between logical groups, plus the grow pass's own font growth --
+    instead of optical-centering the whole group and leaving most of the
+    slack as dead space below the last block. That old (avail - used) * 0.42
+    strand routinely left the bottom ~1/3+ of the column empty regardless of
+    how full the slide already was: the #1 "generic PowerPoint" tell the
+    audit named (item 1).
 
     `scale` grows text-block font sizes on an underfull slide; pass an
     explicit value to share one scale across multiple columns of a slide
-    (two_column does), otherwise it is computed from `blocks` alone."""
+    (two_column does), otherwise it is computed from `blocks` alone.
+    `top_offset`, similarly, lets two_column pass one shared offset (from
+    _body_top_offset, computed against its taller column) so both columns'
+    titles/first blocks land at the same y; otherwise this slide/column
+    computes its own from its own slack."""
     bottom = SLIDE_H - MARGIN
     if not blocks:
         return y
@@ -1306,37 +1736,95 @@ def _body(slide, blocks: list[Block], theme, numbers, x, y, w,
     # A lone chart fills the whole body (see _chart_block's solo mode)
     # instead of stopping at the general cap and leaving a dead void below
     # it (P5 audit defect 6); treat its natural height as "fills avail" so
-    # the slack pass below doesn't also push it down first.
-    solo_chart = n == 1 and isinstance(blocks[0], Chart)
+    # the slack pass below doesn't also push it down first. A lone
+    # table/stat-row is the other "fixed block owns a sparse slide" case
+    # (item 2): _table_block/_stats_block grow themselves toward the
+    # available room instead of floating small when told they are solo.
+    solo = n == 1
+    solo_chart = solo and isinstance(blocks[0], Chart)
     nat = [max(0.0, _natural_h(b, w, theme=theme, max_h=avail)) for b in blocks]
     if solo_chart:
         cap_h = CAPTION_H_IN if blocks[0].caption else 0.0
         nat[0] = max(nat[0], avail - cap_h)
-    text_h = sum(h for b, h in zip(blocks, nat) if isinstance(b, _GROWABLE_BLOCKS))
+    elif solo and isinstance(blocks[0], StatRow) and 2 <= len(blocks[0].items) <= 4:
+        # The upgraded solo stat-card row (item 4) grows to ~min(2.4in, avail);
+        # its _natural_h is the flat 1.4in compact height, so without this the
+        # solo_visual centering (and its max_h cap) would size the row as a
+        # smaller block than it actually draws, mis-centering it (re-audit #1).
+        nat[0] = max(nat[0], min(2.4, avail))
+    elif solo and isinstance(blocks[0], Table):
+        # The solo table path (_table_block) grows font/row-height toward
+        # budget*0.72; mirror that grown height here so centering doesn't push
+        # the table down from an under-estimated natural height (re-audit #2).
+        _, _trows = normalize_table(blocks[0].header, blocks[0].rows)
+        _cap = CAPTION_H_IN if blocks[0].caption else 0.0
+        nat[0] = max(nat[0], min((avail - _cap) * 0.72, (len(_trows) + 1) * 1.3) + _cap)
+    # A solo Diagram/Image/Artifact has no seams to spend slack into (the
+    # "anchor near the title, spend slack in bigger seams" convention below
+    # needs multiple blocks) -- it is centered in the FULL available space
+    # instead, which is the one site of vertical centering for it (paired
+    # with the block loop below capping its own max_h at this same nat, so
+    # the emitter's internal centering becomes a no-op). Without this
+    # special case the small title-anchoring offset left a large, un-spent
+    # void below the one block on the slide (item 1).
+    # StatRow joins this centering group too: its own solo/dominant height
+    # (item 4's big-number/upgraded-card treatment) is hard-clamped at
+    # 2.4in, so unlike a table (which grows its own row padding to fill the
+    # space -- see _table_block) it cannot grow far enough to make the
+    # small-top-anchor-only convention below look intentional either.
+    # A solo numbered-timeline is the same shape of problem as StatRow: its
+    # own band height is naturally capped (~2in of nodes/dots/labels)
+    # regardless of how much room the slide actually has, so it needs the
+    # same centering rather than the "anchor near title" convention meant
+    # for prose that can still grow into its slack.
+    solo_timeline = (
+        solo and isinstance(blocks[0], NumberedList) and blocks[0].display == "timeline"
+    )
+    solo_visual = (
+        solo and (isinstance(blocks[0], (Diagram, Image, Artifact, StatRow)) or solo_timeline)
+        and nat[0] >= MIN_VISUAL_BLOCK_H_IN
+    )
+    text_h = sum(h for b, h in zip(blocks, nat) if _is_growable(b))
     fixed_h = sum(nat) - text_h
     if scale is None:
         scale = _grow_scale(blocks, w, avail)
     scaled_text_h = text_h if scale <= 1.0 else sum(
-        _natural_h(b, w, scale) for b in blocks if isinstance(b, _GROWABLE_BLOCKS)
+        _natural_h(b, w, scale) for b in blocks if _is_growable(b)
     )
     scaled_total = scaled_text_h + fixed_h + GAP * (n - 1)
 
-    # Seam gaps, one per block boundary, instead of one uniform gap: a slide
-    # gave a heading-to-list seam the same 0.67in of slack as every other
-    # seam, orphaning the heading from the very list it introduces while the
-    # bottom of the column sat empty (P5 audit defect 5). The seam right
-    # after a Heading stays tight; its share of the slack goes to the rest.
-    seam_gaps = [GAP] * (n - 1)
+    # Seam gaps, one per block boundary, instead of one uniform gap: the seam
+    # right after a Heading stays tighter than the rest (keeps a heading
+    # visually attached to the list/paragraph it introduces) -- but neither
+    # seam is ever INFLATED with slack. An earlier scheme spent ~78% of the
+    # slide's slack space inflating these seams, which on a sparse two-group
+    # slide (a callout + a bullet list, say) pushed the two groups to
+    # opposite ends and stranded a wide dead band in the middle (item 1). The
+    # group as a whole is instead kept as one cohesive, tightly-spaced unit
+    # and the ENTIRE slack is spent positioning that unit in `avail`.
+    seam_gaps = [GAP * 0.5 if isinstance(b, Heading) else GAP for b in blocks[:-1]]
     y0 = y
-    if 0 < scaled_total < avail:  # distribute residual slack + optical-center
+    if 0 < scaled_total < avail:
         slack = avail - scaled_total
-        tight = [isinstance(b, Heading) for b in blocks[:-1]]
-        n_loose = sum(1 for t in tight if not t) or 1
-        loose_extra = min(0.5, slack * 0.5 / n_loose)
-        tight_gap = GAP * 0.5
-        seam_gaps = [tight_gap if t else GAP + loose_extra for t in tight]
-        used = scaled_text_h + fixed_h + sum(seam_gaps)
-        y0 = y + max(0.0, (avail - used) * 0.42)
+        if solo_visual:
+            offset = slack / 2 if top_offset is None else top_offset
+        elif top_offset is not None:
+            offset = top_offset
+        elif scaled_total < avail * 0.9:
+            # Sparse: the content unit is materially smaller than the room
+            # it has. Optically center it -- a touch above true-center (45%
+            # of the slack above, 55% below) reads more balanced under a
+            # title than a dead-even split, and keeps the group from ever
+            # pooling entirely into one contiguous top/bottom dead band.
+            offset = slack * 0.45
+        else:
+            # Nearly full: stay anchored close to the title instead of
+            # spending the (now small) remaining slack on a centering shift
+            # that would barely be visible anyway.
+            offset = min(0.45, slack * 0.2)
+        y0 = y + max(0.0, offset)
+    elif top_offset is not None:
+        y0 = y + max(0.0, top_offset)
 
     # Finding A: this loop used to hand each block whatever remained after
     # its predecessors ("greedy" allocation), then drop the current block
@@ -1369,6 +1857,25 @@ def _body(slide, blocks: list[Block], theme, numbers, x, y, w,
         n_later = n - i - 1
         reserve = n_later * (MIN_BLOCK_RESERVE_IN + GAP)
         block_max_h = max(MIN_BLOCK_RESERVE_IN, remaining - reserve)
+        if solo and isinstance(b, (Diagram, Image, Artifact)) and nat[i] >= MIN_VISUAL_BLOCK_H_IN:
+            # A solo Diagram/Image/Artifact is the ONLY block on this
+            # slide/column: the group-level `y0` offset above is already the
+            # one site of vertical centering for it. Handing the emitter the
+            # full remaining box here let it ALSO center internally
+            # (diagram_pptx centers vertically within (w, max_h)), doubling
+            # the visual gap into a large void (item 1). Capping max_h at the
+            # block's own fitted natural height makes that inner centering a
+            # no-op: the box IS the content.
+            #
+            # Only trusted when nat[i] itself already clears the legibility
+            # floor: an unresolved Image (nat 0.0 -- a deliberate weightless
+            # no-op, see _natural_h) or a diagram whose simple aspect-fit
+            # estimate undershoots what its own font-floor-degradation ladder
+            # actually needs must NOT be capped down here -- that starved
+            # both of the room they need and caused them to be dropped
+            # entirely by the legibility-floor check just below, instead of
+            # embedding (or placeholder-warning) at their old, uncapped size.
+            block_max_h = min(block_max_h, nat[i])
         if isinstance(b, _VISUAL_BLOCKS) and block_max_h < MIN_VISUAL_BLOCK_H_IN:
             # Squeezed past the point of legibility: drop it (never shrink
             # it into a speck) and say so by name, rather than emit a
@@ -1382,7 +1889,7 @@ def _body(slide, blocks: list[Block], theme, numbers, x, y, w,
                 stacklevel=2,
             )
             continue  # no shape drawn, no space consumed
-        yy += _block(slide, b, theme, numbers, x, yy, w, block_max_h, scale, solo=solo_chart)
+        yy += _block(slide, b, theme, numbers, x, yy, w, block_max_h, scale, solo=solo)
         if i < n - 1:
             yy += seam_gaps[i]
     return yy
@@ -1517,8 +2024,15 @@ def _title_band(
         size, theme.text, theme.font_heading, bold=True,
     )
     rule_y = top + box_h + 0.10
-    _rect(slide, x, rule_y, w, 0.028, accent or theme.primary)
-    return rule_y + 0.028 + 0.252
+    # A ~1.2in kicker, not a full-width rule: a rule spanning the whole
+    # title band read as a page-wide divider disconnecting the title from
+    # its own body below it, rather than a mark that belongs to the title
+    # (item 3). The tightened post-rule gap (0.252 -> 0.15) closes the same
+    # gap the other way: the body now visibly belongs to its title instead
+    # of floating a generic distance below it.
+    kicker_w = min(1.2, w)
+    _rect(slide, x, rule_y, kicker_w, 0.028, accent or theme.primary)
+    return rule_y + 0.028 + 0.15
 
 
 def _subtitle_line(slide, subtitle: str | None, theme: Theme, x: float, y: float, w: float) -> float:
@@ -1543,7 +2057,6 @@ def _subtitle_line(slide, subtitle: str | None, theme: Theme, x: float, y: float
 
 def _title_slide(slide, s: Slide, doc: Document, theme: Theme,
                  numbers: dict[str, int], accent: str) -> None:
-    _rect(slide, 0, 0, 0.3, SLIDE_H, accent)
     # brand logo (or any title-slide image) → corner; fall back to doc.logo
     # so a logo bound after generation still shows up here at export time
     logo_img = s.image if _usable_image(s.image) else doc.logo
@@ -1563,27 +2076,52 @@ def _title_slide(slide, s: Slide, doc: Document, theme: Theme,
                 "must appear on the slide",
                 stacklevel=2,
             )
-    tx, ty, title_pt = 1.1, 2.5, 40
+    tx = 1.1
     tw = SLIDE_W - tx - MARGIN
     title_text = s.title or doc.title
+    subtitle = s.subtitle or doc.subtitle
+    byline = "  \u00b7  ".join(p for p in (", ".join(doc.authors), doc.date) if p)
+
+    # Title: 54-64pt, a real display-scale cover title instead of the old
+    # flat 40pt (the same size a content slide's own heading could read at,
+    # a "generic PowerPoint" tell) -- shrinking only once the title actually
+    # wraps past two lines (item 3).
+    title_pt = 64
+    while title_pt > 54 and _est_lines(title_text, title_pt, tw) > 2:
+        title_pt -= 2
     title_h = max(1.4, _est_lines(title_text, title_pt, tw) * _line_h(title_pt))
+    sub_h = (_est_lines(subtitle, 20, tw) * _line_h(20) + 0.18) if subtitle else 0.0
+    by_h = (0.5 + 0.35) if byline else 0.0  # 0.5in gap under whatever precedes it, then its own line
+
+    # Title + subtitle + byline as ONE vertically-centered group (not the
+    # title alone pinned at a fixed y with the byline separately floor-
+    # pinned to y>=6.3, which routinely orphaned the two from each other on
+    # a short title) -- an optical-center bias matching the house
+    # convention _body itself uses (item 3).
+    group_h = title_h + sub_h + by_h
+    ty = max(0.7, (SLIDE_H - group_h) / 2 - 0.3)
+
+    # A real composition element -- a ~4in accent panel flanking the title
+    # group -- replaces the old 0.3in full-slide-height sliver, which read
+    # as a stray ruled line rather than an intentional shape (item 3).
+    panel_h = min(4.2, group_h + 1.0)
+    _rect(slide, 0, max(0.0, ty - 0.5), 0.14, panel_h, accent)
+
     tf = _box(slide, tx, ty, tw, title_h)
     _runs(
         tf.paragraphs[0], title_text, theme, {},
         title_pt, theme.text, theme.font_heading, bold=True,
     )
-    y = ty + title_h + 0.1
-    subtitle = s.subtitle or doc.subtitle
+    y = ty + title_h
     if subtitle:
-        tf = _box(slide, tx, y, tw, 0.6)
+        tf = _box(slide, tx, y, tw, sub_h)
         _runs(tf.paragraphs[0], subtitle, theme, {}, 20, theme.muted, theme.font_body)
-        y += 0.6
-    byline = "  \u00b7  ".join(p for p in (", ".join(doc.authors), doc.date) if p)
+        y += sub_h
     if byline:
-        by_y = max(6.3, y + 0.3)
-        tf = _box(slide, tx, by_y, tw, 0.35)
+        y += 0.5
+        tf = _box(slide, tx, y, tw, 0.35)
         _runs(tf.paragraphs[0], byline, theme, {}, 14, theme.muted, theme.font_body)
-        y = by_y + 0.35
+        y += 0.35
     # Finding 2: _title_slide never read s.blocks/s.right at all -- unlike
     # every other layout (including section and quote, both fixed in
     # earlier audit passes), a title slide's entire body block list vanished
@@ -1606,20 +2144,49 @@ def _title_slide(slide, s: Slide, doc: Document, theme: Theme,
             )
 
 
-def _section_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int]) -> None:
+def _section_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int],
+                   index: int = 1) -> None:
     slide.background.fill.solid()
     slide.background.fill.fore_color.rgb = _rgb(theme.primary)
-    _rect(slide, MARGIN, 2.72, 1.2, 0.05, theme.accent)
-    tf = _box(slide, MARGIN, 3.0, SLIDE_W - 2 * MARGIN, 1.1)
+    band_theme = _band_theme(theme, theme.primary)
+
+    # An oversized, heavily-muted section numeral behind the title group so
+    # a deck with several section dividers stops reading as identical
+    # copies of the same slide (item 3). A subtle tint of theme.primary
+    # itself (not a light/dark swap toward the background) keeps the
+    # numeral visible-but-muted against the primary field.
+    num_w = 4.4
+    num_tf = _box(slide, SLIDE_W - MARGIN - num_w, 0.3, num_w, SLIDE_H - 0.6)
+    num_tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+    num_tf.paragraphs[0].alignment = PP_ALIGN.RIGHT
+    _runs(
+        num_tf.paragraphs[0], f"{max(1, index):02d}", band_theme, {},
+        150, _tint(theme.primary, 0.13), theme.font_heading, bold=True,
+    )
+
+    tw = SLIDE_W - 2 * MARGIN
+    title_h = max(0.9, _est_lines(s.title or "", 36, tw) * _line_h(36))
+    sub_h = (_est_lines(s.subtitle, 18, tw) * _line_h(18) + 0.15) if s.subtitle else 0.0
+    rule_gap = 0.05 + 0.28
+    group_h = rule_gap + title_h + sub_h
+
+    # Vertically center the title group instead of pinning it at a fixed
+    # y=3.0/y=4.25 -- a short one-line title used to leave the same amount
+    # of dead space below it regardless of whether the slide carried any
+    # body blocks at all (item 3).
+    y = max(0.6, (SLIDE_H - group_h) / 2)
+    _rect(slide, MARGIN, y, 1.2, 0.05, theme.accent)
+    y += rule_gap
+    tf = _box(slide, MARGIN, y, tw, title_h)
     _runs(
         tf.paragraphs[0], s.title or "", theme, {},
         36, theme.background, theme.font_heading, bold=True,
     )
-    y = 4.25
+    y += title_h
     if s.subtitle:
-        tf = _box(slide, MARGIN, y, SLIDE_W - 2 * MARGIN, 0.6)
+        tf = _box(slide, MARGIN, y, tw, sub_h)
         _runs(tf.paragraphs[0], s.subtitle, theme, {}, 18, theme.background, theme.font_body)
-        y += 0.75
+        y += sub_h
     # A section slide used to render only title/subtitle: any block the
     # author put in s.blocks/s.right (unlike every other layout, which at
     # least falls back through _content_slide) rendered nothing at all (P5
@@ -1632,8 +2199,7 @@ def _section_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int]) -> No
     # contrast, caught by actually rendering and looking at this fix.
     blocks = s.blocks + s.right
     if blocks:
-        _body(slide, blocks, _band_theme(theme, theme.primary), numbers,
-              MARGIN, y, SLIDE_W - 2 * MARGIN)
+        _body(slide, blocks, band_theme, numbers, MARGIN, y + 0.3, tw)
 
 
 def _quote_slide(slide, s: Slide, theme: Theme, numbers: dict[str, int]) -> None:
@@ -1825,7 +2391,15 @@ def _hero_slide(slide, s: Slide, doc: Document, theme: Theme, numbers: dict[str,
         blocks_h += GAP * max(0, len(blocks) - 1)
         band_h = min(SLIDE_H - MARGIN, 2 * pad + title_h + sub_h + cap_h + blocks_h)
     band_y = SLIDE_H - band_h
-    _rect(slide, 0, band_y, SLIDE_W, band_h, theme.text)
+    scrim = _rect(slide, 0, band_y, SLIDE_W, band_h, theme.text)
+    if pic is not None:
+        # A real alpha-transparency band (item 6): an opaque band used to
+        # chop the photo off entirely behind the title; a semi-transparent
+        # one lets the image show through while the title/subtitle still
+        # read clearly against it. An imageless hero has nothing to show
+        # through (the whole slide is already a solid theme.primary fill),
+        # so it keeps the fully-opaque band.
+        _set_fill_alpha(scrim, 78)
     y = band_y + pad
     if s.title:
         th = min(title_h, SLIDE_H - pad - y)
@@ -1957,7 +2531,7 @@ def _image_side_slide(slide, s: Slide, doc: Document, theme: Theme,
 
 
 def _render_slide(prs, blank, s: Slide, doc: Document, theme: Theme,
-                  numbers: dict[str, int]) -> None:
+                  numbers: dict[str, int], section_index: int = 1) -> None:
     slide = prs.slides.add_slide(blank)
     slide.background.fill.solid()
     slide.background.fill.fore_color.rgb = _rgb(theme.background)
@@ -1965,7 +2539,7 @@ def _render_slide(prs, blank, s: Slide, doc: Document, theme: Theme,
     if s.layout == "title":
         _title_slide(slide, s, doc, theme, numbers, accent)
     elif s.layout == "section":
-        _section_slide(slide, s, theme, numbers)
+        _section_slide(slide, s, theme, numbers, section_index)
     elif s.layout == "quote":
         _quote_slide(slide, s, theme, numbers)
     elif s.layout == "hero":
@@ -1981,8 +2555,20 @@ def _render_slide(prs, blank, s: Slide, doc: Document, theme: Theme,
             _grow_scale(cols, col_w, avail) for cols in (s.blocks, s.right) if cols
         ]
         col_scale = min(col_scales) if col_scales else 1.0
-        _body(slide, s.blocks, theme, numbers, MARGIN, y, col_w, col_scale)
-        _body(slide, s.right, theme, numbers, MARGIN + col_w + 0.5, y, col_w, col_scale)
+        # ONE shared vertical offset from the TALLER (denser -- less slack,
+        # so a smaller offset) column, instead of each _body call picking
+        # its own offset from its own column's slack: the two calls used to
+        # disagree by ~0.1-0.2in whenever the columns' content differed in
+        # length, staggering the two columns' paired headings against each
+        # other (item 1).
+        col_offsets = [
+            _body_top_offset(cols, theme, col_w, avail, col_scale)
+            for cols in (s.blocks, s.right) if cols
+        ]
+        shared_offset = min(col_offsets) if col_offsets else 0.0
+        _body(slide, s.blocks, theme, numbers, MARGIN, y, col_w, col_scale, shared_offset)
+        _body(slide, s.right, theme, numbers, MARGIN + col_w + 0.5, y, col_w, col_scale,
+              shared_offset)
     else:  # content, or an image layout without a usable image path
         _content_slide(slide, s, doc, theme, numbers, accent)
     _doc_logo(slide, doc, s, theme)
@@ -2144,8 +2730,11 @@ def render(doc: Document, theme: Theme, out_path: Path) -> Path:
     prs.slide_height = Inches(SLIDE_H)
     blank = prs.slide_layouts[6]
     numbers = source_numbers(doc)
+    section_n = 0
     for s in doc.slides:
-        _render_slide(prs, blank, s, doc, theme, numbers)
+        if s.layout == "section":
+            section_n += 1
+        _render_slide(prs, blank, s, doc, theme, numbers, section_n or 1)
     if doc.sources and cited_ids(doc):
         _sources_slide(prs, blank, doc, theme)
     _fit_text_frames(prs)

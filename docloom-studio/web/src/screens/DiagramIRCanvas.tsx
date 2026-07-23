@@ -245,7 +245,7 @@ export function DiagramIRCanvas() {
   }
 
   if (loadError)
-    return <div className="flex h-full items-center justify-center bg-stage-bg text-madder text-[13px]">{loadError}</div>
+    return <div className="flex h-full items-center justify-center bg-stage-bg text-madder text-sm">{loadError}</div>
   if (!artifact)
     return <div className="flex h-full items-center justify-center bg-stage-bg text-stage-muted"><Loader2 className="animate-spin" /></div>
 
@@ -254,9 +254,9 @@ export function DiagramIRCanvas() {
   return (
     <div className="flex h-full flex-col bg-stage-bg text-white">
       <div className="flex items-center gap-3 border-b border-stage-line px-5 py-2.5">
-        <button onClick={() => navigate(`/n/${notebookId}`)} className="text-[12px] text-stage-muted hover:text-white">← Notebook</button>
-        <span className="font-display text-[14px] font-semibold">{artifact.title}</span>
-        <span className="text-[12px] text-stage-muted">
+        <button onClick={() => navigate(`/n/${notebookId}`)} className="text-xs text-stage-muted hover:text-white">← Notebook</button>
+        <span className="font-display text-base font-semibold">{artifact.title}</span>
+        <span className="text-xs text-stage-muted">
           {state === 'saving' ? <span className="flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Saving…</span>
             : state === 'dirty' ? 'Unsaved' : <span className="flex items-center gap-1"><Check size={12} /> Saved</span>}
         </span>
@@ -264,7 +264,7 @@ export function DiagramIRCanvas() {
           {RENDER_EXTS.map((ext) => (
             <button key={ext} onClick={() => downloadRender(ext)} disabled={!renders[ext]}
               title={renders[ext] ? undefined : `No ${ext.toUpperCase()} render yet`}
-              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-2.5 py-1.5 text-[12px] text-stage-muted hover:text-white disabled:opacity-40">
+              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-stage-line px-2.5 py-1.5 text-xs text-stage-muted hover:text-white disabled:opacity-40">
               <Download size={12} /> {ext.toUpperCase()}
             </button>
           ))}
@@ -272,19 +272,19 @@ export function DiagramIRCanvas() {
       </div>
 
       <div className="flex items-center gap-2 border-b border-stage-line px-5 py-2">
-        <Button variant="quiet" className="text-[12px]" onClick={addNode}><Plus size={12} /> Add node</Button>
-        <Button variant="quiet" className="text-[12px]" onClick={addEdge}><GitBranch size={12} /> Add edge</Button>
-        <label className="ml-2 flex items-center gap-1.5 text-[12px] text-stage-muted">
+        <Button variant="quiet" size="sm" className="text-xs" onClick={addNode}><Plus size={12} /> Add node</Button>
+        <Button variant="quiet" size="sm" className="text-xs" onClick={addEdge}><GitBranch size={12} /> Add edge</Button>
+        <label className="ml-2 flex items-center gap-1.5 text-xs text-stage-muted">
           Re-layout
           <select value={layout} onChange={(e) => changeLayout(e.target.value as LayoutKind)}
-            className="rounded-[var(--radius-sm)] border border-stage-line bg-stage-bg px-1.5 py-1 text-[12px] text-white">
+            className="rounded-[var(--radius-sm)] border border-stage-line bg-stage-bg px-1.5 py-1 text-xs text-white">
             <option value="native">native</option>
             <option value="dot">dot</option>
           </select>
         </label>
         <span
           title="Positions are computed by the layout solver. Dragging a node moves it on screen, but it snaps back to its solved position once the edit saves -- edit structure (add/connect/retype/group), not placement."
-          className="ml-2 flex items-center gap-1 rounded-full border border-stage-line px-2 py-0.5 text-[11px] text-stage-muted">
+          className="ml-2 flex items-center gap-1 rounded-full border border-stage-line px-2 py-0.5 text-2xs text-stage-muted">
           <Sparkles size={11} /> Auto-layout
         </span>
       </div>
@@ -303,7 +303,7 @@ export function DiagramIRCanvas() {
           )}
         </div>
         <div className="flex w-[40%] shrink-0 flex-col">
-          <div className="px-4 py-2 font-mono text-[11px] uppercase leading-4 tracking-[0.08em] text-stage-muted">Export preview</div>
+          <div className="px-4 py-2 font-mono text-2xs uppercase leading-4 tracking-[0.08em] text-stage-muted">Export preview</div>
           <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-white p-6">
             {svg ? <div className="w-full [&_svg]:h-auto [&_svg]:w-full" dangerouslySetInnerHTML={{ __html: svg }} />
               : <span className="text-ws-muted">rendering…</span>}

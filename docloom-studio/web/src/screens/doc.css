@@ -7,15 +7,16 @@
   position: relative;
 }
 .doc-grip {
-  opacity: 0;
+  opacity: 0.4;
   cursor: grab;
   color: var(--muted);
   padding-top: 4px;
   margin-left: -26px;
   transition: opacity 0.15s;
 }
-.doc-block:hover .doc-grip {
-  opacity: 0.6;
+.doc-block:hover .doc-grip,
+.doc-block:focus-within .doc-grip {
+  opacity: 1;
 }
 .doc-block .editable-del {
   left: -48px;

@@ -37,6 +37,7 @@ import math
 from dataclasses import asdict, dataclass
 
 from ..ir import Diagram, diagram_hash
+from ..theme import contrast_ratio
 
 # ---------------------------------------------------------------------------
 # theme (docloom defaults): a plain dict overlay, unchanged from the painter
@@ -1980,6 +1981,24 @@ def solve(d: Diagram, theme=None, *,
 # ---------------------------------------------------------------------------
 # 6. paint (serialization only: reads SolvedDiagram, never re-lays anything out)
 # ---------------------------------------------------------------------------
+def _readable_fg(t: dict, fill_hex: str) -> str:
+    """t['background'] or t['text'], whichever contrasts more against
+    `fill_hex` -- ports diagram_pptx.py's own _readable_fg (the native PPTX
+    emitter's fix) into this SVG emitter, which paint_svg used to skip:
+    node label/sublabel text hardcoded t['text']/t['muted'] regardless of
+    what is actually painted behind it. kind_palette's node fills are
+    derived from hue alone at a fixed ~0.955 lightness -- always near-white
+    -- independent of t['background']/t['text'], so on an inverted band (a
+    caller's `t` with text/background swapped, e.g. pptx.py's _band_theme)
+    the hardcoded choice put equally-light text on that already-near-white
+    fill: the measured "Go 1.23"/"PostgreSQL 16" invisible-sublabel bug.
+    Resolving against the fill actually behind the text fixes this
+    independent of whatever band the diagram happens to be drawn on."""
+    if contrast_ratio(t["background"], fill_hex) >= contrast_ratio(t["text"], fill_hex):
+        return t["background"]
+    return t["text"]
+
+
 def node_shape(n: SolvedNode, pal: dict, t: dict) -> tuple[list[str], float]:
     p = pal.get(n.type, pal["service"])
     x, y, w, h = n.x, n.y, n.w, n.h
@@ -2103,6 +2122,14 @@ def paint_svg(s: SolvedDiagram, theme=None) -> str:
     for n in s.nodes:
         parts, top = node_shape(n, pal, t)
         o.extend(parts)
+        p = pal.get(n.type, pal["service"])
+        # Node fills sit at a fixed near-white lightness regardless of the
+        # theme's own text/background (see _readable_fg's docstring): resolve
+        # label/sublabel foregrounds against what is ACTUALLY painted behind
+        # them (p["fill"]) instead of trusting t["text"]/t["muted"] to always
+        # mean "dark enough" (item 7 -- the "Go 1.23"/"PostgreSQL 16"
+        # invisible-sublabel bug on an inverted/dark band).
+        label_fg = _readable_fg(t, p["fill"])
         sub_lines = (wrap(n.sublabel, 10.5, n.w - 2 * PAD_X - BAR, 2)
                      if n.sublabel else [])
         tag = n.tag
@@ -2116,15 +2143,14 @@ def paint_svg(s: SolvedDiagram, theme=None) -> str:
         for line in label_lines:
             o.append('<text x="%.1f" y="%.1f" font-size="%.1f" font-weight="650" '
                      'text-anchor="middle" fill="%s">%s</text>'
-                     % (cx, cy, label_pt, t["text"], esc(line)))
+                     % (cx, cy, label_pt, label_fg, esc(line)))
             cy += pitch
         yy = cy - pitch + base_off
         for line in sub_lines:
             o.append('<text x="%.1f" y="%.1f" font-size="10.5" text-anchor="middle" '
-                     'fill="%s">%s</text>' % (cx, yy, t["muted"], esc(line)))
+                     'fill="%s">%s</text>' % (cx, yy, label_fg, esc(line)))
             yy += 12.5
         if tag:
-            p = pal.get(n.type, pal["service"])
             tw = measure(tag, 9.2, True) + 14
             o.append('<rect x="%.1f" y="%.1f" width="%.1f" height="14" rx="7" '
                      'fill="%s" fill-opacity="0.18" stroke="%s" '
