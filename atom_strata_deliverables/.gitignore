@@ -1,0 +1,5 @@
+# Generated deliverable outputs regenerate from build.py; keep only the build
+# script (the authored IR source), not the rendered binaries.
+*
+!.gitignore
+!build.py

@@ -1,0 +1,5 @@
+# Generated deliverable outputs regenerate from build_strata.py; keep only the
+# build script (the authored IR source), not the rendered binaries.
+*
+!.gitignore
+!build_strata.py
